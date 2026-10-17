@@ -316,6 +316,14 @@ export interface Dashboard {
   standup: Standup | null
   last_standup: Standup | null
   shipped?: Shipped // F-17
+  activity_hourly?: HourBucket[] // F-18
+}
+
+// F-18: one local hour of team activity; 24 of them, oldest first, the last one the current hour.
+export interface HourBucket {
+  start: number
+  messages: number // non-System messages
+  commits: number // requests committed in that hour
 }
 
 // F-17: what the team finished. `done_at` is set when a feature reaches done or is archived, cleared on reopen.
@@ -332,6 +340,7 @@ export interface Shipped {
   week: number // since Monday 00:00 local time
   total: number
   recent: ShippedFeature[] // newest 10 by done_at
+  timeline?: ShippedFeature[] // F-18: done in the last 14 days, newest first, at most 100
 }
 
 export interface TurnEvent {

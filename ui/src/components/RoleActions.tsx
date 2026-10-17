@@ -1,15 +1,17 @@
 import { RotateCw, Square } from 'lucide-react'
 import { useState } from 'react'
+import { roleName, stateWord } from '../roles'
 import { useAppDispatch, useAppSelector } from '../store'
 import { selectRole } from '../store/selectors'
 import { freshStartRole, stopRole } from '../store/thunks'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
+import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
 import { Tip } from './ui/tooltip'
 
-// Stop + Fresh start for one role, with the inline fresh-start confirm. Used in the DM title bar
-// and the dashboard Team section.
-export default function RoleActions({ role }: { role: string }) {
+// Stop + Fresh start for one role, with the inline fresh-start confirm. Used in the DM title bar, and
+// behind a `trigger` (the Dashboard's team ring, F-18), where the actions open in a popover.
+export default function RoleActions({ role, trigger }: { role: string; trigger?: React.ReactElement }) {
   const dispatch = useAppDispatch()
   const t = useAppSelector((s) => selectRole(s, role))
   const onStop = () => dispatch(stopRole(role))
@@ -34,7 +36,7 @@ export default function RoleActions({ role }: { role: string }) {
     }
   }
 
-  return (
+  const actions = (
     <div className="flex items-center gap-2 flex-wrap text-caption">
       {pending && (
         <Tip content={`rotation pending: ${t?.rotation}`}>
@@ -78,5 +80,18 @@ export default function RoleActions({ role }: { role: string }) {
       )}
       {err && <span className="text-red-600 truncate max-w-[240px]">{err}</span>}
     </div>
+  )
+  if (!trigger) return actions
+  return (
+    <Popover onOpenChange={(open) => !open && setConfirm(false)}>
+      <PopoverTrigger asChild>{trigger}</PopoverTrigger>
+      {/* no auto-focus: it would land on Fresh start and pop its tooltip over the panel; Tab still gets there */}
+      <PopoverContent className="w-auto max-w-80" data-role-actions={role} onOpenAutoFocus={(e) => e.preventDefault()}>
+        <div className="mb-2 text-caption text-gray-500">
+          <span className="font-semibold text-gray-700">{roleName(role)}</span> · {stateWord(t)}
+        </div>
+        {actions}
+      </PopoverContent>
+    </Popover>
   )
 }

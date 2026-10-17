@@ -61,6 +61,28 @@ export const PHASE_CHIP: Record<string, string> = {
 }
 export const phaseChip = (phase: string) => PHASE_CHIP[phase] || PHASE_CHIP.intake
 
+// F-18: solid tones of PHASE_CHIP for the Dashboard's phase bar.
+export const PHASE_FILL: Record<string, string> = {
+  intake: 'bg-gray-400',
+  spec: 'bg-blue-500',
+  design: 'bg-violet-500',
+  build: 'bg-amber-500',
+  qa: 'bg-orange-500',
+  done: 'bg-emerald-500',
+}
+
+// F-18: the team ring's colour. Red when the last turn was cut short, else by state.
+export const ringTone = (t: { state: string; last_turn?: { state: string } | null } | undefined) => {
+  if (t?.last_turn && (t.last_turn.state === 'interrupted' || t.last_turn.state === 'failed') && t.state !== 'running') return 'red'
+  return t?.state === 'running' ? 'green' : t?.state === 'queued' ? 'amber' : 'gray'
+}
+export const RING_STROKE: Record<string, string> = {
+  green: 'stroke-green-500',
+  amber: 'stroke-amber-400',
+  gray: 'stroke-gray-300',
+  red: 'stroke-red-500',
+}
+
 export const STATE_CHIP: Record<string, string> = {
   pending: 'bg-amber-50 text-amber-800',
   approved: 'bg-emerald-50 text-emerald-700',

@@ -15,7 +15,7 @@ test('sidebar, dashboard, feature, Inbox, History and the Live tab', async ({ pa
   await expect(sidebar.getByRole('combobox', { name: 'Project' })).toHaveText('demo')
   await expect(sidebar.getByRole('button', { name: /Export orders to CSV/ })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
-  await expect(page.getByText('Needs you')).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Needs you' })).toBeVisible()
 
   await sidebar.getByRole('button', { name: /Export orders to CSV/ }).click()
   await expect(page.getByRole('heading', { name: 'Export orders to CSV' })).toBeVisible()
