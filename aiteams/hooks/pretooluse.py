@@ -4,6 +4,9 @@ import json
 import os
 import re
 import sys
+import time
+import urllib.error
+import urllib.request
 
 PROJECT = os.path.realpath(os.environ.get("AITEAMS_PROJECT_PATH") or os.getcwd())
 HOME_AITEAMS = os.environ.get("AITEAMS_HOME") or os.path.join(os.path.expanduser("~"), ".aiteams")
@@ -78,8 +81,31 @@ def check_write(data, inp):
     rel = os.path.relpath(rp, PROJECT)
     if rel == ".aiteams" or rel.startswith(".aiteams" + os.sep):
         if not (rel.startswith(os.path.join(".aiteams", "roles") + os.sep)
-                or rel.startswith(os.path.join(".aiteams", "notes") + os.sep)):
-            deny("writing under .aiteams/ is only allowed in .aiteams/roles/ and .aiteams/notes/.")
+                or rel.startswith(os.path.join(".aiteams", "notes") + os.sep)
+                or rel.startswith(os.path.join(".aiteams", "features") + os.sep)):
+            deny("writing under .aiteams/ is only allowed in .aiteams/roles/, .aiteams/notes/ and .aiteams/features/.")
+    check_lock(rel)
+
+
+def check_lock(rel):
+    """Ask the daemon to lock the file for this role; deny when another role holds it. Fail open."""
+    url, project, turn = (os.environ.get("AITEAMS_DAEMON_URL"), os.environ.get("AITEAMS_PROJECT"),
+                          os.environ.get("AITEAMS_TURN"))
+    if not (url and project and turn):
+        return
+    req = urllib.request.Request(url.rstrip("/") + "/internal/locks/acquire", data=json.dumps({"path": rel}).encode(),
+                                 method="POST", headers={"Content-Type": "application/json",
+                                                         "X-AITeams-Project": project, "X-AITeams-Turn": turn})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            res = json.loads(r.read().decode() or "{}")
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        log_input("lock check skipped (daemon unreachable): %s" % e)
+        return
+    if isinstance(res, dict) and res.get("ok") is False:
+        since = time.strftime("%H:%M", time.localtime(float(res.get("since") or 0)))
+        deny("%s is locked by %s since %s; ask them in chat, or ask @lead/@manager to unlock_file(path, force=true)."
+             % (rel, res.get("holder"), since))
 
 
 def main():

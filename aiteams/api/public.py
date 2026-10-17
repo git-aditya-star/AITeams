@@ -89,7 +89,9 @@ def conversations(request: Request, pid: str):
 @api.post("/p/{pid}/conversations")
 async def create_conversation(request: Request, pid: str, body: ConversationBody):
     proj = _project(request, pid)
-    conv = proj.db.create_thread(body.title.strip())
+    feat = proj.db.create_feature(body.title.strip())
+    conv = proj.db.conversation(feat["conversation_id"])
+    await proj.hub.broadcast("feature", feat)
     await proj.hub.broadcast("conversation", conv)
     return conv
 
@@ -104,11 +106,11 @@ def messages(request: Request, pid: str, conversation: str, before: int | None =
 
 
 async def post_message(st, proj: Project, conversation: str, author: str, text: str, type_: str,
-                       mentions: list[str], turn_id: int | None) -> dict:
+                       mentions: list[str], turn_id: int | None, ref: str | None = None) -> dict:
     conv = proj.db.conversation(conversation)
     if conv is None:
         raise HTTPException(404, f"unknown conversation: {conversation}")
-    msg = proj.db.add_message(conv["id"], author, type_, text, mentions, turn_id)
+    msg = proj.db.add_message(conv["id"], author, type_, text, mentions, turn_id, ref)
     wakes = routing.route(proj.db, msg, conv)
     for w in wakes:
         await receipts.mark(proj.db, proj.hub, [msg["id"]], w["role"], "queued")

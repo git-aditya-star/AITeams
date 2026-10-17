@@ -12,11 +12,11 @@ from .config import ROLES
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversations(
-  id TEXT PRIMARY KEY, kind TEXT CHECK(kind IN ('channel','dm','thread')), title TEXT,
+  id TEXT PRIMARY KEY, kind TEXT, title TEXT,
   role TEXT NULL, created_at REAL);
 CREATE TABLE IF NOT EXISTS messages(
   id INTEGER PRIMARY KEY, conversation_id TEXT, author TEXT, type TEXT, text TEXT,
-  mentions TEXT, turn_id INTEGER NULL, created_at REAL);
+  mentions TEXT, turn_id INTEGER NULL, created_at REAL, ref TEXT NULL);
 CREATE INDEX IF NOT EXISTS messages_conv ON messages(conversation_id, id);
 CREATE TABLE IF NOT EXISTS receipts(
   message_id INTEGER, role TEXT, state TEXT CHECK(state IN ('queued','seen','acked')),
@@ -36,7 +36,23 @@ CREATE TABLE IF NOT EXISTS questions(
   answers TEXT NULL, created_at REAL, answered_at REAL);
 CREATE TABLE IF NOT EXISTS rate_limits(ts REAL, json TEXT);
 CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS features(
+  id INTEGER PRIMARY KEY, title TEXT, phase TEXT DEFAULT 'intake', owner TEXT NULL,
+  conversation_id TEXT UNIQUE, archived INTEGER DEFAULT 0, created_at REAL, updated_at REAL);
+CREATE TABLE IF NOT EXISTS approvals(
+  id INTEGER PRIMARY KEY, feature_id INTEGER NULL, role TEXT, turn_id INTEGER NULL, title TEXT,
+  summary TEXT, state TEXT, note TEXT NULL, message_id INTEGER NULL, created_at REAL, resolved_at REAL NULL);
+CREATE TABLE IF NOT EXISTS commits(
+  id INTEGER PRIMARY KEY, feature_id INTEGER NULL, role TEXT, turn_id INTEGER NULL, files TEXT,
+  message TEXT, hashes TEXT, state TEXT, note TEXT NULL, sha TEXT NULL, message_id INTEGER NULL,
+  created_at REAL, updated_at REAL);
+CREATE TABLE IF NOT EXISTS locks(path TEXT PRIMARY KEY, role TEXT, turn_id INTEGER, created_at REAL);
+CREATE TABLE IF NOT EXISTS file_edits(path TEXT PRIMARY KEY, role TEXT, updated_at REAL);
+CREATE TABLE IF NOT EXISTS resolved(message_id INTEGER PRIMARY KEY, resolved_at REAL);
 """
+
+PHASES = ("intake", "spec", "design", "build", "qa", "done")
+SCHEMA_VERSION = 2
 
 
 class ProjectDB:
@@ -51,6 +67,7 @@ class ProjectDB:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=5000")
         self.conn.executescript(SCHEMA)
+        self.migrate()
         self._seed()
 
     def close(self) -> None:
@@ -104,26 +121,28 @@ class ProjectDB:
         return dict(row) if row else None
 
     def create_thread(self, title: str) -> dict:
-        base = "".join(ch if ch.isalnum() else "-" for ch in title.lower()).strip("-")[:40] or "thread"
-        cid, n = base, 1
-        while self.one("SELECT 1 FROM conversations WHERE id=?", cid):
-            n += 1
-            cid = f"{base}-{n}"
-        self.x("INSERT INTO conversations(id, kind, title, role, created_at) VALUES(?,?,?,?,?)",
-               cid, "thread", title, None, time.time())
-        return self.conversation(cid)
+        """M1a name kept: a titled conversation is now a feature; returns its conversation row."""
+        return self.conversation(self.create_feature(title)["conversation_id"])
 
     # ---- messages --------------------------------------------------------
     def add_message(self, conversation_id: str, author: str, type_: str, text: str,
-                    mentions: list[str], turn_id: int | None) -> dict:
-        mid = self.x("INSERT INTO messages(conversation_id, author, type, text, mentions, turn_id, created_at)"
-                     " VALUES(?,?,?,?,?,?,?)", conversation_id, author, type_, text,
-                     json.dumps(mentions), turn_id, time.time())
+                    mentions: list[str], turn_id: int | None, ref: str | None = None) -> dict:
+        mid = self.x("INSERT INTO messages(conversation_id, author, type, text, mentions, turn_id, created_at, ref)"
+                     " VALUES(?,?,?,?,?,?,?,?)", conversation_id, author, type_, text,
+                     json.dumps(mentions), turn_id, time.time(), ref)
         return self.message(mid)
 
     def _msg_dict(self, r: sqlite3.Row) -> dict:
         d = dict(r)
         d["mentions"] = json.loads(d["mentions"] or "[]")
+        d["approval"] = d["commit"] = None
+        ref = d.get("ref")
+        if ref and ":" in ref:
+            kind, _, num = ref.partition(":")
+            if kind == "approval" and num.isdigit():
+                d["approval"] = self.approval(int(num))
+            elif kind == "commit" and num.isdigit():
+                d["commit"] = self.commit(int(num))
         return d
 
     def message(self, mid: int) -> dict | None:
@@ -292,6 +311,201 @@ class ProjectDB:
     # ---- rate limits -----------------------------------------------------
     def add_rate_limit(self, info: dict) -> None:
         self.x("INSERT INTO rate_limits(ts, json) VALUES(?,?)", time.time(), json.dumps(info))
+
+    # ---- migrations ------------------------------------------------------
+    def migrate(self) -> None:
+        """v1 -> v2: conversation kind CHECK dropped (thread -> feature), messages.ref, features rows."""
+        version = self.get_kv("schema_version", 1)
+        if version >= SCHEMA_VERSION:
+            return
+        with self.lock:
+            cols = [r["name"] for r in self.conn.execute("PRAGMA table_info(messages)")]
+            if "ref" not in cols:
+                self.conn.execute("ALTER TABLE messages ADD COLUMN ref TEXT NULL")
+            sql = self.conn.execute("SELECT sql FROM sqlite_master WHERE name='conversations'").fetchone()["sql"]
+            if "CHECK" in sql:
+                self.conn.executescript("""
+                    BEGIN;
+                    CREATE TABLE conversations_new(id TEXT PRIMARY KEY, kind TEXT, title TEXT, role TEXT NULL, created_at REAL);
+                    INSERT INTO conversations_new SELECT id, kind, title, role, created_at FROM conversations;
+                    DROP TABLE conversations; ALTER TABLE conversations_new RENAME TO conversations;
+                    COMMIT;""")
+            for r in self.conn.execute("SELECT * FROM conversations WHERE kind='thread'").fetchall():
+                self.conn.execute("UPDATE conversations SET kind='feature' WHERE id=?", (r["id"],))
+                if not self.conn.execute("SELECT 1 FROM features WHERE conversation_id=?", (r["id"],)).fetchone():
+                    self.conn.execute("INSERT INTO features(title, phase, owner, conversation_id, archived, created_at, updated_at)"
+                                      " VALUES(?,?,?,?,?,?,?)", (r["title"], "intake", None, r["id"], 0, r["created_at"], r["created_at"]))
+        self.set_kv("schema_version", SCHEMA_VERSION)
+
+    # ---- features --------------------------------------------------------
+    def _feat_dict(self, r: sqlite3.Row) -> dict:
+        d = dict(r)
+        d["key"] = f"F-{d['id']}"
+        d["archived"] = bool(d["archived"])
+        return d
+
+    def feature(self, ident) -> dict | None:
+        """Accepts 3, "3", "F-3", "feature-3" or a conversation id."""
+        s = str(ident).strip()
+        low = s.lower()
+        fid = None
+        if low.startswith("f-") and low[2:].isdigit():
+            fid = int(low[2:])
+        elif low.startswith("feature-") and low[8:].isdigit():
+            fid = int(low[8:])
+        elif s.isdigit():
+            fid = int(s)
+        if fid is not None:
+            r = self.one("SELECT * FROM features WHERE id=?", fid)
+        else:
+            r = self.one("SELECT * FROM features WHERE conversation_id=?", s)
+        return self._feat_dict(r) if r else None
+
+    def features(self, include_history: bool = False) -> list[dict]:
+        rows = self.q("""SELECT f.*, (SELECT MAX(created_at) FROM messages m WHERE m.conversation_id=f.conversation_id) AS last_activity,
+                         (SELECT COUNT(*) FROM approvals a WHERE a.feature_id=f.id AND a.state='pending') AS open_approvals,
+                         (SELECT COUNT(*) FROM commits c WHERE c.feature_id=f.id AND c.state IN ('lead_review','master_review')) AS open_commits
+                         FROM features f ORDER BY f.id DESC""")
+        out = []
+        for r in rows:
+            d = self._feat_dict(r)
+            d["last_activity"] = d["last_activity"] or d["created_at"]
+            if include_history or (d["phase"] != "done" and not d["archived"]):
+                out.append(d)
+        return out
+
+    def create_feature(self, title: str, phase: str = "intake", owner: str | None = None) -> dict:
+        now = time.time()
+        with self.lock:
+            fid = self.x("INSERT INTO features(title, phase, owner, conversation_id, archived, created_at, updated_at)"
+                         " VALUES(?,?,?,?,?,?,?)", title, phase, owner, None, 0, now, now)
+            cid = f"feature-{fid}"
+            self.x("INSERT INTO conversations(id, kind, title, role, created_at) VALUES(?,?,?,?,?)",
+                   cid, "feature", f"F-{fid} {title}", None, now)
+            self.x("UPDATE features SET conversation_id=? WHERE id=?", cid, fid)
+        return self.feature(fid)
+
+    def update_feature(self, fid: int, **fields) -> dict:
+        fields = {k: v for k, v in fields.items() if k in ("title", "phase", "owner", "archived")}
+        if fields:
+            if "archived" in fields:
+                fields["archived"] = 1 if fields["archived"] else 0
+            cols = ", ".join(f"{k}=?" for k in fields)
+            self.x(f"UPDATE features SET {cols}, updated_at=? WHERE id=?", *fields.values(), time.time(), fid)
+            if "title" in fields:
+                conv_id = self.one("SELECT conversation_id FROM features WHERE id=?", fid)["conversation_id"]
+                self.x("UPDATE conversations SET title=? WHERE id=?", f"F-{fid} {fields['title']}", conv_id)
+        return self.feature(fid)
+
+    # ---- approvals -------------------------------------------------------
+    def create_approval(self, feature_id: int | None, role: str, turn_id: int | None, title: str, summary: str) -> dict:
+        aid = self.x("INSERT INTO approvals(feature_id, role, turn_id, title, summary, state, created_at)"
+                     " VALUES(?,?,?,?,?,?,?)", feature_id, role, turn_id, title, summary, "pending", time.time())
+        return self.approval(aid)
+
+    def approval(self, aid: int) -> dict | None:
+        r = self.one("SELECT * FROM approvals WHERE id=?", aid)
+        return dict(r) if r else None
+
+    def approvals(self, state: str = "pending", feature_id: int | None = None) -> list[dict]:
+        sql, args = "SELECT * FROM approvals WHERE 1=1", []
+        if state != "all":
+            sql += " AND state=?"; args.append(state)
+        if feature_id is not None:
+            sql += " AND feature_id=?"; args.append(feature_id)
+        return [dict(r) for r in self.q(sql + " ORDER BY id DESC", *args)]
+
+    def resolve_approval(self, aid: int, state: str, note: str | None) -> dict | None:
+        self.x("UPDATE approvals SET state=?, note=?, resolved_at=? WHERE id=? AND state='pending'",
+               state, note, time.time(), aid)
+        return self.approval(aid)
+
+    # ---- commits ---------------------------------------------------------
+    def _commit_dict(self, r: sqlite3.Row) -> dict:
+        d = dict(r)
+        d["files"] = json.loads(d["files"] or "[]")
+        d["hashes"] = json.loads(d["hashes"] or "{}")
+        return d
+
+    def create_commit(self, feature_id: int | None, role: str, turn_id: int | None, files: list[str],
+                      message: str, hashes: dict, state: str) -> dict:
+        now = time.time()
+        cid = self.x("INSERT INTO commits(feature_id, role, turn_id, files, message, hashes, state, created_at, updated_at)"
+                     " VALUES(?,?,?,?,?,?,?,?,?)", feature_id, role, turn_id, json.dumps(files), message,
+                     json.dumps(hashes), state, now, now)
+        return self.commit(cid)
+
+    def commit(self, cid: int) -> dict | None:
+        r = self.one("SELECT * FROM commits WHERE id=?", cid)
+        return self._commit_dict(r) if r else None
+
+    def commits(self, state: str = "all", feature_id: int | None = None, limit: int = 100) -> list[dict]:
+        sql, args = "SELECT * FROM commits WHERE 1=1", []
+        if state != "all":
+            sql += " AND state=?"; args.append(state)
+        if feature_id is not None:
+            sql += " AND feature_id=?"; args.append(feature_id)
+        args.append(limit)
+        return [self._commit_dict(r) for r in self.q(sql + " ORDER BY id DESC LIMIT ?", *args)]
+
+    def update_commit(self, cid: int, **fields) -> dict | None:
+        if fields:
+            cols = ", ".join(f"{k}=?" for k in fields)
+            self.x(f"UPDATE commits SET {cols}, updated_at=? WHERE id=?", *fields.values(), time.time(), cid)
+        return self.commit(cid)
+
+    def set_message_ref(self, mid: int, ref: str) -> None:
+        self.x("UPDATE messages SET ref=? WHERE id=?", ref, mid)
+
+    # ---- locks / edits ---------------------------------------------------
+    def acquire_lock(self, path: str, role: str, turn_id: int | None) -> dict | None:
+        """Lock `path` for `role`. Returns None when acquired (or already held by role), else the holder row."""
+        with self.lock:
+            r = self.conn.execute("SELECT * FROM locks WHERE path=?", (path,)).fetchone()
+            if r and r["role"] != role:
+                return dict(r)
+            if not r:
+                self.conn.execute("INSERT INTO locks(path, role, turn_id, created_at) VALUES(?,?,?,?)",
+                                  (path, role, turn_id, time.time()))
+        return None
+
+    def release_lock(self, path: str) -> dict | None:
+        r = self.one("SELECT * FROM locks WHERE path=?", path)
+        if r:
+            self.x("DELETE FROM locks WHERE path=?", path)
+        return dict(r) if r else None
+
+    def release_locks(self, role: str) -> list[str]:
+        paths = [r["path"] for r in self.q("SELECT path FROM locks WHERE role=?", role)]
+        if paths:
+            self.x("DELETE FROM locks WHERE role=?", role)
+        return paths
+
+    def locks(self) -> list[dict]:
+        return [dict(r) for r in self.q("SELECT * FROM locks ORDER BY created_at")]
+
+    def touch_edit(self, path: str, role: str) -> None:
+        self.x("INSERT OR REPLACE INTO file_edits(path, role, updated_at) VALUES(?,?,?)", path, role, time.time())
+
+    def file_edits_for(self, prefix: str) -> dict[str, dict]:
+        rows = self.q("SELECT * FROM file_edits WHERE path LIKE ?", prefix.replace("%", "%%") + "%")
+        return {r["path"]: dict(r) for r in rows}
+
+    # ---- inbox -----------------------------------------------------------
+    def resolve_message(self, mid: int) -> None:
+        self.x("INSERT OR IGNORE INTO resolved(message_id, resolved_at) VALUES(?,?)", mid, time.time())
+
+    def inbox_messages(self) -> list[dict]:
+        rows = self.q("""SELECT m.*, c.title AS conversation_title FROM messages m
+                         JOIN conversations c ON c.id=m.conversation_id
+                         WHERE m.type IN ('Question','Blocker') AND m.mentions LIKE '%"master"%'
+                           AND m.id NOT IN (SELECT message_id FROM resolved) ORDER BY m.id DESC""")
+        out = []
+        for r in rows:
+            d = self._msg_dict(r)
+            d["receipts"] = []
+            out.append(d)
+        return out
 
 
 def ensure_git_exclude(project_path: str) -> bool:

@@ -36,3 +36,67 @@ class PermissionBody(BaseModel):
     tool_name: str
     input: dict = {}
     tool_use_id: str | None = None
+
+
+class NewTaskBody(BaseModel):
+    text: str = Field(min_length=1)
+    starter: str = "product"
+    title: str | None = None
+
+
+class FeaturePatchBody(BaseModel):
+    phase: str | None = None
+    owner: str | None = None
+    title: str | None = None
+    archived: bool | None = None
+
+
+class ApprovalDecideBody(BaseModel):
+    decision: str
+    note: str | None = None
+    set_phase: str | None = None
+
+
+class CommitDecideBody(BaseModel):
+    decision: str
+    message: str | None = None
+    note: str | None = None
+    force: bool = False
+
+
+class ResolveBody(BaseModel):
+    message_id: int
+
+
+class InternalFeatureBody(BaseModel):
+    title: str = Field(min_length=1)
+    phase: str = "intake"
+    owner: str | None = None
+
+
+class InternalFeaturePatchBody(BaseModel):
+    phase: str | None = None
+    owner: str | None = None
+    title: str | None = None
+
+
+class InternalApprovalBody(BaseModel):
+    feature: str | None = None
+    title: str = Field(min_length=1)
+    summary: str = ""
+
+
+class InternalCommitBody(BaseModel):
+    feature: str | None = None
+    files: list[str]
+    message: str = Field(min_length=1)
+
+
+class InternalReviewBody(BaseModel):
+    decision: str
+    note: str | None = None
+
+
+class LockBody(BaseModel):
+    path: str = Field(min_length=1)
+    force: bool = False

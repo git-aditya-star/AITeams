@@ -24,6 +24,9 @@ export const TYPE_CHIP: Record<string, string> = {
   Finding: 'bg-violet-50 text-violet-700',
   Handoff: 'bg-amber-50 text-amber-800',
   System: 'bg-gray-100 text-gray-600',
+  Blocker: 'bg-red-100 text-red-800',
+  Approval: 'bg-amber-50 text-amber-800',
+  Commit: 'bg-teal-50 text-teal-700',
 }
 
 export const dotClass = (state: string) =>
@@ -35,3 +38,28 @@ export const dotClass = (state: string) =>
 
 export const meterClass = (pct: number) =>
   pct >= 0.6 ? 'bg-red-500' : pct >= 0.4 ? 'bg-amber-400' : 'bg-green-500'
+
+export const PHASES = ['intake', 'spec', 'design', 'build', 'qa', 'done'] as const
+
+export const PHASE_CHIP: Record<string, string> = {
+  intake: 'bg-gray-100 text-gray-600',
+  spec: 'bg-blue-50 text-blue-700',
+  design: 'bg-violet-50 text-violet-700',
+  build: 'bg-amber-50 text-amber-800',
+  qa: 'bg-orange-50 text-orange-700',
+  done: 'bg-emerald-50 text-emerald-700',
+}
+export const phaseChip = (phase: string) => PHASE_CHIP[phase] || PHASE_CHIP.intake
+
+export const STATE_CHIP: Record<string, string> = {
+  pending: 'bg-amber-50 text-amber-800',
+  approved: 'bg-emerald-50 text-emerald-700',
+  changes_requested: 'bg-red-50 text-red-700',
+  lead_review: 'bg-gray-100 text-gray-600',
+  master_review: 'bg-amber-50 text-amber-800',
+  committed: 'bg-emerald-50 text-emerald-700',
+  rejected: 'bg-red-50 text-red-700',
+  failed: 'bg-red-50 text-red-700',
+}
+export const stateChip = (s: string) => STATE_CHIP[s] || 'bg-gray-100 text-gray-600'
+export const stateLabel = (s: string) => s.replace(/_/g, ' ')

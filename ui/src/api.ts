@@ -4,7 +4,21 @@ export type Role = 'manager' | 'lead' | 'product' | 'frontend' | 'backend' | 'qa
 export type RoleState = 'idle' | 'queued' | 'running'
 export type TurnState = 'queued' | 'running' | 'done' | 'failed' | 'interrupted'
 export type ReceiptState = 'queued' | 'seen' | 'acked'
-export type MessageType = 'Message' | 'Question' | 'Decision' | 'Concern' | 'Finding' | 'Handoff' | 'System'
+export type MessageType =
+  | 'Message'
+  | 'Question'
+  | 'Decision'
+  | 'Concern'
+  | 'Finding'
+  | 'Handoff'
+  | 'System'
+  | 'Blocker'
+  | 'Approval'
+  | 'Commit'
+
+export type Phase = 'intake' | 'spec' | 'design' | 'build' | 'qa' | 'done'
+export type ApprovalState = 'pending' | 'approved' | 'changes_requested'
+export type CommitState = 'lead_review' | 'master_review' | 'rejected' | 'committed' | 'failed'
 
 export interface ProjectSummary {
   id: string
@@ -27,7 +41,7 @@ export interface Project extends ProjectSummary {
 
 export interface Conversation {
   id: string
-  kind: 'channel' | 'dm' | 'thread'
+  kind: 'channel' | 'dm' | 'feature'
   title: string
   role: string | null
   created_at: number
@@ -37,6 +51,64 @@ export interface Conversation {
 export interface Receipt {
   role: string
   state: ReceiptState
+}
+
+export interface Feature {
+  id: number
+  key: string
+  title: string
+  phase: Phase | string
+  owner: string | null
+  conversation_id: string
+  archived: boolean | number
+  created_at: number
+  updated_at: number
+  last_activity: number | null
+  open_approvals: number
+  open_commits: number
+}
+
+export interface FeatureDoc {
+  name: string
+  size: number
+  updated_at: number | null
+  editor: string | null
+}
+
+export interface Approval {
+  id: number
+  feature_id: number | null
+  role: string
+  turn_id: number | null
+  title: string
+  summary: string
+  state: ApprovalState | string
+  note: string | null
+  message_id: number | null
+  created_at: number
+  resolved_at: number | null
+}
+
+export interface Commit {
+  id: number
+  feature_id: number | null
+  role: string
+  turn_id: number | null
+  files: string[]
+  message: string
+  state: CommitState | string
+  note: string | null
+  sha: string | null
+  message_id: number | null
+  created_at: number
+  updated_at: number
+}
+
+export interface Lock {
+  path: string
+  role: string
+  turn_id: number | null
+  created_at: number
 }
 
 export interface Message {
@@ -49,6 +121,21 @@ export interface Message {
   turn_id: number | null
   created_at: number
   receipts: Receipt[]
+  ref?: string | null
+  approval?: Approval | null
+  commit?: Commit | null
+}
+
+export interface InboxMessage extends Message {
+  conversation_title: string
+}
+
+export interface Inbox {
+  questions: Question[]
+  approvals: Approval[]
+  commits: Commit[]
+  messages: InboxMessage[]
+  count: number
 }
 
 export interface Turn {
@@ -112,6 +199,19 @@ export interface Question {
   answered_at: number | null
 }
 
+// Thrown for non-2xx responses; `detail` is the parsed JSON `detail` when the body was JSON
+// (e.g. a 409 on commit approve carries `{detail: {stale: [...]}}`).
+export class ApiError extends Error {
+  status: number
+  detail: any
+  constructor(message: string, status: number, detail: any) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.detail = detail
+  }
+}
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     ...init,
@@ -119,13 +219,22 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
   })
   if (!res.ok) {
     const body = await res.text().catch(() => '')
-    throw new Error(`${init?.method || 'GET'} ${url} -> ${res.status} ${body}`)
+    let detail: any = null
+    try {
+      detail = JSON.parse(body)?.detail ?? null
+    } catch {
+      /* not JSON */
+    }
+    throw new ApiError(`${init?.method || 'GET'} ${url} -> ${res.status} ${body}`, res.status, detail)
   }
   return res.json() as Promise<T>
 }
 
 const post = <T,>(url: string, body: unknown) =>
   req<T>(url, { method: 'POST', body: JSON.stringify(body) })
+const patch = <T,>(url: string, body: unknown) =>
+  req<T>(url, { method: 'PATCH', body: JSON.stringify(body) })
+const del = <T,>(url: string) => req<T>(url, { method: 'DELETE' })
 
 export const api = {
   projects: () => req<ProjectSummary[]>('/api/projects'),
@@ -150,11 +259,63 @@ export const api = {
   answerQuestion: (pid: string, qid: number, answers: Record<string, string>) =>
     post<Question>(`/api/p/${pid}/questions/${qid}/answer`, { answers }),
   pause: (pid: string, paused: boolean) => post<{ paused: boolean }>(`/api/p/${pid}/pause`, { paused }),
+
+  // M1b: features, docs, approvals, commits, locks, inbox.
+  features: (pid: string, history = false) =>
+    req<Feature[]>(`/api/p/${pid}/features?history=${history ? 1 : 0}`),
+  createFeature: (pid: string, body: { text: string; starter: Role | string; title?: string }) =>
+    post<Feature>(`/api/p/${pid}/features`, body),
+  patchFeature: (
+    pid: string,
+    id: number,
+    body: { phase?: string; owner?: string | null; title?: string; archived?: boolean },
+  ) => patch<Feature>(`/api/p/${pid}/features/${id}`, body),
+  featureDocs: (pid: string, id: number) => req<FeatureDoc[]>(`/api/p/${pid}/features/${id}/docs`),
+  featureDoc: (pid: string, id: number, name: string) =>
+    req<{ name: string; text: string }>(`/api/p/${pid}/features/${id}/docs/${encodeURIComponent(name)}`),
+  approvals: (pid: string, state: ApprovalState | 'all' = 'pending') =>
+    req<Approval[]>(`/api/p/${pid}/approvals?state=${state}`),
+  decideApproval: (
+    pid: string,
+    id: number,
+    body: { decision: 'approve' | 'changes'; note?: string; set_phase?: string },
+  ) => post<Approval>(`/api/p/${pid}/approvals/${id}/decide`, body),
+  commits: (pid: string, state: CommitState | 'all' = 'master_review', feature?: number) => {
+    const q = new URLSearchParams({ state })
+    if (feature != null) q.set('feature', String(feature))
+    return req<Commit[]>(`/api/p/${pid}/commits?${q}`)
+  },
+  commitDiff: (pid: string, id: number) => req<{ diff: string; stale: string[] }>(`/api/p/${pid}/commits/${id}/diff`),
+  decideCommit: (
+    pid: string,
+    id: number,
+    body: { decision: 'approve' | 'reject'; message?: string; note?: string; force?: boolean },
+  ) => post<Commit>(`/api/p/${pid}/commits/${id}/decide`, body),
+  locks: (pid: string) => req<Lock[]>(`/api/p/${pid}/locks`),
+  releaseLock: (pid: string, path: string) =>
+    del<unknown>(`/api/p/${pid}/locks?path=${encodeURIComponent(path)}`),
+  inbox: (pid: string) => req<Inbox>(`/api/p/${pid}/inbox`),
+  resolveInbox: (pid: string, message_id: number) => post<unknown>(`/api/p/${pid}/inbox/resolve`, { message_id }),
+}
+
+// Stale file list from a failed commit approve (409), or null for any other error.
+export function staleFrom(e: unknown): string[] | null {
+  if (e instanceof ApiError && e.status === 409 && Array.isArray(e.detail?.stale)) return e.detail.stale as string[]
+  return null
 }
 
 export function fmtTime(ts: number): string {
   const d = new Date(ts * 1000)
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+export function fmtAgo(ts: number | null | undefined): string {
+  if (!ts) return ''
+  const s = Math.max(0, Date.now() / 1000 - ts)
+  if (s < 45) return 'just now'
+  if (s < 3600) return `${Math.round(s / 60)}m ago`
+  if (s < 86400) return `${Math.round(s / 3600)}h ago`
+  return `${Math.round(s / 86400)}d ago`
 }
 
 export function fmtTokens(n: number): string {

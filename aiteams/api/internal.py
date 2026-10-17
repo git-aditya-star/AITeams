@@ -5,10 +5,14 @@ import asyncio
 
 from fastapi import APIRouter, HTTPException, Request
 
-from ..models import InternalMessageBody, PermissionBody
+from .. import workflow
+from ..models import (InternalApprovalBody, InternalCommitBody, InternalFeatureBody, InternalFeaturePatchBody,
+                      InternalMessageBody, InternalReviewBody, LockBody, PermissionBody)
 from ..orchestrator import receipts
 from ..orchestrator import router as routing
 from .public import post_message
+
+MESSAGE_TYPES = ("Message", "Question", "Decision", "Concern", "Finding", "Handoff", "Blocker")
 
 internal = APIRouter(prefix="/internal")
 
@@ -37,7 +41,7 @@ async def post(request: Request, body: InternalMessageBody):
     st, proj, turn = _auth(request)
     role = turn["role"]
     mentions = routing.parse_mentions(body.text, body.mentions)
-    type_ = body.type if body.type in ("Message", "Question", "Decision", "Concern", "Finding", "Handoff") else "Message"
+    type_ = body.type if body.type in MESSAGE_TYPES else "Message"
     msg = await post_message(st, proj, body.conversation, role, body.text, type_, mentions, turn["id"])
     wake = proj.db.wake(turn["wake_id"]) if turn.get("wake_id") else None
     if wake:
@@ -81,3 +85,80 @@ async def permission(request: Request, body: PermissionBody):
         await proj.hub.broadcast("question", q)
         return {"behavior": "deny", "message": EXPIRED_MESSAGE.format(m=int(timeout // 60) or 1)}
     return {"behavior": "allow", "updatedInput": {**body.input, "answers": answers}}
+
+
+# ---- features / approvals / commits / locks (M1b) --------------------------------
+def _feature_line(f: dict) -> str:
+    return (f"{f['key']} · {f['phase']} · owner {f['owner'] or 'none'} · {f['title']} · conv {f['conversation_id']}"
+            + (" · archived" if f["archived"] else ""))
+
+
+@internal.get("/features")
+def features(request: Request, history: int = 0):
+    _, proj, _ = _auth(request)
+    return {"features": [_feature_line(f) for f in proj.db.features(bool(history))]}
+
+
+@internal.get("/features/{ident}")
+def feature(request: Request, ident: str):
+    _, proj, _ = _auth(request)
+    feat = workflow.resolve_feature(proj.db, ident)
+    if feat is None:
+        raise HTTPException(404, "unknown feature")
+    return {"header": workflow.feature_header(proj.db, proj.path, feat, with_sizes=True)}
+
+
+@internal.post("/features")
+async def create_feature(request: Request, body: InternalFeatureBody):
+    st, proj, turn = _auth(request)
+    feat = await workflow.new_feature(st, proj, body.title, body.phase, body.owner, by=turn["role"])
+    return {"key": feat["key"], "conversation_id": feat["conversation_id"]}
+
+
+@internal.patch("/features/{ident}")
+async def set_feature(request: Request, ident: str, body: InternalFeaturePatchBody):
+    st, proj, turn = _auth(request)
+    feat = workflow.resolve_feature(proj.db, ident)
+    if feat is None:
+        raise HTTPException(404, "unknown feature")
+    feat = await workflow.set_feature(st, proj, feat, body.model_dump(exclude_unset=True), turn["role"])
+    return {"header": workflow.feature_header(proj.db, proj.path, feat)}
+
+
+@internal.post("/approvals")
+async def request_approval(request: Request, body: InternalApprovalBody):
+    st, proj, turn = _auth(request)
+    a = await workflow.request_approval(st, proj, turn["role"], turn["id"], body.feature, body.title, body.summary)
+    return {"id": a["id"], "state": a["state"]}
+
+
+@internal.post("/commits")
+async def request_commit(request: Request, body: InternalCommitBody):
+    st, proj, turn = _auth(request)
+    c = await workflow.request_commit(st, proj, turn["role"], turn["id"], body.feature, body.files, body.message)
+    return {"id": c["id"], "state": c["state"], "files": c["files"]}
+
+
+@internal.post("/commits/{cid}/review")
+async def review_commit(request: Request, cid: int, body: InternalReviewBody):
+    st, proj, turn = _auth(request)
+    c = await workflow.review_commit(st, proj, turn["role"], cid, body.decision, body.note)
+    return {"id": c["id"], "state": c["state"]}
+
+
+@internal.get("/locks")
+def locks(request: Request):
+    _, proj, _ = _auth(request)
+    return proj.db.locks()
+
+
+@internal.post("/locks/acquire")
+async def acquire_lock(request: Request, body: LockBody):
+    _, proj, turn = _auth(request)
+    return await workflow.acquire_lock(proj, turn["role"], turn["id"], body.path)
+
+
+@internal.post("/locks/release")
+async def release_lock(request: Request, body: LockBody):
+    st, proj, turn = _auth(request)
+    return await workflow.release_lock(st, proj, turn["role"], body.path, body.force)

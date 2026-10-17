@@ -1,11 +1,14 @@
 import type { Message } from '../api'
 import { fmtTime } from '../api'
 import { roleName, TYPE_CHIP } from '../roles'
+import ApprovalCard from './ApprovalCard'
 import Avatar from './Avatar'
+import CommitCard from './CommitCard'
 import Markdown from './Markdown'
 import Receipts from './Receipts'
 
 export default function MessageRow({ m }: { m: Message }) {
+  const card = m.ref?.startsWith('approval:') && m.approval ? <ApprovalCard a={m.approval} /> : m.ref?.startsWith('commit:') && m.commit ? <CommitCard c={m.commit} /> : null
   return (
     <div className="flex gap-2.5 px-4 py-1.5 hover:bg-gray-50">
       <Avatar author={m.author} className="mt-0.5" />
@@ -18,6 +21,7 @@ export default function MessageRow({ m }: { m: Message }) {
           )}
         </div>
         <Markdown text={m.text} />
+        {card}
         <Receipts receipts={m.receipts} />
       </div>
     </div>

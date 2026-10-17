@@ -20,7 +20,7 @@ def test_mention_and_dm_rules(db):
     assert roles_to_wake(m, c) == ["lead", "qa"]
 
 
-def test_untagged_master_wakes_manager_only_in_channel_or_thread(db):
+def test_untagged_master_wakes_manager_only_in_channel_or_feature(db):
     m, c = msg(db, "general", "master", "hello team")
     assert roles_to_wake(m, c) == ["manager"]
     t = db.create_thread("Login feature")
@@ -55,3 +55,12 @@ def test_master_first_order(db):
     m2, c2 = msg(db, "dm-backend", "master", "hi")
     route(db, m2, c2)
     assert [w["role"] for w in db.queued_wakes()] == ["backend", "qa"]
+
+
+def test_master_mention_is_stored_but_never_woken(db):
+    assert parse_mentions("@master the DB is missing, @lead fyi") == ["master", "lead"]
+    m, c = msg(db, "general", "qa", "@master the DB is missing")
+    assert m["mentions"] == ["master"] and roles_to_wake(m, c) == []
+    f = db.create_feature("Export")
+    m, c = msg(db, f["conversation_id"], "master", "go")
+    assert roles_to_wake(m, c) == ["manager"]

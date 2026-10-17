@@ -75,11 +75,20 @@ class Scheduler:
                 pass
         finally:
             self.running.pop(key, None)
+            await self.release_locks(runner.project, runner.role)
             if runner.interrupt_reason == "shutdown":
                 await self.requeue_once(runner.project, runner.wake, runner.role)
             self.notify()
 
     # ---- recovery / shutdown ----------------------------------------------
+    async def release_locks(self, project, role: str) -> None:
+        """Locks live for one turn: drop the role's locks and tell the UI."""
+        try:
+            if project.db.release_locks(role):
+                await project.hub.broadcast("locks", {"locks": project.db.locks()})
+        except Exception:
+            pass
+
     async def requeue_once(self, project, wake: dict | None, role: str) -> None:
         db = project.db
         if wake and wake.get("origin") != "system":
@@ -99,6 +108,7 @@ class Scheduler:
                 db.update_turn(t["id"], state="failed", ended_at=time.time(),
                                error=(t.get("error") or "") + " daemon restarted while running")
                 wake = db.wake(t["wake_id"]) if t.get("wake_id") else None
+                await self.release_locks(proj, t["role"])
                 await self.requeue_once(proj, wake, t["role"])
         self.notify()
 

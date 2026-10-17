@@ -1,4 +1,4 @@
-"""The one routing rule: @mention or DM = wake. Untagged Master message in general/thread = wake manager."""
+"""The one routing rule: @mention or DM = wake. Untagged Master message in general/feature = wake manager."""
 from __future__ import annotations
 
 import re
@@ -14,11 +14,11 @@ def parse_mentions(text: str, extra: list[str] | None = None) -> list[str]:
     found: list[str] = []
     for m in MENTION_RE.findall(text or ""):
         r = m.lower()
-        if r in ROLES and r not in found:
+        if (r in ROLES or r == "master") and r not in found:
             found.append(r)
     for r in extra or []:
         r = str(r).lower().lstrip("@")
-        if r in ROLES and r not in found:
+        if (r in ROLES or r == "master") and r not in found:
             found.append(r)
     return found
 
@@ -27,11 +27,11 @@ def roles_to_wake(message: dict, conversation: dict) -> list[str]:
     author = message["author"]
     if author == "system":
         return []
-    roles = [r for r in message.get("mentions", []) if r != author]
+    roles = [r for r in message.get("mentions", []) if r != author and r in ROLES]
     if conversation["kind"] == "dm" and conversation["role"] and conversation["role"] != author:
         if conversation["role"] not in roles:
             roles.append(conversation["role"])
-    if author == "master" and conversation["kind"] in ("channel", "thread") and not message.get("mentions"):
+    if author == "master" and conversation["kind"] in ("channel", "thread", "feature") and not message.get("mentions"):
         if "manager" not in roles:
             roles.append("manager")
     return roles

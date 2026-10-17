@@ -89,19 +89,31 @@ def build_wake_prompt(db: ProjectDB, role: str, message_ids: list[int]) -> str:
         by_conv.setdefault(m["conversation_id"], []).append(m)
     out = [f"# New messages for {role.capitalize()}"]
     for cid, ms in by_conv.items():
-        conv = db.conversation(cid) or {"title": cid, "kind": "?"}
-        out.append(f"\n## {conv['title']} ({conv['kind']}, id `{cid}`)")
+        out.append("\n## " + _conv_label(db, cid))
         out += [_fmt(m) for m in ms]
     focus = focus_conversation(msgs)
     if focus:
-        conv = db.conversation(focus) or {"title": focus, "kind": "?"}
-        out.append(f"\n# Conversation: {conv['title']} ({conv['kind']}, id `{focus}`) — last {LAST_N} messages")
+        feat = db.feature(focus) if (db.conversation(focus) or {}).get("kind") == "feature" else None
+        if feat:
+            from ..workflow import feature_header
+            out.append("\n" + feature_header(db, db.project_path, feat))
+        out.append(f"\n# Conversation: {_conv_label(db, focus)} — last {LAST_N} messages")
         out += [_fmt(m) for m in db.messages(focus, limit=LAST_N)]
     out += [
         "",
         "# Instructions",
         f"Act on the new messages. Reply with `post_message` (conversation id `{focus or 'general'}` unless"
         " another one fits). @mention only who must act. Your final text is not shown in chat."
+        " Re-read a doc if it was edited since you last read it."
         " End your turn when nothing is left to do.",
     ]
     return "\n".join(out) + "\n"
+
+
+def _conv_label(db: ProjectDB, cid: str) -> str:
+    conv = db.conversation(cid) or {"title": cid, "kind": "?"}
+    if conv["kind"] == "feature":
+        feat = db.feature(cid)
+        if feat:
+            return f"{conv['title']} (feature, phase {feat['phase']}, id `{cid}`)"
+    return f"{conv['title']} ({conv['kind']}, id `{cid}`)"

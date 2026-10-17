@@ -52,8 +52,8 @@ def test_post_message_creates_wake_and_receipts(client, repo):
     listed = client.get(f"/api/p/{pid}/messages", params={"conversation": "general"}).json()
     assert [x["id"] for x in listed] == [m["id"]]
     t = client.post(f"/api/p/{pid}/conversations", json={"title": "Login feature"}).json()
-    assert t["kind"] == "thread" and t["id"] == "login-feature"
-    assert client.get(f"/api/p/{pid}/messages", params={"conversation": "Login feature"}).json() == []
+    assert t["kind"] == "feature" and t["id"] == "feature-1" and t["title"] == "F-1 Login feature"
+    assert client.get(f"/api/p/{pid}/messages", params={"conversation": "F-1 Login feature"}).json() == []
 
 
 def test_pause_toggle(client, repo):

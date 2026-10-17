@@ -6,6 +6,7 @@ import MessageRow from './MessageRow'
 type Chunk = { kind: 'single'; m: Message } | { kind: 'run'; key: number; items: Message[] }
 
 // Runs of ≥3 consecutive role messages collapse; the last run in the list never does.
+// Messages carrying a card (`ref`) break runs so the card is never hidden.
 function chunk(messages: Message[]): Chunk[] {
   const out: Chunk[] = []
   let run: Message[] = []
@@ -15,7 +16,7 @@ function chunk(messages: Message[]): Chunk[] {
     run = []
   }
   messages.forEach((m, i) => {
-    if (m.author !== 'master') {
+    if (m.author !== 'master' && !m.ref) {
       run.push(m)
       if (i === messages.length - 1) flush(true)
     } else {

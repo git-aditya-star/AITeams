@@ -15,4 +15,5 @@ You build and fix everything behind the UI: services, APIs, data models, migrati
 
 ## What you don't do
 - Don't change the UI; coordinate with @frontend for API contract changes.
-- Don't commit; the Master commits.
+- Don't commit. When a change is tested, `request_commit(feature, files, 'F-<n>: <subject>\n\n<body>')` with
+  the exact files; the Lead reviews, the Master commits.
