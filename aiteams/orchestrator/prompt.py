@@ -164,8 +164,7 @@ def build_standup_prompt(db: ProjectDB, role: str, standup: dict) -> str:
     if turns:
         for t in turns:
             when = time.strftime("%H:%M", time.localtime(t["created_at"]))
-            lines.append(f"- [{when}] {_conv_label(db, t['conversation_id'])} — {t['state']}"
-                         + (f", ${t['cost_usd']:.2f}" if t.get("cost_usd") else ""))
+            lines.append(f"- [{when}] {_conv_label(db, t['conversation_id'])} — {t['state']}")
     else:
         lines.append("- none")
     open_commits = [c for c in db.commits("all", limit=50) if c["role"] == role and c["state"] in ("lead_review", "master_review")]

@@ -144,3 +144,12 @@ def test_master_stop_and_fresh_start_routes(client, pid):
     t = client.get(f"/api/p/{pid}/team").json()["roles"]
     be = next(x for x in t if x["role"] == "backend")
     assert be["rotation"] == "fresh start" and be["rotation_handoff_pending"] is True and be["state"] == "queued"
+
+
+def test_standup_prompt_shows_no_cost(client, pid):
+    from aiteams.orchestrator.prompt import build_standup_prompt
+    db = client.app.state.app.projects[pid].db
+    t = ended(db, "backend")
+    db.update_turn(t["id"], cost_usd=1.23)
+    text = build_standup_prompt(db, "backend", {"id": 1, "requested_by": "master", "created_at": 0})
+    assert "— done" in text and "$" not in text
