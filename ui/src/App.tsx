@@ -20,6 +20,7 @@ import RoleActions from './components/RoleActions'
 import StandupButton from './components/StandupButton'
 import { CardContext } from './components/CardContext'
 import Toasts, { pushToast } from './components/Toasts'
+import CommitReview from './components/CommitReview'
 import { toastFor, type Toast } from './toasts'
 
 const PAGE = 50
@@ -46,6 +47,7 @@ export default function App() {
   const tabParam = params.get('tab')
   const tab: Tab = tabParam === 'live' ? 'live' : tabParam === 'docs' ? 'docs' : 'chat'
   const highlight = Number(params.get('m')) || null
+  const review = Number(params.get('review')) || null
 
   const [projects, setProjects] = useState<ProjectSummary[]>([])
   const [project, setProject] = useState<Project | null>(null)
@@ -82,6 +84,25 @@ export default function App() {
       if (m) p.set('m', String(m))
       setParams(p)
     },
+    [setParams],
+  )
+  // Commit review overlays the current view; closing drops only `review`, so the Master lands where they were.
+  const openReview = useCallback(
+    (id: number) =>
+      setParams((p) => {
+        const n = new URLSearchParams(p)
+        n.set('review', String(id))
+        return n
+      }),
+    [setParams],
+  )
+  const closeReview = useCallback(
+    () =>
+      setParams((p) => {
+        const n = new URLSearchParams(p)
+        n.delete('review')
+        return n
+      }),
     [setParams],
   )
 
@@ -412,7 +433,7 @@ export default function App() {
   }
 
   const badgeCount = inbox ? inbox.count : inboxCount
-  const cardActions = useMemo(() => ({ pid, features, onApproval: applyApproval, onCommit: applyCommit }), [pid, features, applyApproval, applyCommit])
+  const cardActions = useMemo(() => ({ pid, features, onApproval: applyApproval, onCommit: applyCommit, onReview: openReview }), [pid, features, applyApproval, applyCommit, openReview])
 
   return (
     <CardContext.Provider value={cardActions}>
@@ -434,7 +455,7 @@ export default function App() {
             api.pause(pid, p).then((r) => setPaused(r.paused)).catch(() => setPaused(!p))
           }}
         />
-        <main className="flex-1 flex flex-col min-w-0 h-full">
+        <main className="relative flex-1 flex flex-col min-w-0 h-full">
           <Banners
             rateLimit={rateLimit}
             paused={paused}
@@ -512,6 +533,12 @@ export default function App() {
                 }}
               />
             </>
+          )}
+          {/* Overlay rather than a swap, so the view underneath keeps its scroll position. */}
+          {review && (
+            <div className="absolute inset-0 z-30 flex flex-col bg-gray-50">
+              <CommitReview id={review} onClose={closeReview} />
+            </div>
           )}
         </main>
       </div>

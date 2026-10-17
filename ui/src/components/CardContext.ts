@@ -8,6 +8,7 @@ export interface CardActions {
   features: Feature[]
   onApproval: (a: Approval) => void
   onCommit: (c: Commit) => void
+  onReview: (commitId: number) => void
 }
 
 export const CardContext = createContext<CardActions | null>(null)

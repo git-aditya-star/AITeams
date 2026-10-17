@@ -122,6 +122,35 @@ export interface Commit {
   updated_at: number
 }
 
+// F-3: per-file structure returned by the commit diff endpoint.
+export interface DiffFile {
+  path: string
+  status: 'modified' | 'added' | 'deleted' | 'unchanged' | 'missing' | string
+  additions: number
+  deletions: number
+  binary: boolean
+  size: number | null
+  built: boolean
+  text: string
+}
+
+export interface CommitOverlap {
+  path: string
+  commit_id: number
+  role: string
+  state: string
+  feature: string | null
+}
+
+export interface CommitDiff {
+  diff: string
+  stale: string[]
+  commit?: Commit & { feature: string | null }
+  files?: DiffFile[]
+  totals?: { files: number; additions: number; deletions: number }
+  overlap?: CommitOverlap[]
+}
+
 export interface Lock {
   path: string
   role: string
@@ -388,7 +417,7 @@ export const api = {
     if (feature != null) q.set('feature', String(feature))
     return req<Commit[]>(`/api/p/${pid}/commits?${q}`)
   },
-  commitDiff: (pid: string, id: number) => req<{ diff: string; stale: string[] }>(`/api/p/${pid}/commits/${id}/diff`),
+  commitDiff: (pid: string, id: number) => req<CommitDiff>(`/api/p/${pid}/commits/${id}/diff`),
   decideCommit: (
     pid: string,
     id: number,
