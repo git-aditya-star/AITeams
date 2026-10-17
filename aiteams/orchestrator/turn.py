@@ -111,6 +111,7 @@ class TurnRunner:
             await receipts.mark(db, hub, message_ids, role, "seen")
 
         sys_file = write_system_prompt(self.project.path, self.project.name, role)
+        self.project.delivered[tid] = db.max_message_id()  # F-16: the prompt shows everything up to here
         prompt = self._prompt(kind, message_ids, handoff)
         db.update_turn(tid, prompt=prompt)
         settings = dict(self.state.settings)

@@ -51,6 +51,9 @@ async def post(request: Request, body: InternalMessageBody):
     role = turn["role"]
     mentions = routing.parse_mentions(body.text, body.mentions)
     type_ = body.type if body.type in MESSAGE_TYPES else "Message"
+    if type_ == "Decision":  # F-16: refuse once if the conversation moved on since the role last looked
+        conv = proj.db.conversation(body.conversation)
+        await workflow.guard(proj, turn, {conv["id"] if conv else body.conversation}, set())
     msg = await post_message(st, proj, body.conversation, role, body.text, type_, mentions, turn["id"])
     wake = proj.db.wake(turn["wake_id"]) if turn.get("wake_id") else None
     if wake:
@@ -82,6 +85,14 @@ async def react(request: Request, body: ReactionBody):
     reactions = proj.db.reactions_for([body.message_id]).get(body.message_id, [])
     await proj.hub.broadcast("reaction", {"message_id": body.message_id, "reactions": reactions})
     return {"message_id": body.message_id, "added": added, "reactions": reactions}
+
+
+@internal.get("/new_messages")
+async def new_messages(request: Request, shown: str | None = None):
+    """F-16: messages posted since this turn last looked, as a text block ("" if none); the MCP server appends it to
+    every tool result. `shown`: a conversation the tool just printed (get_messages), delivered without listing."""
+    _, proj, turn = _auth(request)
+    return {"text": await workflow.new_messages(proj, turn, shown)}
 
 
 @internal.get("/conversations")
@@ -152,6 +163,9 @@ async def set_feature(request: Request, ident: str, body: InternalFeaturePatchBo
 async def ask_master(request: Request, body: AskMasterBody):
     """F-10: a non-blocking question card to the Master (the role ends its turn; the answer wakes it)."""
     st, proj, turn = _auth(request)
+    if body.purpose == "a_vs_b":  # F-16 guard: the A vs B framing must reflect the latest exchange
+        feat = workflow.resolve_feature(proj.db, body.feature)
+        await workflow.guard(proj, turn, {feat["conversation_id"]} if feat else set(), set())
     q = await workflow.ask_master(st, proj, turn["role"], turn["id"], body.feature, body.questions, body.intro,
                                   body.purpose)
     return {"id": q["id"], "conversation_id": q["conversation_id"], "message_id": q["message_id"]}
@@ -187,6 +201,8 @@ async def request_approval(request: Request, body: InternalApprovalBody):
 @internal.post("/commits")
 async def request_commit(request: Request, body: InternalCommitBody):
     st, proj, turn = _auth(request)
+    feat = workflow.resolve_feature(proj.db, body.feature)  # F-16 guard: the feature and the requests it requires
+    await workflow.guard(proj, turn, {feat["conversation_id"] if feat else f"dm-{turn['role']}"}, set(body.requires))
     c = await workflow.request_commit(st, proj, turn["role"], turn["id"], body.feature, body.files, body.message,
                                       body.requires)
     return {"id": c["id"], "state": c["state"], "files": c["files"], "requires": c["requires"]}
@@ -202,6 +218,8 @@ def commit_files(request: Request, cid: int):
 @internal.post("/commits/{cid}/review")
 async def review_commit(request: Request, cid: int, body: InternalReviewBody):
     st, proj, turn = _auth(request)
+    if turn["role"] == "lead":  # F-16 guard: N's conversation and N's own commit events (e.g. "superseded")
+        await workflow.guard(proj, turn, *workflow.commit_targets(proj.db, cid))
     c = await workflow.review_commit(st, proj, turn["role"], cid, body.decision, body.note)
     return {"id": c["id"], "state": c["state"]}
 

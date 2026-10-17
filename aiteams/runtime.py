@@ -29,6 +29,8 @@ class Project:
             self.db.expire_orphaned_blocking_questions()
         self.hub = Hub()
         self.pending_questions: dict[int, asyncio.Future] = {}
+        # F-16: running turn id -> highest message id it has been shown (prompt, then new_messages / the guard)
+        self.delivered: dict[int, int] = {}
 
     @property
     def paused(self) -> bool:

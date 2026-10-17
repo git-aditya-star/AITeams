@@ -15,6 +15,17 @@ def client(home):
         yield c
 
 
+@pytest.fixture(autouse=True)
+def no_guard(monkeypatch):
+    """These tests drive many steps through one long turn per role; the F-16 refuse-once guard (tested in
+    test_new_messages.py) would refuse the steps that follow other roles' posts."""
+    from aiteams import workflow
+
+    async def off(*a, **k):
+        return None
+    monkeypatch.setattr(workflow, "guard", off)
+
+
 @pytest.fixture
 def pid(client, repo):
     subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A"], cwd=repo, check=True)

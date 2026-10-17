@@ -84,6 +84,8 @@ class Scheduler:
         finally:
             self.running.pop(key, None)
             await self.release_locks(runner.project, runner.role)
+            if runner.turn:
+                runner.project.delivered.pop(runner.turn["id"], None)  # F-16: the watermark lives for one turn
             try:
                 await lifecycle.after_turn(self.state, runner.project, runner)
             except Exception as e:

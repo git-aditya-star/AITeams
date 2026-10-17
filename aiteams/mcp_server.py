@@ -169,6 +169,8 @@ def http(method, path, body=None, timeout=30.0):
             detail = json.loads(e.read().decode()).get("detail")
         except Exception:
             detail = str(e)
+        if isinstance(detail, dict) and "guard" in detail:  # F-16: the refusal is the news block itself
+            raise RuntimeError(detail["guard"])
         raise RuntimeError("daemon %s %s -> %s: %s" % (method, path, e.code, detail))
     except (urllib.error.URLError, OSError) as e:
         raise RuntimeError("daemon unreachable (%s): %s" % (url, e))
@@ -354,6 +356,16 @@ HANDLERS = {"post_message": tool_post_message, "get_messages": tool_get_messages
             "unlock_file": tool_unlock_file, "list_locks": tool_list_locks}
 
 
+def news(shown=None):
+    """F-16: the messages posted since this turn last looked, to append to a tool result. Never fails the tool."""
+    q = "/internal/new_messages" + ("?shown=" + urllib.request.quote(str(shown)) if shown else "")
+    try:
+        text = (http("GET", q, timeout=5.0) or {}).get("text") or ""
+    except Exception:
+        return ""
+    return "\n\n" + text if text else ""
+
+
 def handle(msg):
     if not isinstance(msg, dict) or "method" not in msg:
         return
@@ -374,9 +386,12 @@ def handle(msg):
             error(msg_id, -32602, "Unknown tool: %s" % name)
             return
         args = params.get("arguments")
+        args = args if isinstance(args, dict) else {}
         try:
-            out = handler(args if isinstance(args, dict) else {})
+            out = handler(args)
             text = out if isinstance(out, str) else json.dumps(out)
+            if name != "permission":
+                text += news(args.get("conversation") if name == "get_messages" else None)
             reply(msg_id, {"content": [{"type": "text", "text": text}], "isError": False})
         except Exception as e:
             reply(msg_id, {"content": [{"type": "text", "text": "error: %s" % e}], "isError": True})

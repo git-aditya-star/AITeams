@@ -195,6 +195,9 @@ class ProjectDB:
                 d["brainstorm"] = self.brainstorm(int(num))
         return d
 
+    def max_message_id(self) -> int:
+        return int(self.one("SELECT COALESCE(MAX(id), 0) AS m FROM messages")["m"])
+
     def message(self, mid: int) -> dict | None:
         r = self.one("SELECT * FROM messages WHERE id=?", mid)
         if not r:
