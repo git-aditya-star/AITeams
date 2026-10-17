@@ -234,7 +234,9 @@ def normalize_path(project_path: str, p: str) -> str:
 
 
 def _git(project_path: str, *args, check: bool = False) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], cwd=project_path, capture_output=True, text=True, timeout=60, check=check)
+    # errors="replace": a diff of a non-UTF-8 file must not crash the endpoint
+    return subprocess.run(["git", *args], cwd=project_path, capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", timeout=60, check=check)
 
 
 def _sha(project_path: str, rel: str) -> str | None:
@@ -323,25 +325,75 @@ async def review_commit(st, proj: Project, role: str, cid: int, decision: str, n
     return c
 
 
+BUILT_PREFIX = "aiteams/static/assets/"
+PENDING_COMMIT_STATES = ("lead_review", "master_review")
+
+
+def _file_stats(text: str) -> tuple[str, bool, int, int]:
+    """Status, binary flag and +/- line counts of one file's `git diff` text (counts only lines inside hunks)."""
+    if not text:
+        return "unchanged", False, 0, 0
+    status, binary, adds, dels, in_hunk = "modified", False, 0, 0, False
+    for line in text.split("\n"):  # not splitlines(): \x0c, \x85, U+2028 etc. are line content in a diff
+        if line.startswith("@@"):
+            in_hunk = True
+        elif in_hunk:
+            if line.startswith("+"):
+                adds += 1
+            elif line.startswith("-"):
+                dels += 1
+        elif line.startswith("new file mode"):
+            status = "added"
+        elif line.startswith("deleted file mode"):
+            status = "deleted"
+        elif line.startswith("Binary files ") or line.startswith("GIT binary patch"):
+            binary = True
+    return status, binary, adds, dels
+
+
 def _diff_sync(project_path: str, c: dict) -> dict:
-    files = c["files"]
-    tracked = [f for f in files if _tracked(project_path, f)]
-    untracked = [f for f in files if f not in tracked]
-    parts = []
-    if tracked:
-        parts.append(_git(project_path, "diff", "HEAD", "--", *tracked).stdout)
-    for f in untracked:
-        if os.path.isfile(os.path.join(project_path, f)):
-            parts.append(_git(project_path, "diff", "--no-index", "--", os.devnull, f).stdout)
-    stale = [f for f in files if _sha(project_path, f) != c["hashes"].get(f)]
-    return {"diff": "".join(parts), "stale": stale}
+    files, parts = [], []
+    for f in c["files"]:
+        full = os.path.join(project_path, f)
+        exists = os.path.isfile(full)
+        tracked = _tracked(project_path, f)
+        if tracked:
+            text = _git(project_path, "diff", "HEAD", "--", f).stdout
+        else:
+            text = _git(project_path, "diff", "--no-index", "--", os.devnull, f).stdout if exists else ""
+        parts.append(text)
+        status, binary, adds, dels = _file_stats(text)
+        if not tracked and not exists:
+            status = "missing"
+        files.append({"path": f, "status": status, "binary": binary, "additions": adds, "deletions": dels,
+                      "size": os.path.getsize(full) if exists else None, "built": f.startswith(BUILT_PREFIX),
+                      "text": text})
+    stale = [f for f in c["files"] if _sha(project_path, f) != c["hashes"].get(f)]
+    totals = {"files": len(files), "additions": sum(x["additions"] for x in files),
+              "deletions": sum(x["deletions"] for x in files)}
+    return {"diff": "".join(parts), "stale": stale, "files": files, "totals": totals}
+
+
+def _overlap(db, c: dict) -> list[dict]:
+    """Other pending requests (Lead or Master review) that list a file of `c`."""
+    mine, out = set(c["files"]), []
+    for state in PENDING_COMMIT_STATES:
+        for o in db.commits(state):
+            if o["id"] == c["id"]:
+                continue
+            feature = db.feature(o["feature_id"])["key"] if o["feature_id"] else None
+            out += [{"path": f, "commit_id": o["id"], "role": o["role"], "state": o["state"], "feature": feature}
+                    for f in o["files"] if f in mine]
+    return sorted(out, key=lambda x: (c["files"].index(x["path"]), x["commit_id"]))
 
 
 async def commit_diff(proj: Project, cid: int) -> dict:
     c = proj.db.commit(cid)
     if c is None:
         raise HTTPException(404, "unknown commit")
-    return await asyncio.to_thread(_diff_sync, proj.path, c)
+    out = await asyncio.to_thread(_diff_sync, proj.path, c)
+    feature = proj.db.feature(c["feature_id"])["key"] if c["feature_id"] else None
+    return {**out, "commit": {**c, "feature": feature}, "overlap": _overlap(proj.db, c)}
 
 
 def _commit_sync(project_path: str, files: list[str], message: str) -> tuple[bool, str]:

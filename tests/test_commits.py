@@ -153,3 +153,75 @@ def test_commit_failure_is_reported(client, pid, repo):
     assert r["state"] == "failed" and r["note"]
     last = client.get(f"/api/p/{pid}/messages", params={"conversation": "dm-lead"}).json()[-1]
     assert "Commit #1 failed" in last["text"]
+
+
+def test_diff_per_file_status_counts_and_totals(client, pid, repo):
+    (repo / "old.py").write_text("a\nb\n")
+    (repo / "same.py").write_text("s\n")
+    (repo / "q.sql").write_text("select 1;\n-- sql comment\n")
+    (repo / "logo.bin").write_bytes(b"\x00\x01" * 8)
+    (repo / "latin.txt").write_text("cafe\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "more"], cwd=repo, check=True)
+    (repo / "README.md").write_text("# demo\nline two\n")       # modified: +1
+    (repo / "new.py").write_text("x = 1\ny = 2\n--z\n")          # added: +3
+    (repo / "old.py").unlink()                                   # deleted: -2
+    (repo / "q.sql").write_text("select 1;\n++x\n")              # in-hunk "--- sql comment" and "+++x": +1 -1
+    (repo / "logo.bin").write_bytes(b"\x00\x02" * 8)             # modified binary
+    (repo / "aiteams" / "static" / "assets").mkdir(parents=True)
+    (repo / "aiteams" / "static" / "assets" / "index-X.js").write_text("var a=1;\n")
+    (repo / "aiteams" / "static" / "index.html").write_text("<p>\n")
+    (repo / "img.bin").write_bytes(b"\x00\x01\x02" * 10)         # new binary
+    (repo / "my notes é.md").write_text("hi\n")                  # git quotes this path in headers
+    (repo / "gone.py").write_text("g\n")                         # untracked, deleted after the request
+    (repo / "ff.js").write_text("a = 1\x0c-x\ns = 'a -b'\n", encoding="utf-8")  # +2: \x0c / U+2028 are not line breaks
+    (repo / "latin.txt").write_bytes("café\n".encode("latin-1"))  # tracked, now not UTF-8: replaced, no crash
+    files = ["README.md", "new.py", "old.py", "q.sql", "logo.bin", "aiteams/static/assets/index-X.js",
+             "aiteams/static/index.html", "img.bin", "my notes é.md", "same.py", "gone.py", "ff.js", "latin.txt"]
+    lead = turn(client, pid, "lead")
+    c = client.post("/internal/commits", json={"feature": None, "files": files, "message": "many"}, headers=lead).json()
+    (repo / "gone.py").unlink()
+    d = client.get(f"/api/p/{pid}/commits/{c['id']}/diff").json()
+    by = {f["path"]: f for f in d["files"]}
+    assert [f["path"] for f in d["files"]] == files
+    assert [(by[p]["status"], by[p]["additions"], by[p]["deletions"]) for p in files] == [
+        ("modified", 1, 0), ("added", 3, 0), ("deleted", 0, 2), ("modified", 1, 1), ("modified", 0, 0),
+        ("added", 1, 0), ("added", 1, 0), ("added", 0, 0), ("added", 1, 0), ("unchanged", 0, 0), ("missing", 0, 0),
+        ("added", 2, 0), ("modified", 1, 1)]
+    assert "+caf�" in by["latin.txt"]["text"]
+    assert [p for p in files if by[p]["binary"]] == ["logo.bin", "img.bin"]
+    assert [p for p in files if by[p]["built"]] == ["aiteams/static/assets/index-X.js"]
+    assert by["old.py"]["size"] is None and by["img.bin"]["size"] == 30 and by["new.py"]["size"] == 16
+    assert by["gone.py"]["size"] is None and by["gone.py"]["text"] == ""
+    assert by["same.py"]["text"] == "" and by["README.md"]["text"].startswith("diff --git a/README.md")
+    assert d["diff"] == "".join(f["text"] for f in d["files"]) and d["stale"] == ["gone.py"]
+    assert d["totals"] == {"files": 13, "additions": 11, "deletions": 4}
+    assert d["commit"]["id"] == c["id"] and d["commit"]["feature"] is None and d["overlap"] == []
+    assert client.get(f"/api/p/{pid}/commits/999/diff").status_code == 404
+
+
+def test_diff_overlap_lists_only_pending_requests(client, pid, repo):
+    proj = client.app.state.app.projects[pid]
+    client.post(f"/api/p/{pid}/features", json={"text": "Export", "starter": "product"})
+    for n in "abc":
+        (repo / f"{n}.py").write_text(n + "\n")
+    lead, backend = turn(client, pid, "lead"), turn(client, pid, "backend")
+    mine = client.post("/internal/commits", json={"files": ["a.py", "b.py"], "message": "mine"}, headers=lead).json()
+    review = client.post("/internal/commits", json={"feature": "F-1", "files": ["b.py"], "message": "x"}, headers=backend).json()
+    master = client.post("/internal/commits", json={"files": ["a.py", "c.py"], "message": "y"}, headers=lead).json()
+    rejected = client.post("/internal/commits", json={"files": ["a.py"], "message": "z"}, headers=lead).json()
+    client.post(f"/api/p/{pid}/commits/{rejected['id']}/decide", json={"decision": "reject"})
+    other = client.post("/internal/commits", json={"files": ["c.py"], "message": "w"}, headers=lead).json()
+    done = client.post("/internal/commits", json={"files": ["b.py"], "message": "v"}, headers=lead).json()
+    proj.db.update_commit(done["id"], state="committed")
+    failed = client.post("/internal/commits", json={"files": ["a.py"], "message": "u"}, headers=lead).json()
+    proj.db.update_commit(failed["id"], state="failed")
+    both = client.post("/internal/commits", json={"files": ["b.py", "a.py"], "message": "t"}, headers=backend).json()
+    d = client.get(f"/api/p/{pid}/commits/{mine['id']}/diff").json()
+    assert d["overlap"] == [
+        {"path": "a.py", "commit_id": master["id"], "role": "lead", "state": "master_review", "feature": None},
+        {"path": "a.py", "commit_id": both["id"], "role": "backend", "state": "lead_review", "feature": None},
+        {"path": "b.py", "commit_id": review["id"], "role": "backend", "state": "lead_review", "feature": "F-1"},
+        {"path": "b.py", "commit_id": both["id"], "role": "backend", "state": "lead_review", "feature": None}]
+    assert other["id"] not in [o["commit_id"] for o in d["overlap"]]
+    assert client.get(f"/api/p/{pid}/commits/{review['id']}/diff").json()["commit"]["feature"] == "F-1"
