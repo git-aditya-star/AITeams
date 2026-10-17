@@ -637,15 +637,20 @@ class ProjectDB:
         d = dict(r)
         d["files"] = json.loads(d["files"] or "[]")
         d["hashes"] = json.loads(d["hashes"] or "{}")
+        d["requires"] = json.loads(d.get("requires") or "[]")  # F-11: ids this request can't land without
         return d
 
     def create_commit(self, feature_id: int | None, role: str, turn_id: int | None, files: list[str],
-                      message: str, hashes: dict, state: str) -> dict:
+                      message: str, hashes: dict, state: str, requires: list[int] | None = None) -> dict:
         now = time.time()
-        cid = self.x("INSERT INTO commits(feature_id, role, turn_id, files, message, hashes, state, created_at, updated_at)"
-                     " VALUES(?,?,?,?,?,?,?,?,?)", feature_id, role, turn_id, json.dumps(files), message,
-                     json.dumps(hashes), state, now, now)
+        cid = self.x("INSERT INTO commits(feature_id, role, turn_id, files, message, hashes, state, created_at, updated_at,"
+                     " requires) VALUES(?,?,?,?,?,?,?,?,?,?)", feature_id, role, turn_id, json.dumps(files), message,
+                     json.dumps(hashes), state, now, now, json.dumps(requires) if requires else None)
         return self.commit(cid)
+
+    def linked_commits(self) -> list[dict]:
+        """F-11: every request that requires another (the edges of commit groups)."""
+        return [self._commit_dict(r) for r in self.q("SELECT * FROM commits WHERE requires IS NOT NULL AND requires != '[]'")]
 
     def commit(self, cid: int) -> dict | None:
         r = self.one("SELECT * FROM commits WHERE id=?", cid)
@@ -797,4 +802,6 @@ MIGRATIONS: list = [
     "CREATE TABLE brainstorms(id INTEGER PRIMARY KEY, feature_id INTEGER NOT NULL, topic TEXT NOT NULL,"
     " state TEXT NOT NULL, roles TEXT NOT NULL, requested_by TEXT NOT NULL, start_message_id INTEGER NULL,"
     " question_id INTEGER NULL, created_at REAL NOT NULL, ended_at REAL NULL)",
+    # F-11: commit groups (commits.requires = a JSON list of the request ids a request can't land without)
+    "ALTER TABLE commits ADD COLUMN requires TEXT NULL",
 ]

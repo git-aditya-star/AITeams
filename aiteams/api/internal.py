@@ -187,8 +187,9 @@ async def request_approval(request: Request, body: InternalApprovalBody):
 @internal.post("/commits")
 async def request_commit(request: Request, body: InternalCommitBody):
     st, proj, turn = _auth(request)
-    c = await workflow.request_commit(st, proj, turn["role"], turn["id"], body.feature, body.files, body.message)
-    return {"id": c["id"], "state": c["state"], "files": c["files"]}
+    c = await workflow.request_commit(st, proj, turn["role"], turn["id"], body.feature, body.files, body.message,
+                                      body.requires)
+    return {"id": c["id"], "state": c["state"], "files": c["files"], "requires": c["requires"]}
 
 
 @internal.post("/commits/{cid}/review")

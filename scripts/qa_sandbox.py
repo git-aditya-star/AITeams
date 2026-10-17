@@ -3,7 +3,9 @@ the scheduler off (max_concurrent 0, so `claude` never runs) and test-only /qa r
 
     uv run --no-sync python -B scripts/qa_sandbox.py --port 8790 [--dir TMP] [--token T] [--seed demo|empty]
 
-Never reads or writes ~/.aiteams and never talks to the live daemon. Ports 8790-8799 are reserved for sandboxes.
+Never reads or writes ~/.aiteams and never talks to the live daemon. Ports 8790-8799 are reserved for sandboxes:
+8790 is the Master's by hand, 8791-8796 are the roles' e2e/shot ports (ui/e2e/ports.mjs), 8798 is shot.mjs without a
+role, and 8797 and 8799 stay free for QA's live sandboxes.
 POST /qa/fire {kind, ...} emits one live event (kinds in FIRE_KINDS) through the same db + hub calls the real code
 uses; POST /qa/reset re-seeds the project. Serves the working-tree UI build (`cd ui && npm run build`).
 """
@@ -25,7 +27,7 @@ DEMO_ID = "demo"
 DEFAULT_TOKEN = "qa-sandbox-token"
 FIRE_KINDS = ("message", "question", "question_message", "blocker", "approval", "commit_request", "committed",
               "commit_failed", "standup", "stopped", "interrupted", "fresh_session", "rate_limit", "rate_clear",
-              "reaction", "card", "card_withdraw", "brainstorm")
+              "reaction", "card", "card_withdraw", "brainstorm", "commit_group")
 
 
 def isolate_env(home: Path, token: str) -> None:
@@ -255,6 +257,19 @@ async def fire(st, proj, body: dict) -> dict:
             raise ValueError(f"unknown card {body['question']}")
         q = await workflow.withdraw_question(st, proj, q["role"], q["id"])
         out.update(conversation=q["conversation_id"], question=q["id"], state=q["state"])
+    elif kind == "commit_group":
+        # F-11: a backend request + a frontend request that requires it, both Lead-approved (one Inbox item) unless
+        # {lead_review: true} leaves the frontend half in Lead review (the group isn't ready)
+        _write(repo, f"qa/api_{n}.py", f"def api_{n}(): return {n}\n")
+        _write(repo, f"qa/ui_{n}.ts", f"export const ui{n} = {n}\n")
+        base = await workflow.request_commit(st, proj, "backend", None, "F-1", [f"qa/api_{n}.py"],
+                                             text or f"group backend half {n}")
+        await workflow.review_commit(st, proj, "lead", base["id"], "approve", None)
+        ui = await workflow.request_commit(st, proj, "frontend", None, "F-1", [f"qa/ui_{n}.ts"],
+                                           f"group UI half {n}", [base["id"]])
+        if not body.get("lead_review"):
+            await workflow.review_commit(st, proj, "lead", ui["id"], "approve", None)
+        out.update(commits=[base["id"], ui["id"]], group=base["id"])
     elif kind == "brainstorm":
         # F-10: starts a round on `feature` (default F-1) through the real path; the sandbox runs no turns, so it
         # stays `collecting` with one queued wake per voice

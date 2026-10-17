@@ -419,6 +419,8 @@ def _ignored(project_path: str, rel: str) -> bool:
 def _commit_text(c: dict, feat: dict | None) -> str:
     lines = [f"**Commit request #{c['id']}** ({len(c['files'])} file{'s' if len(c['files']) != 1 else ''})"]
     lines += [f"- {f}" for f in c["files"]]
+    if c.get("requires"):
+        lines.append("Requires " + ", ".join(f"#{n}" for n in c["requires"]))
     lines += ["", c["message"]]
     if c["state"] == "lead_review":
         lines += ["", f"@lead please review: `git diff HEAD -- {' '.join(c['files'])}`, then "
@@ -428,13 +430,22 @@ def _commit_text(c: dict, feat: dict | None) -> str:
     return "\n".join(lines)
 
 
-async def request_commit(st, proj: Project, role: str, turn_id: int | None, feature, files: list[str], message: str) -> dict:
+async def request_commit(st, proj: Project, role: str, turn_id: int | None, feature, files: list[str], message: str,
+                         requires: list[int] | None = None) -> dict:
     if not files:
         raise HTTPException(400, "list at least one file")
     message = (message or "").strip()
     if not message:
         raise HTTPException(400, "commit message required")
     feat = resolve_feature(proj.db, feature)
+    reqs: list[int] = []
+    for n in requires or []:
+        r = proj.db.commit(int(n)) if str(n).lstrip("#").isdigit() else None
+        if r is None or _superseded(r):
+            raise HTTPException(400, f"requires #{n}: no such open commit request"
+                                     + (f" (it was {r['note']})" if r is not None else ""))
+        if r["id"] not in reqs:
+            reqs.append(r["id"])
     rels, hashes = [], {}
     for f in files:
         rel = normalize_path(proj.path, f)
@@ -455,21 +466,98 @@ async def request_commit(st, proj: Project, role: str, turn_id: int | None, feat
     if feat and not (message.startswith(feat["key"] + ":") or message.startswith(feat["key"] + " ")):
         message = f"{feat['key']}: {message}"
     state = "master_review" if role == "lead" else "lead_review"
-    c = proj.db.create_commit(feat["id"] if feat else None, role, turn_id, rels, message, hashes, state)
+    db = proj.db
+    # a re-file supersedes the same role's pending requests in this feature whose files it covers, and (F-11) a
+    # rejected one that open requests still require; it takes their place in the group
+    olds = [o for st_ in PENDING_COMMIT_STATES for o in db.commits(st_, limit=1000)]
+    required = {n for d in db.linked_commits() if d["state"] in PENDING_COMMIT_STATES for n in d["requires"]}
+    olds += [o for o in db.commits("rejected", limit=1000) if o["id"] in required and not _superseded(o)]
+    olds = [o for o in olds if o["role"] == role and o["feature_id"] == (feat["id"] if feat else None)
+            and set(o["files"]) <= set(rels)]
+    old_ids = {o["id"] for o in olds}
+    for o in olds:  # inherit what the predecessor needed, except requests that were rejected (re-file them instead)
+        for n in o["requires"]:
+            r = db.commit(n)
+            if n not in reqs and n not in old_ids and r and r["state"] != "rejected":
+                reqs.append(n)
+    reqs = [n for n in reqs if n not in old_ids]
+    c = db.create_commit(feat["id"] if feat else None, role, turn_id, rels, message, hashes, state, reqs)
     conv = feat["conversation_id"] if feat else f"dm-{role}"
     mentions = ["lead"] if state == "lead_review" else []
     msg = await _post(st, proj, conv, role, _commit_text(c, feat), "Commit", mentions, turn_id, f"commit:{c['id']}")
-    c = proj.db.update_commit(c["id"], message_id=msg["id"])
+    c = db.update_commit(c["id"], message_id=msg["id"])
     await proj.hub.broadcast("commit", c)
-    # a re-file supersedes the same role's pending requests in this feature whose files it covers
-    for state in PENDING_COMMIT_STATES:
-        for o in proj.db.commits(state, limit=1000):
-            if o["id"] != c["id"] and o["role"] == role and o["feature_id"] == c["feature_id"] and set(o["files"]) <= set(rels):
-                o = proj.db.update_commit(o["id"], state="rejected", note=f"superseded by #{c['id']}")
-                await _post(st, proj, conv, "system", f"Commit #{o['id']} superseded by #{c['id']}.", "System", [])
-                await proj.hub.broadcast("commit", o)
+    for o in olds:
+        o = db.update_commit(o["id"], state="rejected", note=f"superseded by #{c['id']}")
+        await _post(st, proj, conv, "system", f"Commit #{o['id']} superseded by #{c['id']}.", "System", [])
+        await proj.hub.broadcast("commit", o)
+    for d in db.linked_commits():  # dependents of a superseded request now require its successor
+        if d["id"] != c["id"] and d["state"] in PENDING_COMMIT_STATES and old_ids & set(d["requires"]):
+            new = []
+            for n in d["requires"]:
+                n = c["id"] if n in old_ids else n
+                if n not in new:
+                    new.append(n)
+            await proj.hub.broadcast("commit", db.update_commit(d["id"], requires=json.dumps(new)))
     await broadcast_inbox(proj)
     return c
+
+
+# ---- F-11: commit groups ------------------------------------------------------------
+def _superseded(c: dict) -> bool:
+    return c["state"] == "rejected" and (c.get("note") or "").startswith("superseded by #")
+
+
+def commit_group(db: ProjectDB, cid: int) -> list[dict]:
+    """The requests linked to `cid` through `requires` (either direction), superseded ones left out, in dependency
+    order (a request after everything it requires; ties by id). A request with no links is a group of one."""
+    start = db.commit(cid)
+    if start is None:
+        return []
+    links = db.linked_commits()
+    nbrs: dict[int, set[int]] = {}
+    for d in links:
+        for n in d["requires"]:
+            nbrs.setdefault(d["id"], set()).add(n)
+            nbrs.setdefault(n, set()).add(d["id"])
+    members, todo = {start["id"]: start}, [start["id"]]
+    while todo:
+        for n in nbrs.get(todo.pop(), ()):
+            if n not in members:
+                r = db.commit(n)
+                if r is not None and not _superseded(r):
+                    members[n] = r
+                    todo.append(n)
+    out, done = [], set()
+    while len(out) < len(members):
+        ready = [m for i, m in sorted(members.items()) if i not in done
+                 and all(n in done or n not in members for n in m["requires"])]
+        nxt = ready[0] if ready else next(m for i, m in sorted(members.items()) if i not in done)  # no cycles, but never hang
+        out.append(nxt)
+        done.add(nxt["id"])
+    return out
+
+
+def _open_others(group: list[dict], cid: int) -> list[dict]:
+    return [m for m in group if m["id"] != cid and m["state"] != "committed"]
+
+
+def inbox_groups(db: ProjectDB) -> list[dict]:
+    """F-11: one Inbox item per open group of 2+ requests with at least one in master_review."""
+    out, seen = [], set()
+    for c in sorted(db.commits("master_review"), key=lambda c: c["id"]):
+        if c["id"] in seen:
+            continue
+        g = commit_group(db, c["id"])
+        seen.update(m["id"] for m in g)
+        if len(g) < 2:
+            continue
+        members = [{**m, "feature": db.feature(m["feature_id"])["key"] if m["feature_id"] else None} for m in g]
+        pending = [m for m in members if m["state"] != "committed"]
+        out.append({"id": min(m["id"] for m in g), "feature": next((m["feature"] for m in members if m["feature"]), None),
+                    "members": members, "files": len({f for m in pending for f in m["files"]}),
+                    "ready": all(m["state"] == "master_review" for m in pending)})
+    return out
 
 
 async def review_commit(st, proj: Project, role: str, cid: int, decision: str, note: str | None) -> dict:
@@ -590,14 +678,23 @@ def _decision_mentions(requester: str) -> list[str]:
 
 
 async def decide_commit(st, proj: Project, cid: int, decision: str, message: str | None, note: str | None,
-                        force: bool) -> dict:
+                        force: bool, group: bool = False) -> dict:
     c = proj.db.commit(cid)
     if c is None:
         raise HTTPException(404, "unknown commit")
-    if c["state"] != "master_review":
-        raise HTTPException(409, f"commit #{cid} is {c['state']}")
     if decision not in ("approve", "reject"):
         raise HTTPException(400, "decision must be approve|reject")
+    if decision == "approve":
+        g = commit_group(proj.db, cid)
+        others = _open_others(g, cid)
+        if group and others:  # a group of one (or the rest committed) takes the single path below
+            return await _commit_group(st, proj, [m for m in g if m["state"] != "committed"], note, force)
+        if others:
+            o = others[0]
+            raise HTTPException(409, f"#{cid} is part of a commit group with #{o['id']} ({o['state']}): "
+                                     "commit the group from the Inbox")
+    if c["state"] != "master_review":
+        raise HTTPException(409, f"commit #{cid} is {c['state']}")
     feat = proj.db.feature(c["feature_id"]) if c["feature_id"] else None
     conv = feat["conversation_id"] if feat else f"dm-{c['role']}"
     who = _decision_mentions(c["role"])
@@ -623,6 +720,63 @@ async def decide_commit(st, proj: Project, cid: int, decision: str, message: str
     await proj.hub.broadcast("commit", c)
     await broadcast_inbox(proj)
     return c
+
+
+def _group_commit_sync(project_path: str, members: list[dict]) -> tuple[list[str], dict | None, str]:
+    """Commit each member in order; on a failure roll HEAD and the index of the group's files back (the working
+    tree is never touched). Returns (shas of the committed members, the failed member or None, git output)."""
+    orig = _git(project_path, "rev-parse", "HEAD").stdout.strip()
+    shas = []
+    for m in members:
+        ok, out = _commit_sync(project_path, m["files"], m["message"])
+        if not ok:
+            if orig:
+                _git(project_path, "reset", "-q", "--soft", orig)
+                files = sorted({f for x in members for f in x["files"]})
+                _git(project_path, "reset", "-q", orig, "--", *files)
+            return [], m, out
+        shas.append(out)
+    return shas, None, ""
+
+
+async def _commit_group(st, proj: Project, members: list[dict], note: str | None, force: bool) -> dict:
+    """F-11: commit every pending member of a group in dependency order, all or nothing."""
+    db = proj.db
+    bad = [m for m in members if m["state"] != "master_review"]
+    if bad:
+        raise HTTPException(409, {"group": [{"id": m["id"], "state": m["state"]} for m in members],
+                                  "detail": f"#{bad[0]['id']} is {bad[0]['state']}"})
+    stale = {str(m["id"]): s for m in members if (s := [f for f in m["files"] if _sha(proj.path, f) != m["hashes"].get(f)])}
+    if stale and not force:
+        raise HTTPException(409, {"stale": stale})
+    shas, failed, out = await asyncio.to_thread(_group_commit_sync, proj.path, members)
+    label = " + ".join(f"#{m['id']}" for m in members)
+    first = members[0]
+    feat = db.feature(first["feature_id"]) if first["feature_id"] else None
+    conv = feat["conversation_id"] if feat else f"dm-{first['role']}"
+    if failed:
+        db.update_commit(failed["id"], state="failed", note=out)
+        who = []
+        for m in members:
+            who += [r for r in _decision_mentions(m["role"]) if r not in who]
+        await _post(st, proj, conv, "master", " ".join("@" + r for r in who)
+                    + f" Commit group {label} failed at #{failed['id']}; nothing was committed:\n```\n{out}\n```",
+                    "Decision", who)
+    else:
+        for m, sha in zip(members, shas):
+            m = db.update_commit(m["id"], state="committed", sha=sha, note=note or None)
+            mconv = db.feature(m["feature_id"])["conversation_id"] if m["feature_id"] else f"dm-{m['role']}"
+            who = _decision_mentions(m["role"])
+            subject = m["message"].splitlines()[0]
+            await _post(st, proj, mconv, "master", " ".join("@" + r for r in who) + f" Committed `{sha}`: {subject}",
+                        "Decision", who)
+            await _activity(proj, "commit", f"Committed {sha}: {subject}", m["role"], m["feature_id"], mconv,
+                            f"commit:{m['id']}")
+        await _post(st, proj, conv, "system", f"Group {label} committed.", "System", [])
+    for m in members:
+        await proj.hub.broadcast("commit", db.commit(m["id"]))
+    await broadcast_inbox(proj)
+    return {**db.commit(first["id"]), "group": [db.commit(m["id"]) for m in members]}
 
 
 # ---- locks ---------------------------------------------------------------------
@@ -686,14 +840,16 @@ def inbox(proj: Project) -> dict:
     db = proj.db
     questions = db.questions("pending")
     approvals = db.approvals("pending")
-    commits = db.commits("master_review")
+    groups = inbox_groups(db)  # F-11: a group of linked requests is one item; its members leave the flat list
+    grouped = {m["id"] for g in groups for m in g["members"]}
+    commits = [c for c in db.commits("master_review") if c["id"] not in grouped]
     msgs = db.inbox_messages()
     for a in approvals:
         a["feature"] = db.feature(a["feature_id"])["key"] if a["feature_id"] else None
     for c in commits:
         c["feature"] = db.feature(c["feature_id"])["key"] if c["feature_id"] else None
-    return {"questions": questions, "approvals": approvals, "commits": commits, "messages": msgs,
-            "count": len(questions) + len(approvals) + len(commits) + len(msgs)}
+    return {"questions": questions, "approvals": approvals, "commits": commits, "groups": groups, "messages": msgs,
+            "count": len(questions) + len(approvals) + len(commits) + len(groups) + len(msgs)}
 
 
 async def broadcast_inbox(proj: Project) -> None:

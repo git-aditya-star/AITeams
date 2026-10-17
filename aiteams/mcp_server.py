@@ -101,10 +101,12 @@ TOOLS = [
     {"name": "request_commit",
      "description": "Request a commit of exactly these files (paths relative to the project root) with a message "
                     "'F-<n>: <subject>' + body (what, why, how tested). The Lead reviews, then the Master commits. "
-                    "Files locked by another role are refused.",
+                    "Files locked by another role are refused. `requires`: list the open requests this one can't "
+                    "land without (e.g. the backend half of a UI change); the Master then commits them together.",
      "inputSchema": {"type": "object", "properties": {
          "feature": {"type": ["string", "null"]}, "files": {"type": "array", "items": {"type": "string"}},
-         "message": {"type": "string"}}, "required": ["files", "message"]}},
+         "message": {"type": "string"}, "requires": {"type": "array", "items": {"type": "integer"}}},
+         "required": ["files", "message"]}},
     {"name": "review_commit",
      "description": "Lead only: approve or reject a commit request after reading its diff and running the tests.",
      "inputSchema": {"type": "object", "properties": {
@@ -276,8 +278,11 @@ def tool_request_approval(a):
 
 def tool_request_commit(a):
     res = http("POST", "/internal/commits", {"feature": _feat(a), "files": [str(f) for f in (a.get("files") or [])],
-                                             "message": str(a.get("message") or "")})
-    return "commit #%s %s (%d files)" % (res["id"], res["state"], len(res["files"]))
+                                             "message": str(a.get("message") or ""),
+                                             "requires": [int(n) for n in (a.get("requires") or [])]})
+    req = res.get("requires") or []
+    return "commit #%s %s (%d files)%s" % (res["id"], res["state"], len(res["files"]),
+                                           "; requires " + ", ".join("#%s" % n for n in req) if req else "")
 
 
 def tool_review_commit(a):

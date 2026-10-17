@@ -99,6 +99,22 @@ def test_fire_card(sandbox):
         assert w["state"] == "withdrawn"
 
 
+def test_fire_commit_group(sandbox):
+    mod, work, _ = sandbox
+    app = mod.build_app(8790, work, "demo")
+    auth = {"Authorization": "Bearer sb-token"}
+    with TestClient(app) as c:
+        r = c.post("/qa/fire", json={"kind": "commit_group", "lead_review": True}, headers=auth).json()
+        g = next(g for g in c.get("/api/p/demo/inbox", headers=auth).json()["groups"] if g["id"] == r["group"])
+        assert [m["id"] for m in g["members"]] == r["commits"] and g["ready"] is False
+        r = c.post("/qa/fire", json={"kind": "commit_group"}, headers=auth).json()
+        g = next(g for g in c.get("/api/p/demo/inbox", headers=auth).json()["groups"] if g["id"] == r["group"])
+        assert g["ready"] is True and g["files"] == 2
+        d = c.post(f"/api/p/demo/commits/{r['group']}/decide", json={"decision": "approve", "group": True},
+                   headers=auth).json()
+        assert [m["state"] for m in d["group"]] == ["committed", "committed"]
+
+
 def test_fire_brainstorm(sandbox):
     mod, work, _ = sandbox
     app = mod.build_app(8790, work, "demo")

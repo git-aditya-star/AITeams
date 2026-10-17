@@ -64,6 +64,7 @@ class CommitDecideBody(BaseModel):
     message: str | None = None
     note: str | None = None
     force: bool = False
+    group: bool = False  # F-11: commit the request's whole commit group, all or nothing
 
 
 class ResolveBody(BaseModel):
@@ -99,6 +100,7 @@ class InternalCommitBody(BaseModel):
     feature: str | None = None
     files: list[str]
     message: str = Field(min_length=1)
+    requires: list[int] = []  # F-11: open requests this one can't land without
 
 
 class InternalReviewBody(BaseModel):
