@@ -150,6 +150,24 @@ def test_lock_check_fails_open_without_daemon(repo, home):
     assert any("lock check skipped" in l for l in (repo / ".aiteams" / "hooks.log").read_text().splitlines())
 
 
+def test_tests_never_reach_the_live_daemon(repo, home):
+    """F-2: the turn's daemon vars are stripped in conftest, so a hook run from tests makes no HTTP call."""
+    from tests.conftest import TURN_ENV
+    assert [k for k in TURN_ENV if k in os.environ] == []
+    env = {**os.environ, "AITEAMS_PROJECT_PATH": str(repo), "AITEAMS_HOME": str(home), "PYTHONDONTWRITEBYTECODE": "1"}
+    # run the hook with urlopen replaced by a tripwire: any daemon request exits 3
+    script = ("import runpy, sys, urllib.request\n"
+              "def trip(req, *a, **k):\n"
+              "    sys.stderr.write('daemon contacted: ' + str(getattr(req, 'full_url', req))); sys.exit(3)\n"
+              "urllib.request.urlopen = trip\n"
+              "runpy.run_path(%r, run_name='__main__')\n" % HOOK)
+    for tool, inp in (("Write", {"file_path": "src/app.py"}), ("Edit", {"file_path": ".aiteams/features/F-1/prd.md"})):
+        data = {"session_id": "s", "cwd": str(repo), "tool_name": tool, "tool_input": inp, "tool_use_id": "t"}
+        out = subprocess.run([sys.executable, "-B", "-c", script], input=json.dumps(data), capture_output=True,
+                             text=True, env=env, cwd=str(repo), timeout=10)
+        assert out.returncode == 0 and out.stdout == "", out.stderr
+
+
 def test_write_under_features_allowed(repo, home):
     assert run_hook(repo, home, "Write", {"file_path": ".aiteams/features/F-1/prd.md"}) is None
     assert denied(run_hook(repo, home, "Write", {"file_path": ".aiteams/prompts/x.md"}))

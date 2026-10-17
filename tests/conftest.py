@@ -6,6 +6,12 @@ import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+# A role running pytest inside its turn carries that turn's daemon URL and secret; subprocesses built from
+# os.environ (hook, MCP server, fake claude) would then lock files and record edits on the live daemon.
+TURN_ENV = ("AITEAMS_DAEMON_URL", "AITEAMS_PROJECT", "AITEAMS_ROLE", "AITEAMS_TURN", "AITEAMS_TURN_TOKEN",
+            "AITEAMS_PROJECT_PATH", "AITEAMS_ASK_TIMEOUT_S")
+for _k in TURN_ENV:
+    os.environ.pop(_k, None)
 
 TOKEN = "test-master-token"
 AUTH = {"Authorization": "Bearer " + TOKEN}  # every TestClient sends it; /api needs the Master token since M2a
