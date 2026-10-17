@@ -97,6 +97,11 @@ class InternalReviewBody(BaseModel):
     note: str | None = None
 
 
+class ReactionBody(BaseModel):
+    message_id: int
+    emoji: str
+
+
 class LockBody(BaseModel):
     path: str = Field(min_length=1)
     force: bool = False

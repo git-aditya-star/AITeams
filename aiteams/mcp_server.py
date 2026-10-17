@@ -35,6 +35,14 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {
          "conversation": {"type": "string"}, "before": {"type": ["integer", "null"]},
          "limit": {"type": "integer", "default": 20}}, "required": ["conversation"]}},
+    {"name": "react",
+     "description": "Toggle an emoji reaction on a message (calling it again removes it). Never wakes anyone and "
+                    "decides nothing; use it instead of a thanks/OK reply.",
+     "inputSchema": {"type": "object", "properties": {
+         "message_id": {"type": "integer"},
+         "emoji": {"type": "string", "enum": ["\U0001F44D", "\u2764\ufe0f", "\U0001F602", "\U0001F389",
+                                              "\U0001F440", "\U0001F680", "\u2705", "\u274C"]}},
+         "required": ["message_id", "emoji"]}},
     {"name": "list_conversations", "description": "List conversations: ids, titles, kinds.",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "list_features",
@@ -164,6 +172,13 @@ def tool_get_messages(a):
     return json.dumps(http("GET", q), indent=1)
 
 
+def tool_react(a):
+    res = http("POST", "/internal/reactions", {"message_id": int(a.get("message_id") or 0),
+                                               "emoji": str(a.get("emoji") or "")})
+    return "%s %s %s #%s" % ("added" if res.get("added") else "removed", a.get("emoji"),
+                             "to" if res.get("added") else "from", res.get("message_id"))
+
+
 def tool_list_conversations(_a):
     return json.dumps(http("GET", "/internal/conversations"), indent=1)
 
@@ -274,7 +289,7 @@ def tool_checkpoint(a):
     return "checkpoint requested for %s%s" % (a.get("role"), "" if a.get("handoff", True) else " (no handoff)")
 
 
-HANDLERS = {"post_message": tool_post_message, "get_messages": tool_get_messages,
+HANDLERS = {"post_message": tool_post_message, "get_messages": tool_get_messages, "react": tool_react,
             "write_handoff": tool_write_handoff, "get_team_status": tool_get_team_status,
             "run_standup": tool_run_standup, "save_standup": tool_save_standup,
             "interrupt": tool_interrupt, "checkpoint": tool_checkpoint,

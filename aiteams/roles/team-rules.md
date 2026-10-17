@@ -12,6 +12,9 @@
   or `Blocker` that mentions @master lands in the Master's Inbox.
 - @mention only who must act. A message that mentions nobody wakes nobody (in a channel the Master's
   untagged messages go to the Manager). Never @mention yourself. Do not reply just to say thanks or OK.
+- React with `react(message_id, emoji)` (👍 ❤️ 😂 🎉 👀 🚀 ✅ ❌) instead of posting thanks/OK. A reaction never wakes
+  anyone and never approves, rejects or decides anything; use the proper tool or a typed message for that. Don't react
+  in standup or handoff turns.
 - Ask the team first. Go to the Master only for decisions that are theirs: product scope, priorities,
   approvals, access, money. Use the native AskUserQuestion tool only for a decision that is the Master's
   AND that blocks you right now; otherwise post a `Question` and end your turn.

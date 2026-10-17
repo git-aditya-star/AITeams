@@ -8,9 +8,10 @@ from fastapi import APIRouter, HTTPException, Request
 
 from .. import workflow
 from ..config import ROLES
+from ..db import EMOJI
 from ..models import (CheckpointBody, HandoffBody, InternalApprovalBody, InternalCommitBody, InternalFeatureBody,
                       InternalFeaturePatchBody, InternalMessageBody, InternalReviewBody, InterruptBody, LockBody,
-                      PermissionBody, StandupSaveBody)
+                      PermissionBody, ReactionBody, StandupSaveBody)
 from ..orchestrator.lifecycle import request_rotation
 from ..orchestrator import receipts
 from ..orchestrator import router as routing
@@ -66,7 +67,21 @@ def get(request: Request, conversation: str, before: int | None = None, limit: i
     if conv is None:
         raise HTTPException(404, f"unknown conversation: {conversation}")
     msgs = proj.db.messages(conv["id"], before, min(max(limit, 1), 100), after=int(conv.get("reset_after") or 0))
-    return [{k: m[k] for k in ("id", "author", "type", "text", "mentions", "created_at")} for m in msgs]
+    return [{k: m[k] for k in ("id", "author", "type", "text", "mentions", "created_at", "reactions")} for m in msgs]
+
+
+@internal.post("/reactions")
+async def react(request: Request, body: ReactionBody):
+    """Toggle the turn's role reaction. Broadcasts `reaction`; never wakes anyone, posts nothing, decides nothing."""
+    _, proj, turn = _auth(request)
+    if body.emoji not in EMOJI:
+        raise HTTPException(400, "emoji must be one of " + " ".join(EMOJI))
+    if proj.db.message(body.message_id) is None:
+        raise HTTPException(404, f"unknown message #{body.message_id}")
+    added = proj.db.toggle_reaction(body.message_id, turn["role"], body.emoji)
+    reactions = proj.db.reactions_for([body.message_id]).get(body.message_id, [])
+    await proj.hub.broadcast("reaction", {"message_id": body.message_id, "reactions": reactions})
+    return {"message_id": body.message_id, "added": added, "reactions": reactions}
 
 
 @internal.get("/conversations")

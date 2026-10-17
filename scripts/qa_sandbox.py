@@ -23,7 +23,8 @@ ROOT = Path(__file__).resolve().parent.parent
 DEMO_ID = "demo"
 DEFAULT_TOKEN = "qa-sandbox-token"
 FIRE_KINDS = ("message", "question", "question_message", "blocker", "approval", "commit_request", "committed",
-              "commit_failed", "standup", "stopped", "interrupted", "fresh_session", "rate_limit", "rate_clear")
+              "commit_failed", "standup", "stopped", "interrupted", "fresh_session", "rate_limit", "rate_clear",
+              "reaction")
 
 
 def isolate_env(home: Path, token: str) -> None:
@@ -235,6 +236,18 @@ async def fire(st, proj, body: dict) -> dict:
                 "fresh_session": f"{r} started session #2 (context 61%)"}[kind]
         await hub.broadcast("activity", db.add_activity(kind, text or line, r, conversation_id=conv))
         out["conversation"] = f"dm-{r}"
+    elif kind == "reaction":
+        # toggles `role`'s emoji (default 👍) on message_id, else on the newest message in `conversation`
+        from aiteams.db import EMOJI
+        conv = body.get("conversation", conv)
+        mid = body.get("message_id") or (db.messages(conv, limit=1) or [{}])[-1].get("id")
+        if not mid:
+            raise ValueError(f"no message to react to in {conv}")
+        emoji = body.get("emoji", EMOJI[0])
+        added = db.toggle_reaction(int(mid), role, emoji)
+        reactions = db.reactions_for([int(mid)]).get(int(mid), [])
+        await hub.broadcast("reaction", {"message_id": int(mid), "reactions": reactions})
+        out.update(conversation=conv, message=int(mid), added=added, reactions=reactions)
     elif kind == "rate_limit":
         await st.set_rate_limit({"status": "rejected", "resetsAt": time.time() + 3600})
         out["conversation"] = None

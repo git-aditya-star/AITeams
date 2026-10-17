@@ -62,3 +62,23 @@ def test_seeded_app_and_fire(sandbox):
         assert c.post("/qa/reset", headers=auth).json() == {"ok": True}
         assert len(c.get("/api/p/demo/inbox", headers=auth).json()["approvals"]) == 1
     assert not (fake_home / ".aiteams").exists()
+
+
+def test_fire_reaction(sandbox):
+    from aiteams.db import EMOJI
+    mod, work, _ = sandbox
+    app = mod.build_app(8790, work, "demo")
+    auth = {"Authorization": "Bearer sb-token"}
+    with TestClient(app) as c:
+        m = c.post("/qa/fire", json={"kind": "message", "text": "react to me"}, headers=auth).json()
+        with c.websocket_connect("/ws/p/demo?token=sb-token") as ws:
+            r = c.post("/qa/fire", json={"kind": "reaction", "role": "qa", "emoji": EMOJI[3]}, headers=auth).json()
+            frame = next(f for f in (ws.receive_json() for _ in range(5)) if f["event"] != "hello")
+        assert r["message"] == m["message"] and r["added"] is True
+        assert frame == {"event": "reaction", "data": {"message_id": m["message"],
+                                                       "reactions": [{"emoji": EMOJI[3], "roles": ["qa"]}]}}
+        msgs = c.get("/api/p/demo/messages", params={"conversation": r["conversation"]}, headers=auth).json()
+        assert msgs[-1]["reactions"] == [{"emoji": EMOJI[3], "roles": ["qa"]}]
+        r = c.post("/qa/fire", json={"kind": "reaction", "message_id": m["message"], "emoji": EMOJI[3], "role": "qa"},
+                   headers=auth).json()
+        assert r["added"] is False and r["reactions"] == []

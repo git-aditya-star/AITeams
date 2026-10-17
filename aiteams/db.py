@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS activity(id INTEGER PRIMARY KEY, ts REAL, kind TEXT, 
 
 PHASES = ("intake", "spec", "design", "build", "qa", "done")
 WAKE_KINDS = ("normal", "handoff", "standup", "standup_compile")
+# the fixed reaction set (F-6); stored and compared exactly, so the heart keeps its U+FE0F
+EMOJI = ("\U0001F44D", "❤️", "\U0001F602", "\U0001F389", "\U0001F440", "\U0001F680", "✅", "❌")
 
 
 class ProjectDB:
@@ -195,6 +197,7 @@ class ProjectDB:
             return None
         d = self._msg_dict(r)
         d["receipts"] = self.receipts_for([mid]).get(mid, [])
+        d["reactions"] = self.reactions_for([mid]).get(mid, [])
         return d
 
     def messages(self, conversation_id: str, before: int | None = None, limit: int = 50,
@@ -208,8 +211,10 @@ class ProjectDB:
                           conversation_id, after, limit)
         msgs = [self._msg_dict(r) for r in reversed(rows)]
         rec = self.receipts_for([m["id"] for m in msgs])
+        rea = self.reactions_for([m["id"] for m in msgs])
         for m in msgs:
             m["receipts"] = rec.get(m["id"], [])
+            m["reactions"] = rea.get(m["id"], [])
         return msgs
 
     def messages_by_ids(self, ids: list[int]) -> list[dict]:
@@ -217,7 +222,11 @@ class ProjectDB:
             return []
         marks = ",".join("?" * len(ids))
         rows = self.q(f"SELECT * FROM messages WHERE id IN ({marks}) ORDER BY id", *ids)
-        return [self._msg_dict(r) for r in rows]
+        msgs = [self._msg_dict(r) for r in rows]
+        rea = self.reactions_for([m["id"] for m in msgs])
+        for m in msgs:
+            m["reactions"] = rea.get(m["id"], [])
+        return msgs
 
     # ---- receipts --------------------------------------------------------
     def receipts_for(self, ids: list[int]) -> dict[int, list[dict]]:
@@ -239,6 +248,33 @@ class ProjectDB:
         self.x("INSERT OR REPLACE INTO receipts(message_id, role, state, updated_at) VALUES(?,?,?,?)",
                message_id, role, state, time.time())
         return True
+
+    # ---- reactions -------------------------------------------------------
+    def reactions_for(self, ids: list[int]) -> dict[int, list[dict]]:
+        """{message_id: [{"emoji", "roles"}]}: emoji in EMOJI order, roles in the order they reacted."""
+        out: dict[int, list[dict]] = {}
+        if not ids:
+            return out
+        marks = ",".join("?" * len(ids))
+        by: dict[int, dict[str, list[str]]] = {}
+        for r in self.q(f"SELECT message_id, role, emoji FROM reactions WHERE message_id IN ({marks})"
+                        " ORDER BY created_at, rowid", *ids):
+            by.setdefault(r["message_id"], {}).setdefault(r["emoji"], []).append(r["role"])
+        for mid, groups in by.items():
+            out[mid] = [{"emoji": e, "roles": groups[e]} for e in EMOJI if e in groups]
+        return out
+
+    def toggle_reaction(self, message_id: int, role: str, emoji: str) -> bool:
+        """Add the reaction, or remove it if this role already has it. True = added."""
+        if emoji not in EMOJI:
+            raise ValueError(f"emoji must be one of {' '.join(EMOJI)}")
+        with self.lock:
+            if self.one("SELECT 1 FROM reactions WHERE message_id=? AND role=? AND emoji=?", message_id, role, emoji):
+                self.x("DELETE FROM reactions WHERE message_id=? AND role=? AND emoji=?", message_id, role, emoji)
+                return False
+            self.x("INSERT INTO reactions(message_id, role, emoji, created_at) VALUES(?,?,?,?)",
+                   message_id, role, emoji, time.time())
+            return True
 
     # ---- sessions --------------------------------------------------------
     def active_session(self, role: str) -> str | None:
@@ -692,4 +728,6 @@ def _migration_1(conn: sqlite3.Connection) -> None:
 MIGRATIONS: list = [
     _migration_1,
     "ALTER TABLE turns ADD COLUMN token TEXT",
+    "CREATE TABLE reactions(message_id INTEGER NOT NULL, role TEXT NOT NULL, emoji TEXT NOT NULL,"
+    " created_at REAL NOT NULL, PRIMARY KEY(message_id, role, emoji))",
 ]

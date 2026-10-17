@@ -68,10 +68,13 @@ def write_system_prompt(project_path: str, project_name: str, role: str) -> str:
 def _fmt(m: dict) -> str:
     t = time.strftime("%H:%M", time.localtime(m["created_at"]))
     mentions = " ".join("@" + r for r in m.get("mentions", []))
-    head = f"[{t}] {m['author']} ({m['type']})"
+    head = f"[{t}] #{m['id']} {m['author']} ({m['type']})"
     if mentions:
         head += " " + mentions
-    return f"{head}: {m['text']}"
+    line = f"{head}: {m['text']}"
+    if m.get("reactions"):
+        line += "  [" + " · ".join(f"{r['emoji']} {', '.join(r['roles'])}" for r in m["reactions"]) + "]"
+    return line
 
 
 def focus_conversation(messages: list[dict]) -> str | None:

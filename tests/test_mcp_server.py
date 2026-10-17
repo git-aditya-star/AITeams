@@ -39,6 +39,9 @@ class Mock(BaseHTTPRequestHandler):
         Mock.calls.append(("POST", self.path, {k.lower(): v for k, v in self.headers.items()}, body))
         if self.path == "/internal/messages":
             self._send(200, {"id": 42, "conversation_id": "general"})
+        elif self.path == "/internal/reactions":
+            added = not any(c[1] == "/internal/reactions" for c in Mock.calls[:-1])
+            self._send(200, {"message_id": body["message_id"], "added": added, "reactions": []})
         elif self.path == "/internal/permission":
             if Mock.mode == "answer":
                 self._send(200, {"behavior": "allow", "updatedInput": {**body["input"], "answers": {"Which DB?": "Postgres"}}})
@@ -83,7 +86,7 @@ def test_handshake_tools_list_and_errors():
         "post_message", "get_messages", "list_conversations", "permission", "list_features", "get_feature",
         "create_feature", "set_feature", "request_approval", "request_commit", "review_commit", "lock_file",
         "unlock_file", "list_locks", "write_handoff", "get_team_status", "run_standup", "save_standup",
-        "interrupt", "checkpoint"}
+        "interrupt", "checkpoint", "react"}
     assert by_id[4]["error"]["code"] == -32601
     assert by_id[5]["error"]["code"] == -32602
     assert by_id[6]["result"]["isError"] is True and "unreachable" in by_id[6]["result"]["content"][0]["text"]
@@ -133,3 +136,20 @@ def test_permission_passthrough_answer_and_timeout():
     assert res[3]["behavior"] == "deny" and "did not answer" in res[3]["message"]
     perm_calls = [c for c in Mock.calls if c[1] == "/internal/permission"]
     assert len(perm_calls) == 2  # the Write passthrough never reached the daemon
+
+
+def test_react_round_trip_and_emoji_enum():
+    from aiteams.db import EMOJI
+    Mock.calls.clear()
+    call = {"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "react", "arguments": {
+        "message_id": 12, "emoji": EMOJI[0]}}}
+    res = with_server(lambda url: run_rpc(url, [{**call, "id": 1}, {**call, "id": 2},
+                                                {"jsonrpc": "2.0", "id": 3, "method": "tools/list"}]))
+    by_id = {r["id"]: r for r in res}
+    assert by_id[1]["result"]["content"][0]["text"] == "added %s to #12" % EMOJI[0]
+    assert by_id[2]["result"]["content"][0]["text"] == "removed %s from #12" % EMOJI[0]
+    posts = [c for c in Mock.calls if c[1] == "/internal/reactions"]
+    assert [c[3] for c in posts] == [{"message_id": 12, "emoji": EMOJI[0]}] * 2
+    assert posts[0][2]["x-aiteams-token"] == "turn-secret"
+    react = next(t for t in by_id[3]["result"]["tools"] if t["name"] == "react")
+    assert tuple(react["inputSchema"]["properties"]["emoji"]["enum"]) == EMOJI  # the server is stdlib-only: keep in sync
