@@ -303,6 +303,13 @@ async def request_commit(st, proj: Project, role: str, turn_id: int | None, feat
     msg = await _post(st, proj, conv, role, _commit_text(c, feat), "Commit", mentions, turn_id, f"commit:{c['id']}")
     c = proj.db.update_commit(c["id"], message_id=msg["id"])
     await proj.hub.broadcast("commit", c)
+    # a re-file supersedes the same role's pending requests in this feature whose files it covers
+    for state in PENDING_COMMIT_STATES:
+        for o in proj.db.commits(state, limit=1000):
+            if o["id"] != c["id"] and o["role"] == role and o["feature_id"] == c["feature_id"] and set(o["files"]) <= set(rels):
+                o = proj.db.update_commit(o["id"], state="rejected", note=f"superseded by #{c['id']}")
+                await _post(st, proj, conv, "system", f"Commit #{o['id']} superseded by #{c['id']}.", "System", [])
+                await proj.hub.broadcast("commit", o)
     await broadcast_inbox(proj)
     return c
 

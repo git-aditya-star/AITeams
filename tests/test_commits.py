@@ -227,6 +227,29 @@ def test_diff_overlap_lists_only_pending_requests(client, pid, repo):
     assert client.get(f"/api/p/{pid}/commits/{review['id']}/diff").json()["commit"]["feature"] == "F-1"
 
 
+def test_refile_supersedes_covered_pending_requests(client, pid, repo):
+    client.post(f"/api/p/{pid}/features", json={"text": "Export", "starter": "product"})
+    for n in "abc":
+        (repo / f"{n}.py").write_text(n + "\n")
+    lead, backend, frontend = turn(client, pid, "lead"), turn(client, pid, "backend"), turn(client, pid, "frontend")
+    post = lambda h, files, feature="F-1": client.post(  # noqa: E731
+        "/internal/commits", json={"feature": feature, "files": files, "message": "m"}, headers=h).json()
+    old = post(backend, ["a.py", "b.py"])
+    client.post(f"/internal/commits/{old['id']}/review", json={"decision": "approve", "note": "ok"}, headers=lead)
+    partial = post(backend, ["a.py"])          # covers only part of `old`: both stay
+    other_role = post(frontend, ["a.py", "b.py", "c.py"])
+    other_feat = post(backend, ["a.py", "b.py", "c.py"], feature=None)
+    state = lambda c: client.get(f"/api/p/{pid}/commits/{c['id']}/diff").json()["commit"]["state"]  # noqa: E731
+    assert [state(x) for x in (old, partial, other_role)] == ["master_review", "lead_review", "lead_review"]
+    new = post(backend, ["b.py", "a.py", "c.py"])
+    d = client.get(f"/api/p/{pid}/commits/{old['id']}/diff").json()["commit"]
+    assert d["state"] == "rejected" and d["note"] == f"superseded by #{new['id']}"
+    assert [state(x) for x in (partial, other_role, other_feat, new)] == ["rejected", "lead_review", "lead_review", "lead_review"]
+    assert [x["id"] for x in client.get(f"/api/p/{pid}/inbox").json()["commits"]] == []
+    texts = [m["text"] for m in client.get(f"/api/p/{pid}/messages", params={"conversation": "feature-1"}).json()]
+    assert f"Commit #{old['id']} superseded by #{new['id']}." in texts
+
+
 def test_gitignored_path_is_rejected(client, pid, repo):
     (repo / ".gitignore").write_text("aiteams/static/\n*.log\n")
     (repo / "aiteams" / "static").mkdir(parents=True)
