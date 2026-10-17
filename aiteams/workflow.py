@@ -12,7 +12,7 @@ import time
 
 from fastapi import HTTPException
 
-from .config import ROLES, model_for
+from .config import ROLES, effort_for, model_for
 from .db import PHASES, ProjectDB
 from .runtime import Project
 
@@ -569,6 +569,7 @@ def team_status(st, proj: Project) -> list[dict]:
                     "context_tokens": ctx, "context_window": window,
                     "context_pct": (ctx / window) if window else 0.0,
                     "cost_today": db.cost_today(role), "model": model,
+                    "effort": effort_for(st.settings, role),
                     "session_seq": info["seq"], "fresh_starts": info["fresh_starts"],
                     "rotation": rs["rotate_reason"], "rotation_handoff_pending": bool(rs["rotate_handoff"]),
                     "current": _conv_short(db, (last or {}).get("conversation_id")),

@@ -52,7 +52,7 @@ def python_cmd() -> str:
 
 
 def build_cmd(settings: dict, role: str, env: dict, system_prompt_file: str, session_id: str,
-              resume: bool, model: str) -> list[str]:
+              resume: bool, model: str, effort: str | None = None) -> list[str]:
     py = python_cmd()
     hook_settings = {"hooks": {"PreToolUse": [{"matcher": HOOK_TOOLS, "hooks": [
         {"type": "command", "command": f"{py} -B {HOOK}"}]}]},
@@ -67,10 +67,15 @@ def build_cmd(settings: dict, role: str, env: dict, system_prompt_file: str, ses
            "--mcp-config", json.dumps(mcp), "--strict-mcp-config",
            "--append-system-prompt-file", system_prompt_file, "--system-prompt-snapshot", "off",
            "--disallowedTools", "SendMessage", "ListAgents",
-           "--model", model,
+           "--model", model, *(["--effort", effort] if effort else []),
            "--max-turns", str(settings.get("max_turns", 40))]
     cmd += ["--resume", session_id] if resume else ["--session-id", session_id]
     return cmd
+
+
+def display_argv(cmd: list[str]) -> list[str]:
+    """argv for the `aiteams_cmd` event: the long JSON values of --settings / --mcp-config become "<json>"."""
+    return ["<json>" if i and cmd[i - 1] in ("--settings", "--mcp-config") else a for i, a in enumerate(cmd)]
 
 
 class ClaudeProc:

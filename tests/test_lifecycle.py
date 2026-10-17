@@ -67,9 +67,11 @@ def test_handoff_turn_then_fresh_session_with_handoff_in_prompt(db, home, monkey
     hw = db.queued_wake("backend", "handoff")
     # the handoff turn resumes the OLD session and asks for write_handoff
     cmds = []
-    monkeypatch.setattr(turn_mod, "build_cmd", lambda s, r, e, f, sid, resume, m: cmds.append((sid, resume)) or fake_cmd())
+    monkeypatch.setattr(turn_mod, "build_cmd", lambda s, r, e, f, sid, resume, m, eff=None: cmds.append((sid, resume)) or fake_cmd())
     t = asyncio.run(TurnRunner(st, proj, hw).run())
     assert t["kind"] == "handoff" and cmds[-1] == ("old-session", True)
+    # F-9 (QA C4): a handoff turn resuming a session also records the spawned command first
+    assert db.turn_events(t["id"])[0]["type"] == "aiteams_cmd"
     assert "write_handoff" in t["prompt"] and "context 63%" in t["prompt"]
     # the role wrote a handoff during that turn (as the MCP tool would)
     from aiteams import workflow

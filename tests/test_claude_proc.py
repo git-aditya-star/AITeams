@@ -6,7 +6,7 @@ import sys
 import pytest
 
 from aiteams.orchestrator import turn as turn_mod
-from aiteams.orchestrator.claude_proc import HOOK, HOOK_TOOLS, PLUGINS, ClaudeProc, aiteams_env, build_cmd, child_env
+from aiteams.orchestrator.claude_proc import HOOK, HOOK_TOOLS, PLUGINS, ClaudeProc, display_argv, aiteams_env, build_cmd, child_env
 from aiteams.orchestrator.turn import classify, context_window_from, usage_tokens
 
 INIT = {"type": "system", "subtype": "init", "session_id": "s1", "model": "claude-opus-5-5", "tools": ["Bash"],
@@ -123,8 +123,10 @@ def test_full_turn_with_fake_claude(db, home, monkeypatch):
     assert t["state"] == "done" and t["error"] is None
     assert t["context_tokens"] == 16776 and t["cost_usd"] == 0.00171336 and t["exit_code"] == 0
     assert proj.db.receipts_for([m["id"]])[m["id"]] == [{"role": "backend", "state": "seen"}]
-    types = [e["type"] for e in proj.db.turn_events(t["id"])]
-    assert types == ["system", "assistant", "result"]  # rate_limit_event is stored separately
+    evs = proj.db.turn_events(t["id"])
+    assert [e["type"] for e in evs] == ["aiteams_cmd", "system", "assistant", "result"]  # rate_limit stored apart
+    cmd_ev = evs[0]["data"]
+    assert cmd_ev["model"] == "opus" and cmd_ev["effort"] is None and cmd_ev["argv"][0] == sys.executable
     assert proj.db.q("SELECT COUNT(*) AS n FROM rate_limits")[0]["n"] == 1
     assert proj.db.wake(wake["id"])["state"] == "started"
     assert proj.db.active_session("backend") == t["session_id"]
@@ -177,3 +179,37 @@ def test_build_cmd_enables_project_notes_plugin_with_local_settings_only():
     assert "Skill" in HOOK_TOOLS.split("|")
     [pre] = settings["hooks"]["PreToolUse"]
     assert HOOK in pre["hooks"][0]["command"]
+
+
+def test_build_cmd_effort_flag_and_display_argv():
+    """F-9: --effort follows --model only when an effort resolves; the event argv hides the JSON args."""
+    env = child_env("http://127.0.0.1:7700", "p1", "/tmp/p", "qa", 7, 600, "turn-secret")
+    plain = build_cmd({"max_turns": 40}, "qa", env, "/tmp/sys.md", "s1", False, "opus")
+    assert "--effort" not in plain
+    cmd = build_cmd({"max_turns": 40}, "qa", env, "/tmp/sys.md", "s1", False, "sonnet", "low")
+    i = cmd.index("--model")
+    assert cmd[i:i + 4] == ["--model", "sonnet", "--effort", "low"]
+    shown = display_argv(cmd)
+    assert shown[shown.index("--settings") + 1] == "<json>" and shown[shown.index("--mcp-config") + 1] == "<json>"
+    assert "turn-secret" not in " ".join(shown)  # the turn token lives in the mcp-config env
+    assert [a for a in shown if a != "<json>"] == [a for a in cmd if not a.startswith("{")]
+
+
+def test_turn_records_resolved_effort(db, home, monkeypatch):
+    from aiteams.orchestrator.turn import TurnRunner
+    from aiteams.runtime import AppState, Project
+    from tests.conftest import FakeHub
+    seen = []
+    monkeypatch.setattr(turn_mod, "build_cmd", lambda *a, **k: seen.append(a) or fake_cmd())
+    monkeypatch.setattr(turn_mod, "child_env", lambda *a, **k: fake_env([INIT, RESULT]))
+    st = AppState(7799)
+    st.settings.update(models={"qa": "sonnet"}, efforts={"qa": "low"}, default_effort="high")
+    proj = Project({"id": "p1", "path": db.project_path, "name": "demo", "registered_at": 0})
+    proj.hub = FakeHub()
+    st.projects["p1"] = proj
+    m = proj.db.add_message("dm-qa", "master", "Message", "hi", [], None)
+    t = asyncio.run(TurnRunner(st, proj, proj.db.add_wake("qa", "dm-qa", [m["id"]], "master")).run())
+    assert seen[-1][-2:] == ("sonnet", "low")
+    ev = proj.db.turn_events(t["id"])[0]["data"]
+    assert (ev["type"], ev["model"], ev["effort"]) == ("aiteams_cmd", "sonnet", "low")
+    proj.db.close()

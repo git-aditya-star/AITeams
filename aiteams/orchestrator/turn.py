@@ -7,9 +7,9 @@ import secrets
 import time
 import uuid
 
-from ..config import model_for
+from ..config import effort_for, model_for
 from . import receipts
-from .claude_proc import ClaudeProc, build_cmd, child_env
+from .claude_proc import ClaudeProc, build_cmd, child_env, display_argv
 from .prompt import (build_compile_prompt, build_handoff_prompt, build_standup_prompt, build_wake_prompt,
                      live_message_ids, write_system_prompt)
 
@@ -61,6 +61,7 @@ class TurnRunner:
         self.kind: str = wake.get("kind") or "normal"
         self.context_tokens: int | None = None
         self.model = model_for(state.settings, self.role)
+        self.effort = effort_for(state.settings, self.role)
         self.task: asyncio.Task | None = None
 
     # ---- public --------------------------------------------------------
@@ -118,7 +119,9 @@ class TurnRunner:
         for attempt in (1, 2):
             env = child_env(self.state.daemon_url, self.project.id, self.project.path, role, tid,
                             int(self.state.settings.get("ask_timeout_s", 600)), turn_token)
-            cmd = build_cmd(settings, role, env, sys_file, session_id, resume, self.model)
+            cmd = build_cmd(settings, role, env, sys_file, session_id, resume, self.model, self.effort)
+            await self._on_event({"type": "aiteams_cmd", "model": self.model, "effort": self.effort,
+                                  "argv": display_argv(cmd)})
             self.proc = ClaudeProc(cmd, self.project.path, env)
             try:
                 await self.proc.start()

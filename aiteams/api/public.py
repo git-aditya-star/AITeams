@@ -132,9 +132,20 @@ def get_settings(request: Request):
     return _state(request).settings
 
 
+@api.get("/settings/options")
+def settings_options():
+    """F-9: the lists the role settings dialog offers (config is the single source of truth)."""
+    return {"roles": config.ROLES, "models": list(config.MODELS), "efforts": list(config.EFFORTS),
+            "effort_support": {m: list(v) for m, v in config.EFFORT_SUPPORT.items()}}
+
+
 @api.put("/settings")
 def put_settings(request: Request, body: dict):
     st = _state(request)
+    try:
+        body = config.validate_role_settings(body)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     st.settings = config.save_settings(body)
     if st.scheduler:
         st.scheduler.notify()

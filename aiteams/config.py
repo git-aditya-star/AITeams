@@ -8,11 +8,18 @@ import uuid
 from pathlib import Path
 
 ROLES = ["manager", "lead", "product", "frontend", "backend", "qa"]
+# F-9: what the role settings dialog offers. `claude --help` lists fable as a model alias (2026-10-17).
+MODELS = ("opus", "sonnet", "haiku", "fable")
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# Levels each model accepts (F-9 probe, see .aiteams/features/F-9/design.md). A model missing here accepts all.
+EFFORT_SUPPORT: dict[str, tuple[str, ...]] = {m: EFFORTS for m in MODELS}
 
 DEFAULT_SETTINGS = {
     "port": 7700,
     "default_model": "opus",
     "models": {},
+    "default_effort": None,
+    "efforts": {},
     "max_concurrent": 3,
     "ask_timeout_s": 600,
     "max_turns": 40,
@@ -46,8 +53,9 @@ def _write_json(path: Path, data) -> None:
 def load_settings() -> dict:
     s = dict(DEFAULT_SETTINGS)
     s.update(_read_json(home() / "settings.json", {}) or {})
-    if not isinstance(s.get("models"), dict):
-        s["models"] = {}
+    for k in ("models", "efforts"):
+        if not isinstance(s.get(k), dict):
+            s[k] = {}
     return s
 
 
@@ -140,4 +148,48 @@ def write_runtime_info(info: dict) -> None:
 
 
 def model_for(settings: dict, role: str) -> str:
-    return (settings.get("models") or {}).get(role) or settings.get("default_model") or "opus"
+    """The role's model, else default_model, else opus. Hand-edited garbage (non-strings) is skipped, so a bad
+    settings.json can't crash a turn at spawn."""
+    models = settings.get("models")
+    for v in ((models.get(role) if isinstance(models, dict) else None), settings.get("default_model")):
+        if isinstance(v, str) and v:
+            return v
+    return "opus"
+
+
+def effort_for(settings: dict, role: str) -> str | None:
+    """The role's effort, else the default; None (no --effort) if unset, unknown, or not supported by its model."""
+    efforts = settings.get("efforts")
+    level = (efforts.get(role) if isinstance(efforts, dict) else None) or settings.get("default_effort")
+    if not isinstance(level, str) or level not in EFFORTS:
+        return None
+    return level if level in EFFORT_SUPPORT.get(model_for(settings, role), EFFORTS) else None
+
+
+def validate_role_settings(body: dict) -> dict:
+    """Check the F-9 keys of a settings PUT; returns the body with inherit values ("" / None) removed from
+    models/efforts. Raises ValueError with a message for the 400."""
+    out = dict(body)
+    if "default_model" in out and out["default_model"] not in MODELS:
+        raise ValueError(f"default_model must be one of {', '.join(MODELS)}")
+    if "default_effort" in out:
+        if out["default_effort"] in ("", None):
+            out["default_effort"] = None
+        elif out["default_effort"] not in EFFORTS:
+            raise ValueError(f"default_effort must be null or one of {', '.join(EFFORTS)}")
+    for key, allowed in (("models", MODELS), ("efforts", EFFORTS)):
+        if key not in out:
+            continue
+        if not isinstance(out[key], dict):
+            raise ValueError(f"{key} must be an object of role -> value")
+        clean = {}
+        for role, v in out[key].items():
+            if role not in ROLES:
+                raise ValueError(f"{key}: unknown role {role!r}")
+            if v in ("", None):
+                continue  # inherit
+            if v not in allowed:
+                raise ValueError(f"{key}.{role} must be one of {', '.join(allowed)}")
+            clean[role] = v
+        out[key] = clean
+    return out
