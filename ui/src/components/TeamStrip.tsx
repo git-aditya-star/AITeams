@@ -15,7 +15,7 @@ export default function TeamStrip({ onSelect }: { onSelect: (role: string) => vo
       {ROLES.map((r) => {
         const t = byRole[r]
         return (
-          <Tip key={r} content={t ? `${t.model} · ${t.effort ? `${t.effort} effort` : 'default effort'} · ${stateWord(t)}` : r}>
+          <Tip key={r} content={t ? `${t.model_label || t.model} · ${t.effort ? `${t.effort} effort` : 'default effort'} · ${stateWord(t)}` : r}>
             <button
               onClick={() => onSelect(r)}
               className="flex cursor-pointer items-center gap-1.5 rounded-full border border-gray-200 px-2 py-0.5 text-caption text-gray-600 hover:bg-gray-50"

@@ -222,6 +222,7 @@ export interface TeamRole {
   cost_today: number
   model: string
   effort?: string | null // F-9: effective effort, null = no --effort
+  model_label?: string // F-9 part 2: "Sonnet 5.5", or the raw ID when it isn't offered
   session_seq?: number | null
   fresh_starts?: number
   rotation?: string | null
@@ -388,7 +389,7 @@ export interface RoleSettings {
 
 export interface SettingsOptions {
   roles: string[]
-  models: string[]
+  models: { id: string; label: string }[] // ids go to --model; aliases first as "X (latest)"
   efforts: string[]
   effort_support: Record<string, string[]>
 }

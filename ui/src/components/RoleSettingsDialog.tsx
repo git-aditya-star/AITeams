@@ -31,7 +31,7 @@ export default function RoleSettingsDialog({ open, onOpenChange }: { open: boole
       .then(([o, s]) => {
         setOptions(o)
         setDraft({
-          def: { model: s.default_model || o.models[0], effort: s.default_effort || INHERIT },
+          def: { model: s.default_model || o.models[0]?.id,effort: s.default_effort || INHERIT },
           roles: Object.fromEntries(o.roles.map((r) => [r, { model: s.models?.[r] || INHERIT, effort: s.efforts?.[r] || INHERIT }])),
         })
       })
@@ -43,6 +43,9 @@ export default function RoleSettingsDialog({ open, onOpenChange }: { open: boole
     return !list || list.includes(level) // a model missing from the table accepts every level
   }
 
+  // A saved ID that is no longer offered still runs (model_for passes it through), so show it raw.
+  const labelOf = (id: string) => options?.models.find((m) => m.id === id)?.label ?? id
+
   const setRow = (role: string | null, patch: Partial<Row>) =>
     setDraft((d) => {
       if (!d) return d
@@ -50,8 +53,27 @@ export default function RoleSettingsDialog({ open, onOpenChange }: { open: boole
       // A model change can make the chosen level unsupported; fall back to inherit rather than keep a dead value.
       const model = role && row.model === INHERIT ? d.def.model : row.model
       if (patch.model && row.effort !== INHERIT && !supported(model, row.effort)) row.effort = INHERIT
-      return role ? { ...d, roles: { ...d.roles, [role]: row } } : { ...d, def: row }
+      if (role) return { ...d, roles: { ...d.roles, [role]: row } }
+      // A new Default model also applies to every row that inherits it.
+      const roles = !patch.model
+        ? d.roles
+        : Object.fromEntries(
+            Object.entries(d.roles).map(([r, x]) =>
+              [r, x.model === INHERIT && x.effort !== INHERIT && !supported(row.model, x.effort) ? { ...x, effort: INHERIT } : x],
+            ),
+          )
+      return { def: row, roles }
     })
+
+  const modelItems = (current: string) => {
+    const offered = options?.models ?? []
+    const extra = current !== INHERIT && !offered.some((m) => m.id === current) ? [{ id: current, label: current }] : []
+    return [...offered, ...extra].map((m) => (
+      <SelectItem key={m.id} value={m.id}>
+        {m.label}
+      </SelectItem>
+    ))
+  }
 
   const save = async () => {
     if (!draft) return
@@ -86,7 +108,7 @@ export default function RoleSettingsDialog({ open, onOpenChange }: { open: boole
           const ok = supported(model, l)
           return (
             <SelectItem key={l} value={l} disabled={!ok}>
-              {ok ? l : `${l} (not supported by ${model})`}
+              {ok ? l : `${l} (not supported by ${labelOf(model)})`}
             </SelectItem>
           )
         })}
@@ -96,7 +118,7 @@ export default function RoleSettingsDialog({ open, onOpenChange }: { open: boole
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-xl" data-role-settings>
+      <DialogContent className="sm:max-w-2xl" data-role-settings>
         <DialogHeader>
           <DialogTitle>Role settings</DialogTitle>
           <DialogDescription>Global for all projects. Applies from each role's next turn.</DialogDescription>
@@ -117,16 +139,10 @@ export default function RoleSettingsDialog({ open, onOpenChange }: { open: boole
                 <td className="py-1 font-semibold">Default</td>
                 <td className="py-1">
                   <Select value={draft.def.model} onValueChange={(v) => setRow(null, { model: v })}>
-                    <SelectTrigger size="sm" aria-label="Default model" className="w-36">
+                    <SelectTrigger size="sm" aria-label="Default model" className="w-52">
                       <SelectValue />
                     </SelectTrigger>
-                    <SelectContent>
-                      {options.models.map((m) => (
-                        <SelectItem key={m} value={m}>
-                          {m}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
+                    <SelectContent>{modelItems(draft.def.model)}</SelectContent>
                   </Select>
                 </td>
                 <td className="py-1">{effortSelect('Default effort', draft.def, draft.def.model, (v) => setRow(null, { effort: v }), 'none')}</td>
@@ -139,16 +155,12 @@ export default function RoleSettingsDialog({ open, onOpenChange }: { open: boole
                     <td className="py-1">{roleName(r)}</td>
                     <td className="py-1">
                       <Select value={row.model} onValueChange={(v) => setRow(r, { model: v })}>
-                        <SelectTrigger size="sm" aria-label={`${roleName(r)} model`} className="w-36">
+                        <SelectTrigger size="sm" aria-label={`${roleName(r)} model`} className="w-52">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value={INHERIT}>Default ({draft.def.model})</SelectItem>
-                          {options.models.map((m) => (
-                            <SelectItem key={m} value={m}>
-                              {m}
-                            </SelectItem>
-                          ))}
+                          <SelectItem value={INHERIT}>Default ({labelOf(draft.def.model)})</SelectItem>
+                          {modelItems(row.model)}
                         </SelectContent>
                       </Select>
                     </td>
