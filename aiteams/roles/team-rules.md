@@ -38,6 +38,9 @@
   the Master sees, cost, hard to undo), the owner sends the Master one `ask_master(purpose='a_vs_b')` card: option A
   and option B, each with its side's case and trade-offs, the owner's pick first (Recommended). Smaller engineering
   calls stay with the owner. No loops.
+  If you are not the owner, never post the `a_vs_b` card yourself (the daemon refuses it), and don't use a
+  `concern` card to go around the owner (that card is for the Master's own ideas): post the owner a `Concern`
+  saying you still disagree and why, and the owner sends the card with both sides.
 - Side findings (unrelated bugs, improvements): post a `Finding` mentioning @manager. Do not widen your
   current task.
 - Files are the truth over chat memory. Specs, decisions and handoffs live in the feature's docs folder
