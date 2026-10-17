@@ -6,7 +6,7 @@ import sys
 import pytest
 
 from aiteams.orchestrator import turn as turn_mod
-from aiteams.orchestrator.claude_proc import ClaudeProc, aiteams_env, child_env
+from aiteams.orchestrator.claude_proc import HOOK, ClaudeProc, aiteams_env, build_cmd, child_env
 from aiteams.orchestrator.turn import classify, context_window_from, usage_tokens
 
 INIT = {"type": "system", "subtype": "init", "session_id": "s1", "model": "claude-opus-5-5", "tools": ["Bash"],
@@ -162,3 +162,13 @@ def test_child_env_carries_turn_token_not_master_token(monkeypatch):
     assert "AITEAMS_TOKEN" not in env and "ANTHROPIC_API_KEY" not in env
     fwd = aiteams_env(env)
     assert fwd["AITEAMS_TURN_TOKEN"] == "turn-secret" and "AITEAMS_TOKEN" not in fwd
+
+
+def test_build_cmd_enables_project_notes_plugin_with_local_settings_only():
+    env = child_env("http://127.0.0.1:7700", "p1", "/tmp/p", "backend", 7, 600, "turn-secret")
+    cmd = build_cmd({"max_turns": 40}, "backend", env, "/tmp/sys.md", "s1", False, "opus")
+    assert cmd[cmd.index("--setting-sources") + 1] == "local"  # never "user": no Master CLAUDE.md or hooks
+    settings = json.loads(cmd[cmd.index("--settings") + 1])
+    assert settings["enabledPlugins"] == {"project-notes@project-notes": True}
+    [pre] = settings["hooks"]["PreToolUse"]
+    assert HOOK in pre["hooks"][0]["command"]

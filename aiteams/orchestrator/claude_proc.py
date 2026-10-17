@@ -50,7 +50,9 @@ def build_cmd(settings: dict, role: str, env: dict, system_prompt_file: str, ses
               resume: bool, model: str) -> list[str]:
     py = python_cmd()
     hook_settings = {"hooks": {"PreToolUse": [{"matcher": HOOK_TOOLS, "hooks": [
-        {"type": "command", "command": f"{py} -B {HOOK}"}]}]}}
+        {"type": "command", "command": f"{py} -B {HOOK}"}]}]},
+        # the Master's user-scope project-notes plugin; it loads under --setting-sources local (probed for F-4)
+        "enabledPlugins": {"project-notes@project-notes": True}}
     mcp = {"mcpServers": {"aiteams": {"command": py, "args": ["-B", MCP_SERVER], "env": aiteams_env(env)}}}
     cmd = ["claude", "-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose",
            "--include-partial-messages", "--include-hook-events",

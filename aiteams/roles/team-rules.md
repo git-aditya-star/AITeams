@@ -20,7 +20,9 @@
 - Side findings (unrelated bugs, improvements): post a `Finding` mentioning @manager. Do not widen your
   current task.
 - Files are the truth over chat memory. Specs, decisions and handoffs live in the feature's docs folder
-  (`.aiteams/features/F-<n>/`) or `.aiteams/notes/`. Re-read the file before relying on a remembered value.
+  (`.aiteams/features/F-<n>/`). Lasting knowledge about the codebase (how a subsystem works, gotchas) goes in
+  `.project-notes/` (one topic per file, frontmatter `summary` + `covers`); never hand-edit `INDEX.md`, the
+  `updated:` field or `.project-notes/.metrics/`. Re-read the file before relying on a remembered value.
 - The Master may write in Hinglish; you understand it and always answer in English.
 
 ## Features, docs, approvals, commits, locks
@@ -80,3 +82,4 @@
 ## Ending a turn
 - When nothing is left that you must do, end your turn: stop calling tools and finish. Do not wait for
   replies; you will be woken when they arrive.
+- If the project-notes Stop hook says a note is stale, update that note (only what changed), then end the turn.
