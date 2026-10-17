@@ -130,6 +130,41 @@ export default function DashboardView({
         )}
       </section>
 
+      {dash.shipped && (
+        <section data-shipped>
+          <div className="flex items-baseline gap-3">
+            <Heading>Shipped</Heading>
+            <span className="text-caption text-gray-500">
+              this week <span className="font-semibold text-gray-700" data-shipped-week>{dash.shipped.week}</span>
+            </span>
+            <span className="text-caption text-gray-500">
+              total <span className="font-semibold text-gray-700" data-shipped-total>{dash.shipped.total}</span>
+            </span>
+          </div>
+          {dash.shipped.recent.length === 0 ? (
+            <div className="text-gray-400 text-caption">nothing shipped yet</div>
+          ) : (
+            <ul>
+              {dash.shipped.recent.map((f) => (
+                <li key={f.id} data-shipped-row={f.key} className="border-t border-gray-100 first:border-t-0">
+                  <button onClick={() => onSelect(f.conversation_id)} className="flex w-full cursor-pointer items-baseline gap-2 py-1.5 text-left hover:bg-gray-50">
+                    <span className="font-mono text-code text-gray-500 shrink-0">{f.key}</span>
+                    <span className="text-body shrink-0 max-w-[40%] truncate hover:underline">{f.title}</span>
+                    {f.summary && (
+                      <Tip content={<span className="whitespace-pre-wrap">{f.summary}</span>}>
+                        <span className="min-w-0 truncate text-meta text-gray-500" data-shipped-summary>
+                          {f.summary}
+                        </span>
+                      </Tip>
+                    )}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
+
       <section>
         <Heading>Team</Heading>
         <div className="divide-y divide-gray-100">

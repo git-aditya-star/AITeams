@@ -315,6 +315,23 @@ export interface Dashboard {
   activity: Activity[]
   standup: Standup | null
   last_standup: Standup | null
+  shipped?: Shipped // F-17
+}
+
+// F-17: what the team finished. `done_at` is set when a feature reaches done or is archived, cleared on reopen.
+export interface ShippedFeature {
+  id: number
+  key: string
+  title: string
+  summary: string | null // the `**Summary:**` line of its prd.md
+  conversation_id: string
+  done_at: number
+}
+
+export interface Shipped {
+  week: number // since Monday 00:00 local time
+  total: number
+  recent: ShippedFeature[] // newest 10 by done_at
 }
 
 export interface TurnEvent {

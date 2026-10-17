@@ -100,8 +100,9 @@ test('approval set-phase select and History reopen select', async ({ page, qa })
   await page.keyboard.press('ArrowDown') // nothing is selected, so the first item takes focus on the first arrow
   await expect(page.getByRole('option', { name: 'phase → build' })).toBeFocused()
   await page.keyboard.press('Enter')
-  await expect(page.getByText('No finished features yet.')).toBeVisible()
-  expect((await feature(qa, 'F-2')).phase).toBe('build')
+  // F-2 leaves History; the seed's other done feature (F-3) keeps the list non-empty.
+  await expect(reopen).toHaveCount(0)
+  await expect.poll(async () => (await feature(qa, 'F-2')).phase).toBe('build')
 })
 
 test('tabs switch feature Chat/Docs and DM Chat/Live session', async ({ page, qa }) => {
