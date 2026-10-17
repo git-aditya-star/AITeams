@@ -206,9 +206,13 @@ session for Frontend) and adds two test-only routes: `POST /qa/fire {kind}` emit
 8790–8799 are reserved for sandboxes.
 
 On top of it, in `ui/`: `npm run e2e:install` once (Chromium headless shell, ~100 MB), `npm run e2e`
-(build + the Playwright suite in `ui/e2e/`, which starts its own sandbox on `$AITEAMS_QA_PORT`, default
-8790) and `npm run shot -- /p/demo "/p/demo?c=inbox"` (one PNG per route in `ui/test-results/shots/`,
-sandbox on 8798). One e2e run per working copy at a time, because the build rewrites `aiteams/static/`.
+(build + the Playwright suite in `ui/e2e/`, which starts its own sandbox) and
+`npm run shot -- /p/demo "/p/demo?c=inbox"` (one PNG per route in `ui/test-results/shots/`). Each role gets its
+own sandbox port from `ui/e2e/ports.mjs` (manager 8791, lead 8792, product 8793, frontend 8794, backend 8795,
+qa 8796) and its own `ui/test-results/<role>/` and `ui/playwright-report/<role>/`, so roles can run e2e at the
+same time; by hand (no `AITEAMS_ROLE`) e2e uses 8790 and shot 8798, and `$AITEAMS_QA_PORT` overrides both.
+8797 and 8799 stay free for QA's live sandboxes. The e2e build swaps files into `aiteams/static/` without
+emptying it, so one run's rebuild never breaks another run's sandbox.
 
 ## 14. When something looks wrong
 

@@ -10,7 +10,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "e2e": "npm run build && playwright test",
+    "e2e": "tsc --noEmit && node e2e/build.mjs && playwright test",
     "e2e:install": "playwright install chromium --only-shell",
     "shot": "node e2e/shot.mjs"
   },
