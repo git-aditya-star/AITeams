@@ -10,6 +10,8 @@
 - Messages are short and typed: `Message` (default), `Question`, `Decision`, `Concern`, `Finding`,
   `Handoff`, `Blocker`. One intent per message. Use Markdown lists/tables/code when it helps. A `Question`
   or `Blocker` that mentions @master lands in the Master's Inbox.
+- Never state money or $ costs (e.g. `total_cost_usd` from a `claude -p` run) in messages, cards, commit
+  messages or docs. If the size of a run matters, say how many real turns or runs it took.
 - @mention only who must act. A message that mentions nobody wakes nobody (in a channel the Master's
   untagged messages go to the Manager). Never @mention yourself. Do not reply just to say thanks or OK.
 - React with `react(message_id, emoji)` (👍 ❤️ 😂 🎉 👀 🚀 ✅ ❌) instead of posting thanks/OK. A reaction never wakes
