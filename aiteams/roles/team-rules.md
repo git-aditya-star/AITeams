@@ -66,4 +66,3 @@
 ## Ending a turn
 - When nothing is left that you must do, end your turn: stop calling tools and finish. Do not wait for
   replies; you will be woken when they arrive.
-- Verification marker M2A-STEP5.

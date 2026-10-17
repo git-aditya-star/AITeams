@@ -41,8 +41,8 @@ a signed-in tab opens via `/auth?t=...`. `P=<project id>`, `B=http://127.0.0.1:7
 ## 5. Snapshot isolation + banner
 - In this repo: append a line to `aiteams/roles/team-rules.md` (e.g. `- Verification marker M2A-STEP5.`),
   commit it. Do NOT upgrade.
-- Message Backend again; `curl -s -H "$T" "$B/api/p/$P/turns?role=backend&limit=1" | jq -r '.[0].prompt' | grep M2A` →
-  nothing (the daemon reads the snapshot's prompt). `.aiteams/prompts/backend.system.md` in the demo project has no marker.
+- Message Backend again; team-rules go into the **system** prompt, so check `grep -c M2A <demo>/.aiteams/prompts/backend.system.md`
+  → `0` (the daemon reads the snapshot's `roles/team-rules.md`; the stored `turns.prompt` is only the digest).
 - Reload the tab → the flat line "New commits since the running version, run `aiteams upgrade`" under the
   top bar. `aiteams status` → `upgrade available`.
 
@@ -50,10 +50,12 @@ a signed-in tab opens via `/auth?t=...`. `P=<project id>`, `B=http://127.0.0.1:7
 - Ask Backend to `python3 -c "import time; time.sleep(70)"`. While the turn is `running`: `aiteams upgrade`.
 - Expect: step lines (resolve/snapshot/stop/install/record), `upgraded to <new sha7> (0.1.0), daemon pid <pid>`;
   the turn ends `interrupted` (`/turns?role=backend`), the wake is re-queued (`origin: system`) and runs on the
-  new daemon; its stored prompt now contains `M2A-STEP5`. Banner gone after reload; `aiteams status` shows the new sha.
+  new daemon; `<demo>/.aiteams/prompts/backend.system.md` now contains `M2A-STEP5`. Banner gone after reload; `aiteams status`
+  shows the new sha.
 
 ## 7. Rollback and forward
-- `aiteams upgrade HEAD~1` → `aiteams status` shows the M2a sha; the next Backend prompt has no marker.
+- `aiteams upgrade <M2a sha>` (any ref works; it is HEAD~1 only if nothing else was committed) → `aiteams status` shows that
+  sha; the next Backend system prompt has no marker.
   `sqlite3 <demo>/.aiteams/state.db 'PRAGMA user_version'` → `2` throughout.
 - `aiteams upgrade` → forward again, marker back.
 
