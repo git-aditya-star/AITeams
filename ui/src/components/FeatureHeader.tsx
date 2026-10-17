@@ -1,6 +1,7 @@
-import { X } from 'lucide-react'
+import { Lightbulb, X } from 'lucide-react'
 import { useState } from 'react'
 import type { Feature } from '../api'
+import BrainstormDialog from './BrainstormDialog'
 import { PHASES, ROLES, phaseChip, roleName } from '../roles'
 import { useAppDispatch, useAppSelector } from '../store'
 import { freshStartFeature, patchFeature, releaseLock } from '../store/thunks'
@@ -22,6 +23,7 @@ export default function FeatureHeader({ feature, tab, onTab }: { feature: Featur
   const onFreshStart = (mode: 'keep_docs' | 'start_over') => dispatch(freshStartFeature(feature, mode))
   const [busy, setBusy] = useState(false)
   const [fresh, setFresh] = useState<null | 'choose' | 'confirm'>(null)
+  const [brainstorm, setBrainstorm] = useState(false)
   const archived = !!feature.archived
   const run = (p: Promise<void>) => {
     setBusy(true)
@@ -71,6 +73,11 @@ export default function FeatureHeader({ feature, tab, onTab }: { feature: Featur
         <Button variant="outline" size="xs" disabled={busy} onClick={() => setFresh(fresh ? null : 'choose')}>
           Fresh start
         </Button>
+        <Button variant="outline" size="xs" onClick={() => setBrainstorm(true)}>
+          <Lightbulb />
+          Brainstorm
+        </Button>
+        <BrainstormDialog feature={feature} open={brainstorm} onOpenChange={setBrainstorm} />
         <Tabs value={tab} onValueChange={(v) => onTab(v as FeatureTab)} className="ml-auto">
           <TabsList>
             <TabsTrigger value="chat">Chat</TabsTrigger>

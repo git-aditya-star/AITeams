@@ -42,6 +42,7 @@ export const stateWord = (t: { state: string; kind?: string | null } | undefined
   if (!t) return 'idle'
   if (t.state === 'running' && t.kind === 'handoff') return 'handoff'
   if (t.state === 'running' && (t.kind === 'standup' || t.kind === 'standup_compile')) return 'standup'
+  if (t.state === 'running' && (t.kind === 'brainstorm' || t.kind === 'brainstorm_compile')) return 'brainstorm'
   return t.state
 }
 

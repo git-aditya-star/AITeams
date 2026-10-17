@@ -17,7 +17,7 @@ export type MessageType =
   | 'Commit'
   | 'Standup'
 
-export type WakeKind = 'normal' | 'handoff' | 'standup' | 'standup_compile'
+export type WakeKind = 'normal' | 'handoff' | 'standup' | 'standup_compile' | 'brainstorm' | 'brainstorm_compile'
 
 export type Phase = 'intake' | 'spec' | 'design' | 'build' | 'qa' | 'done'
 export type ApprovalState = 'pending' | 'approved' | 'changes_requested'
@@ -179,6 +179,21 @@ export interface Message {
   approval?: Approval | null
   commit?: Commit | null
   question?: Question | null // F-10: ref question:<id>
+  brainstorm?: Brainstorm | null // F-10: ref brainstorm:<id> (the round's System line)
+}
+
+// F-10: a brainstorm round on a feature: every voice posts one idea, then Product compiles one card.
+export interface Brainstorm {
+  id: number
+  feature_id: number
+  topic: string
+  state: 'collecting' | 'compiling' | 'done' | 'failed'
+  roles: string[]
+  requested_by: string
+  start_message_id: number | null
+  question_id: number | null
+  created_at: number
+  ended_at: number | null
 }
 
 export interface InboxMessage extends Message {
@@ -479,6 +494,9 @@ export const api = {
     req<Handoff[]>(`/api/p/${pid}/handoffs${role ? `?role=${encodeURIComponent(role)}` : ''}`),
   freshStartFeature: (pid: string, fid: number, mode: 'keep_docs' | 'start_over') =>
     post<unknown>(`/api/p/${pid}/features/${fid}/fresh-start`, { mode }),
+  startBrainstorm: (pid: string, fid: number, topic: string) =>
+    post<Brainstorm>(`/api/p/${pid}/features/${fid}/brainstorm`, { topic }),
+  brainstorms: (pid: string, fid: number) => req<Brainstorm[]>(`/api/p/${pid}/features/${fid}/brainstorms`),
   featuresHistory: (pid: string) => req<Feature[]>(`/api/p/${pid}/features/history`),
   activity: (pid: string, limit = 30) => req<Activity[]>(`/api/p/${pid}/activity?limit=${limit}`),
 }
