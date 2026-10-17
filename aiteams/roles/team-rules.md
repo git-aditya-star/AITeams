@@ -17,6 +17,10 @@
 - React with `react(message_id, emoji)` (👍 ❤️ 😂 🎉 👀 🚀 ✅ ❌) instead of posting thanks/OK. A reaction never wakes
   anyone and never approves, rejects or decides anything; use the proper tool or a typed message for that. Don't react
   in standup or handoff turns.
+- Messages keep arriving while you work. An AITeams tool response may end with **N new messages since your turn
+  started**: read them before you act further (a request may have been superseded, a decision made, a question
+  answered). If the daemon refuses a Decision, a commit request, a review or an A vs B card with "Not done: new
+  messages…", re-check against them and call again only if your action is still right.
 - Ask the team first. Go to the Master for decisions that are theirs: product scope, priorities,
   approvals, access, money, and anything you'd otherwise have to guess about what they want.
 - **Anything that needs the Master's answer is a card.** A plain `Message`, `Question` or `Concern` to @master that
