@@ -4,10 +4,12 @@ import { roleName, stateChip, stateLabel } from '../roles'
 import { useAppSelector } from '../store'
 import { selectFeatureLabel } from '../store/selectors'
 import { useCards } from './CardContext'
+import { LEAD_TONE, leadReview } from './leadReview'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Textarea } from './ui/textarea'
+import { Tip } from './ui/tooltip'
 import { useCommitDecision } from './useCommitDecision'
 
 type Decision = ReturnType<typeof useCommitDecision>
@@ -76,12 +78,20 @@ export default function CommitCard({ c, showFeature = false }: { c: Commit; show
   const d = useCommitDecision(c)
   const feature = useAppSelector((s) => selectFeatureLabel(s, c.feature_id))
   const files = Array.isArray(c.files) ? c.files : []
+  const lead = leadReview(c)
 
   return (
     <div data-card={`commit-${c.id}`} className="mt-1.5 rounded-md border border-gray-200 bg-white px-3 py-2.5 text-meta">
       <div className="flex items-center gap-2 flex-wrap">
         <span className="text-caption uppercase tracking-wide text-gray-500 font-semibold">Commit #{c.id}</span>
         <Badge className={stateChip(c.state)}>{stateLabel(c.state)}</Badge>
+        {lead && (
+          <Tip content={lead.note ? <span className="whitespace-pre-wrap">{lead.note}</span> : null}>
+            <Badge data-lead={lead.tone} className={LEAD_TONE[lead.tone]}>
+              {lead.label}
+            </Badge>
+          </Tip>
+        )}
         {c.sha && <code className="font-mono text-code bg-gray-100 rounded-sm px-1">{c.sha.slice(0, 7)}</code>}
         <span className="text-caption text-gray-400">
           {roleName(c.role)}

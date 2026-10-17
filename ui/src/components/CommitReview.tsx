@@ -8,19 +8,14 @@ import { selectFeatureLabel, selectPid } from '../store/selectors'
 import { useCards } from './CardContext'
 import { CommitActions, CommitMessage } from './CommitCard'
 import DiffFile, { Counts, StatusBadge, foldedByDefault } from './DiffFile'
+import { leadReview } from './leadReview'
 import Markdown from './Markdown'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { useCommitDecision } from './useCommitDecision'
 
-const leadLine = (c: Commit) =>
-  c.role === 'lead'
-    ? "Lead's own request, no Lead review"
-    : c.state === 'lead_review'
-      ? 'Waiting on Lead review'
-      : c.state === 'master_review' || c.state === 'committed' || c.state === 'failed'
-        ? 'Approved by Lead'
-        : null
+// Summary wording for the shared Lead-review rule (leadReview.ts).
+const LEAD_LINE = { approved: 'Approved by Lead', own: "Lead's own request, no Lead review", waiting: 'Waiting on Lead review' } as const
 
 // Full-width review of one commit request (F-3). Opened with `review=<id>`; `onClose` drops the param.
 export default function CommitReview({ id, onClose }: { id: number; onClose: () => void }) {
@@ -94,7 +89,7 @@ function Body({ c, data, onDecided }: { c: Commit & { feature?: string | null };
   const [open, setOpen] = useState<Record<string, boolean>>(() => Object.fromEntries(files.map((f) => [f.path, !foldedByDefault(f)])))
   const jumpTo = useRef<string | null>(null)
   const feature = label || c.feature || null
-  const lead = leadLine(c)
+  const lead = leadReview(c)
 
   // Stale files from the diff endpoint; a 409 on approve refreshes them through the hook.
   useEffect(() => {
@@ -129,8 +124,8 @@ function Body({ c, data, onDecided }: { c: Commit & { feature?: string | null };
         </div>
         {lead && (
           <div className="mt-2 text-caption text-gray-600">
-            <span className="font-medium">{lead}</span>
-            {lead === 'Approved by Lead' && c.state === 'master_review' && c.note ? `: ${c.note}` : ''}
+            <span className="font-medium">{LEAD_LINE[lead.tone]}</span>
+            {lead.note ? `: ${lead.note}` : ''}
           </div>
         )}
         <div className="mt-1 text-caption text-gray-600">
