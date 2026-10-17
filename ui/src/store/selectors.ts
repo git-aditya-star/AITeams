@@ -1,5 +1,5 @@
 import { createSelector } from '@reduxjs/toolkit'
-import type { Feature, TeamRole } from '../api'
+import type { Feature, Question, TeamRole } from '../api'
 import type { RootState } from './index'
 
 export const selectPid = (s: RootState) => s.session.pid
@@ -23,11 +23,13 @@ export const featureLabel = (features: Feature[], id: number | null) => {
 }
 export const selectFeatureLabel = (s: RootState, id: number | null) => featureLabel(s.features, id)
 
-export const selectPendingQuestions = createSelector([selectQuestions], (qs) => qs.filter((q) => q.state === 'pending'))
+// Banners and the DM footer are for blocking AskUserQuestion calls only; F-10 cards live in their message (and the Inbox).
+const blocking = (q: Question) => q.kind !== 'card'
+export const selectPendingQuestions = createSelector([selectQuestions], (qs) => qs.filter((q) => q.state === 'pending' && blocking(q)))
 // A DM shows the role's pending questions plus its last three answered/expired ones.
 export const selectDmQuestions = createSelector([selectQuestions, (_s: RootState, role: string | null) => role], (qs, role) => {
   if (!role) return []
-  const mine = qs.filter((q) => q.role === role)
+  const mine = qs.filter((q) => q.role === role && blocking(q))
   return [...mine.filter((q) => q.state !== 'pending').slice(-3), ...mine.filter((q) => q.state === 'pending')]
 })
 

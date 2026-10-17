@@ -61,7 +61,9 @@ export function toastFor(f: WsFrame, ctx: ToastCtx): Toast | null {
     case 'question': {
       const q = f.data as Question
       if (q?.state !== 'pending') return null
-      return make('question', { key: `question:${q.id}`, text: `${roleName(q.role)} asks: ${q.payload?.questions?.[0]?.question || ''}`, conversation: `dm-${q.role}` })
+      // A card opens its own conversation at its message; a blocking question shows in the role's DM.
+      const at = q.kind === 'card' && q.conversation_id ? { conversation: q.conversation_id, message: q.message_id ?? undefined } : { conversation: `dm-${q.role}` }
+      return make('question', { key: `question:${q.id}`, text: `${roleName(q.role)} asks: ${q.payload?.questions?.[0]?.question || ''}`, ...at })
     }
     case 'message': {
       // Same rule as db.inbox_messages.

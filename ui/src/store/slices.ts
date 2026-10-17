@@ -186,6 +186,10 @@ export const messages = createSlice({
             m.ref = m.ref || `commit:${a.payload.id}`
             m.commit = a.payload
           }
+      })
+      // F-10: a card's message carries its question; answer/withdraw frames close it in place.
+      .addCase(ev.questionUpdated, (s, a) => {
+        for (const m of s.items) if (m.ref === `question:${a.payload.id}`) m.question = a.payload
       }),
 })
 

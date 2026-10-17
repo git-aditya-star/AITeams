@@ -178,6 +178,7 @@ export interface Message {
   ref?: string | null
   approval?: Approval | null
   commit?: Commit | null
+  question?: Question | null // F-10: ref question:<id>
 }
 
 export interface InboxMessage extends Message {
@@ -315,10 +316,17 @@ export interface Question {
   role: string
   tool_use_id: string
   payload: { questions: QuestionItem[] }
-  state: 'pending' | 'answered' | 'expired'
+  state: 'pending' | 'answered' | 'expired' | 'withdrawn'
   answers: Record<string, string> | null
   created_at: number
   answered_at: number | null
+  // F-10: 'card' = non-blocking ask_master card (lives in a message, never expires); 'blocking' = held AskUserQuestion.
+  kind?: 'blocking' | 'card'
+  purpose?: 'ask' | 'interview' | 'concern' | 'a_vs_b' | 'brainstorm' | null
+  intro?: string | null
+  feature_id?: number | null
+  conversation_id?: string | null
+  message_id?: number | null
 }
 
 // Thrown for non-2xx responses; `detail` is the parsed JSON `detail` when the body was JSON

@@ -3,6 +3,7 @@ import type { Question, QuestionItem } from '../api'
 import { roleName } from '../roles'
 import { useAppDispatch } from '../store'
 import { answerQuestion } from '../store/thunks'
+import Markdown from './Markdown'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
@@ -49,7 +50,23 @@ function Item({ q, value, onChange }: { q: QuestionItem; value: string[]; onChan
   )
 }
 
-export default function QuestionCard({ q }: { q: Question }) {
+// F-10: the badge for a non-blocking card's purpose (plain asks get none).
+const PURPOSE: Record<string, string> = { interview: 'Interview', concern: 'Concern', a_vs_b: 'A vs B', brainstorm: 'Brainstorm' }
+
+// Purpose badge + intro, shown on cards (open and closed).
+function CardHead({ q }: { q: Question }) {
+  const purpose = q.purpose ? PURPOSE[q.purpose] : null
+  if (q.kind !== 'card' || (!purpose && !q.intro)) return null
+  return (
+    <div className="mb-2">
+      {purpose && <Badge className="mb-1 bg-violet-100 text-violet-800" data-card-purpose>{purpose}</Badge>}
+      {q.intro && <Markdown text={q.intro} />}
+    </div>
+  )
+}
+
+// `embedded`: rendered inside its MessageRow (no side margins); otherwise in the Inbox or a DM footer.
+export default function QuestionCard({ q, embedded = false }: { q: Question; embedded?: boolean }) {
   const dispatch = useAppDispatch()
   const onAnswer = (answers: Record<string, string>) => dispatch(answerQuestion(q, answers))
   const [values, setValues] = useState<Record<string, string[]>>({})
@@ -57,13 +74,32 @@ export default function QuestionCard({ q }: { q: Question }) {
   const [err, setErr] = useState<string | null>(null)
   const items = q.payload?.questions || []
 
+  const box = embedded ? 'my-2 max-w-2xl' : 'mx-4 my-2'
+
   if (q.state !== 'pending') {
+    if (q.kind === 'card') {
+      // Cards keep every question visible once closed: question → answer, or who withdrew it.
+      return (
+        <div className={`${box} rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-meta text-gray-600`} data-question-card={q.id} data-state={q.state}>
+          <CardHead q={q} />
+          {q.state === 'withdrawn' ? (
+            <div className="text-gray-500">Withdrawn by {roleName(q.role)}</div>
+          ) : (
+            items.map((it) => (
+              <div key={it.question} className="mb-1 last:mb-0">
+                <span className="text-gray-500">{it.question}</span> → <span className="font-medium">{q.answers?.[it.question] || '—'}</span>
+              </div>
+            ))
+          )}
+        </div>
+      )
+    }
     const outcome =
       q.state === 'answered'
         ? `Answered: ${Object.values(q.answers || {}).join(' · ') || '—'}`
         : 'Expired'
     return (
-      <div className="mx-4 my-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-meta text-gray-500">
+      <div className={`${box} rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-meta text-gray-500`}>
         <span className="font-medium text-gray-600">{roleName(q.role)} asked:</span> {items[0]?.question}
         <div className="mt-0.5">{outcome}</div>
       </div>
@@ -88,8 +124,9 @@ export default function QuestionCard({ q }: { q: Question }) {
   const instant = items.length === 1 && !items[0].multiSelect
 
   return (
-    <div className="mx-4 my-2 rounded-md border border-blue-300 bg-blue-50 px-3 py-2.5">
+    <div className={`${box} rounded-md border border-blue-300 bg-blue-50 px-3 py-2.5`} data-question-card={q.id} data-state={q.state}>
       <div className="text-caption text-blue-700 font-medium mb-1.5">{roleName(q.role)} is asking</div>
+      <CardHead q={q} />
       {items.map((it) => (
         <Item
           key={it.question}
