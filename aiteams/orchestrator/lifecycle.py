@@ -50,11 +50,13 @@ async def after_turn(st, proj, runner) -> None:
 
     if reason == "master":
         await _dm(proj, role, "Turn stopped by the Master.", turn["id"])
-        db.add_activity("stopped", f"{role}'s turn was stopped by the Master", role, conversation_id=turn.get("conversation_id"))
+        row = db.add_activity("stopped", f"{role}'s turn was stopped by the Master", role, conversation_id=turn.get("conversation_id"))
+        await proj.hub.broadcast("activity", row)
     elif reason == "manager":
         why = getattr(runner, "interrupt_note", None) or "no reason given"
         await _dm(proj, role, f"Turn interrupted by the Manager: {why}", turn["id"])
-        db.add_activity("interrupted", f"Manager interrupted {role}: {why}", role, conversation_id=turn.get("conversation_id"))
+        row = db.add_activity("interrupted", f"Manager interrupted {role}: {why}", role, conversation_id=turn.get("conversation_id"))
+        await proj.hub.broadcast("activity", row)
 
     rs = db.role_state(role)
     if kind == "normal":

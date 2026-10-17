@@ -97,7 +97,9 @@ class TurnRunner:
             if reason != "first turn":
                 seq = db.session_info(role)["seq"]
                 await self._system_message(f"Fresh session #{seq} ({reason})")
-                db.add_activity("fresh_session", f"{role} started session #{seq} ({reason})", role)
+                row = db.add_activity("fresh_session", f"{role} started session #{seq} ({reason})", role,
+                                      conversation_id="dm-" + role)
+                await hub.broadcast("activity", row)
         turn_token = secrets.token_urlsafe(24)  # proves "turn N of role R" to /internal; only this child sees it
         self.turn = db.create_turn(role, session_id, self.wake["origin"], self.wake["conversation_id"], kind, turn_token)
         tid = self.turn["id"]

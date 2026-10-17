@@ -97,6 +97,10 @@ def test_handoff_turn_then_fresh_session_with_handoff_in_prompt(db, home, monkey
     sys_lines = [x["text"] for x in db.messages("dm-backend") if x["author"] == "system"]
     assert sys_lines == ["Fresh session #2 (context 63%)"]
     assert any(a["kind"] == "fresh_session" for a in db.activity())
+    fresh = [d for e, d in proj.hub.events if e == "activity" and d["kind"] == "fresh_session"]
+    assert len(fresh) == 1 and fresh[0]["role"] == "backend" and fresh[0]["conversation_id"] == "dm-backend"
+    stored = [a for a in db.activity() if a["kind"] == "fresh_session"]
+    assert len(stored) == 1 and stored[0]["conversation_id"] == "dm-backend"
 
 
 def test_handoff_turn_without_write_handoff_posts_note(db, home, monkeypatch):
@@ -147,6 +151,10 @@ def test_stop_lines_and_activity(db, home, monkeypatch):
     texts = [m["text"] for m in db.messages("dm-backend")]
     assert texts == ["Turn stopped by the Master.", "Turn interrupted by the Manager: runaway loop"]
     assert [a["kind"] for a in db.activity()] == ["interrupted", "stopped"]
+    frames = [d for e, d in proj.hub.events if e == "activity"]
+    assert [(d["kind"], d["role"], d["conversation_id"]) for d in frames] == [
+        ("stopped", "backend", "dm-backend"), ("interrupted", "backend", "dm-backend")]
+    assert frames[1]["text"] == "Manager interrupted backend: runaway loop"
     assert db.role_state("backend")["rotate_reason"] is None
 
 
