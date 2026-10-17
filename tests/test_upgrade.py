@@ -230,6 +230,51 @@ def test_wheel_includes_gitignored_static(tmp_path):
     assert "aiteams/static/index.html" in names and "aiteams/static/assets/index-X.js" in names
 
 
+def _group_db(path: Path, rows: list[tuple]) -> None:
+    """A project DB (current schema) under <path>/.aiteams with commits (id, role, feature_id, state, note, requires)."""
+    from aiteams.db import ProjectDB
+    db = ProjectDB(str(path))
+    for cid, role, fid, state, note, requires in rows:
+        db.x("INSERT INTO commits(id, feature_id, role, files, message, hashes, state, note, requires, created_at,"
+             " updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", cid, fid, role, "[]", "m", "{}", state, note,
+             json.dumps(requires) if requires else None, 0, 0)
+    db.close()
+
+
+def test_upgrade_warns_about_half_committed_groups(tmp_path):
+    """F-11: a committed member whose partners are still pending is warned about; rejected/superseded partners and
+    singles are not; a missing DB or a DB from before commit groups gives nothing."""
+    assert upgrade.half_committed_groups(tmp_path) == []
+    _group_db(tmp_path, [
+        (1, "backend", 9, "committed", None, None), (2, "frontend", 9, "master_review", None, [1]),  # half: warn
+        (3, "backend", 9, "committed", None, None), (4, "frontend", 9, "rejected", "no", [3]),     # rejected: no
+        (5, "backend", None, "committed", None, None), (6, "qa", None, "lead_review", None, None),  # singles: no
+        (7, "backend", 2, "committed", None, None), (8, "frontend", 2, "committed", None, [7]),     # whole: no
+        (10, "backend", 3, "rejected", "superseded by #11", None), (11, "backend", 3, "committed", None, None),
+        (12, "frontend", 3, "lead_review", None, [11]),                                              # repointed: warn
+    ])
+    assert upgrade.half_committed_groups(tmp_path) == [
+        "warning: commit group #1+#2 is half committed: #2 (F-9, frontend) is master_review",
+        "warning: commit group #11+#12 is half committed: #12 (F-3, frontend) is lead_review"]
+    import sqlite3
+    conn = sqlite3.connect(tmp_path / ".aiteams" / "state.db")
+    conn.execute("ALTER TABLE commits DROP COLUMN requires")
+    conn.commit()
+    conn.close()
+    assert upgrade.half_committed_groups(tmp_path) == []
+
+
+def test_cmd_upgrade_prints_the_group_warning(m2c_src, home, monkeypatch, capsys):
+    r, _ = m2c_src
+    _group_db(r, [(1, "backend", 9, "committed", None, None), (2, "frontend", 9, "master_review", None, [1])])
+    cli, order = _fake_cli(monkeypatch, FakeRun())
+    monkeypatch.chdir(r)
+    cli.main(["upgrade"])
+    out = capsys.readouterr().out
+    assert "warning: commit group #1+#2 is half committed: #2 (F-9, frontend) is master_review" in out
+    assert order[-1][0] == "start"  # a warning, never a block
+
+
 def test_cmd_upgrade_needs_a_source_repo(home, tmp_path, monkeypatch, capsys):
     from aiteams import cli
     monkeypatch.chdir(tmp_path)

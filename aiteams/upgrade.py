@@ -5,17 +5,57 @@ Pure functions over a `run(cmd, stream=False) -> CompletedProcess` parameter so 
 from __future__ import annotations
 
 import io
+import json
 import re
 import shutil
+import sqlite3
 import subprocess
 import tarfile
 import time
 import tomllib
 from pathlib import Path
 
+from . import commit_graph
+
 
 class UpgradeError(Exception):
     pass
+
+
+def half_committed_groups(src: str | Path) -> list[str]:
+    """F-11: warnings for commit groups with a committed member whose partners are still pending (rejected ones don't
+    count). Reads <src>/.aiteams/state.db read-only; a missing DB or one without commit groups gives no warnings."""
+    db = Path(src) / ".aiteams" / "state.db"
+    if not db.is_file():
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            if "requires" not in [r["name"] for r in conn.execute("PRAGMA table_info(commits)")]:
+                return []
+            rows = {r["id"]: {"id": r["id"], "state": r["state"], "note": r["note"], "role": r["role"],
+                              "feature_id": r["feature_id"], "requires": json.loads(r["requires"] or "[]")}
+                    for r in conn.execute("SELECT id, state, note, role, feature_id, requires FROM commits")}
+        finally:
+            conn.close()
+    except (sqlite3.Error, ValueError):
+        return []
+    linked = [c for c in rows.values() if c["requires"]]
+    in_groups = {d["id"] for d in linked} | {n for d in linked for n in d["requires"]}
+    out, seen = [], set()
+    for c in sorted(rows.values(), key=lambda c: c["id"]):
+        if c["state"] != "committed" or c["id"] in seen or c["id"] not in in_groups:
+            continue
+        g = commit_graph.component(c, linked, rows.get)
+        seen.update(m["id"] for m in g)
+        pending = [m for m in g if m["state"] not in ("committed", "rejected")]
+        if len(g) > 1 and pending:
+            label = "+".join(f"#{m['id']}" for m in g)
+            out += [f"warning: commit group {label} is half committed: #{m['id']} "
+                    f"({'F-' + str(m['feature_id']) + ', ' if m['feature_id'] else ''}{m['role']}) is {m['state']}"
+                    for m in pending]
+    return out
 
 
 def run(cmd: list[str], stream: bool = False, cwd: str | None = None) -> subprocess.CompletedProcess:

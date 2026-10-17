@@ -192,6 +192,13 @@ async def request_commit(request: Request, body: InternalCommitBody):
     return {"id": c["id"], "state": c["state"], "files": c["files"], "requires": c["requires"]}
 
 
+@internal.get("/commits/{cid}/files")
+def commit_files(request: Request, cid: int):
+    """F-11 R2: {ids, files} of the request's open commit group (or the request alone), for scripts/review_tree.py."""
+    _, proj, _ = _auth(request)
+    return workflow.group_files(proj.db, cid)
+
+
 @internal.post("/commits/{cid}/review")
 async def review_commit(request: Request, cid: int, body: InternalReviewBody):
     st, proj, turn = _auth(request)

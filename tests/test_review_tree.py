@@ -1,0 +1,90 @@
+"""F-11 R2: scripts/review_tree.py builds HEAD + only the listed files in a throwaway worktree, runs the tests there,
+and removes the worktree."""
+import importlib.util
+import subprocess
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture
+def rt():
+    spec = importlib.util.spec_from_file_location("review_tree", ROOT / "scripts" / "review_tree.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture
+def repo(tmp_path):
+    r = tmp_path / "repo"
+    (r / "ui").mkdir(parents=True)
+    for name, text in (("a.py", "old\n"), ("gone.py", "x\n"), ("other.py", "head\n"), ("ui/x.ts", "1\n")):
+        (r / name).write_text(text)
+    subprocess.run(["git", "init", "-q"], cwd=r, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=r, check=True)
+    subprocess.run(["git", "-c", "user.name=T", "-c", "user.email=t@t", "commit", "-qm", "init"], cwd=r, check=True)
+    (r / ".venv").mkdir()
+    (r / "ui" / "node_modules").mkdir()
+    (r / "a.py").write_text("new\n")         # listed: copied
+    (r / "added.py").write_text("added\n")   # listed, untracked: copied
+    (r / "gone.py").unlink()                 # listed, deleted: removed in the worktree
+    (r / "other.py").write_text("WIP\n")     # not listed: the worktree keeps HEAD's version
+    return r
+
+
+def worktrees(repo):
+    return subprocess.run(["git", "worktree", "list"], cwd=repo, capture_output=True, text=True).stdout.splitlines()
+
+
+def test_tree_is_head_plus_listed_files_and_is_removed(rt, repo, monkeypatch, capsys):
+    seen = {}
+
+    def fake_pytest(tree):
+        seen.update({p: (tree / p).read_text() if (tree / p).exists() else None
+                     for p in ("a.py", "added.py", "gone.py", "other.py")})
+        seen["venv"] = (tree / ".venv").resolve() == (repo / ".venv").resolve()
+        seen["node_modules"] = (tree / "ui" / "node_modules").is_symlink()
+        seen["tree"] = tree
+        return True, "pytest: 3 passed in 0.1s"
+    monkeypatch.setattr(rt, "run_pytest", fake_pytest)
+    monkeypatch.setattr(rt, "run_e2e", lambda tree: pytest.fail("no ui/ file listed: e2e must not run"))
+    code = rt.main(["--files", "a.py", "added.py", "gone.py", "--repo", str(repo)])
+    assert code == 0
+    assert {k: seen[k] for k in ("a.py", "added.py", "gone.py", "other.py")} == {
+        "a.py": "new\n", "added.py": "added\n", "gone.py": None, "other.py": "head\n"}
+    assert seen["venv"] and seen["node_modules"]
+    assert not seen["tree"].exists() and len(worktrees(repo)) == 1  # cleaned up
+    out = capsys.readouterr().out
+    assert "review    files: 3 file(s) on HEAD in" in out and "pytest: 3 passed in 0.1s" in out
+    assert (repo / "other.py").read_text() == "WIP\n"  # the real working tree is untouched
+
+
+def test_ui_file_runs_e2e_failures_set_the_exit_code_and_keep(rt, repo, monkeypatch, capsys):
+    monkeypatch.setattr(rt, "run_pytest", lambda tree: (True, "pytest: 1 passed"))
+    monkeypatch.setattr(rt, "run_e2e", lambda tree: (False, "e2e: 1 failed"))
+    assert rt.main(["--files", "ui/x.ts", "--repo", str(repo)]) == 1
+    assert "e2e: 1 failed" in capsys.readouterr().out
+    assert rt.main(["--files", "ui/x.ts", "--no-e2e", "--repo", str(repo)]) == 0
+    assert rt.main(["--files", "a.py", "--keep", "--repo", str(repo)]) == 0
+    kept = Path(capsys.readouterr().out.split("kept      ")[1].strip())
+    assert kept.is_dir() and (kept / "a.py").read_text() == "new\n"
+    subprocess.run(["git", "worktree", "remove", "--force", str(kept)], cwd=repo, check=True)
+
+
+def test_pytest_refuses_a_tree_that_imports_aiteams_from_elsewhere(rt, tmp_path):
+    tree = tmp_path / "tree"
+    (tree / ".venv" / "bin").mkdir(parents=True)
+    (tree / ".venv" / "bin" / "python").symlink_to(Path(__import__("sys").executable))
+    ok, line = rt.run_pytest(tree)  # no aiteams/ in this tree: the import resolves outside it
+    assert not ok and line.startswith("pytest: ABORTED")
+
+
+def test_commit_id_needs_a_role_turn(rt, monkeypatch):
+    for k in ("AITEAMS_DAEMON_URL", "AITEAMS_PROJECT", "AITEAMS_TURN", "AITEAMS_TURN_TOKEN"):
+        monkeypatch.delenv(k, raising=False)
+    with pytest.raises(SystemExit) as e:
+        rt.main(["7"])
+    assert "role turn" in str(e.value)

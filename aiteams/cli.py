@@ -220,6 +220,8 @@ def cmd_upgrade(args) -> None:
         print(f"resolve   {ref} -> {sha[:7]} in {src}")
         if ref == "HEAD" and upgrade.dirty(src):
             print("warning: working tree has uncommitted changes; the snapshot is HEAD, not the tree")
+        for line in upgrade.half_committed_groups(src):  # F-11: a warning only, never blocks
+            print(line)
         snap = upgrade.snapshot(src, sha, config.runtime_dir())
         version = upgrade.snapshot_version(snap)
         print(f"snapshot  {snap}")

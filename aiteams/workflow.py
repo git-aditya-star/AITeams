@@ -13,6 +13,7 @@ import time
 from fastapi import HTTPException
 
 from .config import ROLES, effort_for, model_for, model_label
+from . import commit_graph
 from .db import PHASES, WAKE_KINDS, ProjectDB
 from .runtime import Project
 
@@ -504,38 +505,23 @@ async def request_commit(st, proj: Project, role: str, turn_id: int | None, feat
 
 
 # ---- F-11: commit groups ------------------------------------------------------------
-def _superseded(c: dict) -> bool:
-    return c["state"] == "rejected" and (c.get("note") or "").startswith("superseded by #")
+_superseded = commit_graph.superseded
 
 
 def commit_group(db: ProjectDB, cid: int) -> list[dict]:
-    """The requests linked to `cid` through `requires` (either direction), superseded ones left out, in dependency
+    """The requests linked to `cid` through `requires` (either direction), rejected ones left out, in dependency
     order (a request after everything it requires; ties by id). A request with no links is a group of one."""
     start = db.commit(cid)
-    if start is None:
-        return []
-    links = db.linked_commits()
-    nbrs: dict[int, set[int]] = {}
-    for d in links:
-        for n in d["requires"]:
-            nbrs.setdefault(d["id"], set()).add(n)
-            nbrs.setdefault(n, set()).add(d["id"])
-    members, todo = {start["id"]: start}, [start["id"]]
-    while todo:
-        for n in nbrs.get(todo.pop(), ()):
-            if n not in members:
-                r = db.commit(n)
-                if r is not None and not _superseded(r):
-                    members[n] = r
-                    todo.append(n)
-    out, done = [], set()
-    while len(out) < len(members):
-        ready = [m for i, m in sorted(members.items()) if i not in done
-                 and all(n in done or n not in members for n in m["requires"])]
-        nxt = ready[0] if ready else next(m for i, m in sorted(members.items()) if i not in done)  # no cycles, but never hang
-        out.append(nxt)
-        done.add(nxt["id"])
-    return out
+    return commit_graph.component(start, db.linked_commits(), db.commit) if start else []
+
+
+def _blocked(db: ProjectDB, group: list[dict]) -> str | None:
+    """F-11 (Lead #605): a member requiring a rejected, not superseded request can't land, alone or with its group."""
+    hits = commit_graph.rejected_requirements(group, db.commit)
+    if not hits:
+        return None
+    m, n = hits[0]
+    return f"#{m['id']} requires #{n}, which was rejected: re-file #{n}, or re-file #{m['id']} without it"
 
 
 def _open_others(group: list[dict], cid: int) -> list[dict]:
@@ -554,10 +540,23 @@ def inbox_groups(db: ProjectDB) -> list[dict]:
             continue
         members = [{**m, "feature": db.feature(m["feature_id"])["key"] if m["feature_id"] else None} for m in g]
         pending = [m for m in members if m["state"] != "committed"]
+        blocked = _blocked(db, g)
         out.append({"id": min(m["id"] for m in g), "feature": next((m["feature"] for m in members if m["feature"]), None),
                     "members": members, "files": len({f for m in pending for f in m["files"]}),
-                    "ready": all(m["state"] == "master_review" for m in pending)})
+                    "ready": not blocked and all(m["state"] == "master_review" for m in pending), "blocked": blocked})
     return out
+
+
+def group_files(db: ProjectDB, cid: int) -> dict:
+    """F-11 R2: the request's open group (or the request alone), in dependency order, for the review script."""
+    c = db.commit(cid)
+    if c is None:
+        raise HTTPException(404, "unknown commit")
+    g = [m for m in commit_group(db, cid) if m["state"] != "committed"] or [c]
+    files = []
+    for m in g:
+        files += [f for f in m["files"] if f not in files]
+    return {"ids": [m["id"] for m in g], "files": files}
 
 
 async def review_commit(st, proj: Project, role: str, cid: int, decision: str, note: str | None) -> dict:
@@ -686,6 +685,9 @@ async def decide_commit(st, proj: Project, cid: int, decision: str, message: str
         raise HTTPException(400, "decision must be approve|reject")
     if decision == "approve":
         g = commit_group(proj.db, cid)
+        why = _blocked(proj.db, g)  # it, or a member of its group, requires a rejected request
+        if why:
+            raise HTTPException(409, why)
         others = _open_others(g, cid)
         if group and others:  # a group of one (or the rest committed) takes the single path below
             return await _commit_group(st, proj, [m for m in g if m["state"] != "committed"], note, force)

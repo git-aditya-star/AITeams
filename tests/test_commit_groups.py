@@ -154,7 +154,9 @@ def test_refile_takes_the_predecessors_place(client, pid, repo):
     assert [m["id"] for m in workflow.commit_group(db, ui["id"])] == [base2["id"], ui["id"]]
     # a rejected predecessor that the UI half still requires: the re-file repoints it too
     client.post(f"/api/p/{pid}/commits/{base2['id']}/decide", json={"decision": "reject", "note": "add tests"})
-    assert decide(client, pid, ui["id"]).status_code == 409  # its base is rejected: still a group
+    r = decide(client, pid, ui["id"])  # its base is rejected: blocked until one of them re-files (Lead #605)
+    assert r.status_code == 409 and r.json()["detail"] == (
+        f"#{ui['id']} requires #{base2['id']}, which was rejected: re-file #{base2['id']}, or re-file #{ui['id']} without it")
     base3 = request(client, pid, repo, "backend", "api.py")
     assert db.commit(base2["id"])["note"] == f"superseded by #{base3['id']}"
     assert db.commit(ui["id"])["requires"] == [base3["id"]]
@@ -173,10 +175,37 @@ def test_reject_one_member_and_committed_requires(client, pid, repo):
     inbox = client.get(f"/api/p/{pid}/inbox").json()
     assert inbox["groups"][0]["ready"] is True and inbox["groups"][0]["files"] == 1
     assert decide(client, pid, ui["id"]).status_code == 200  # the rest is committed: it lands alone
-    # rejecting one member rejects only it
+    # rejecting one member rejects only it; a rejected dependent releases its base (Lead #605)
     a = request(client, pid, repo, "backend", "a.py")
     b = request(client, pid, repo, "frontend", "b.ts", [a["id"]])
     r = client.post(f"/api/p/{pid}/commits/{b['id']}/decide", json={"decision": "reject", "note": "no"}).json()
     assert r["state"] == "rejected" and db.commit(a["id"])["state"] == "master_review"
-    r = decide(client, pid, a["id"])
-    assert r.status_code == 409 and f"#{b['id']} (rejected)" in r.json()["detail"]
+    assert [m["id"] for m in workflow.commit_group(db, a["id"])] == [a["id"]]
+    inbox = client.get(f"/api/p/{pid}/inbox").json()
+    assert inbox["groups"] == [] and a["id"] in [c["id"] for c in inbox["commits"]]
+    assert decide(client, pid, a["id"]).status_code == 200
+    # the UI half re-files later: it just requires the committed base
+    b2 = request(client, pid, repo, "frontend", "b.ts", [a["id"]])
+    assert decide(client, pid, b2["id"]).status_code == 200
+
+
+def test_rejected_requirement_blocks_alone_and_in_a_group(client, pid, repo):
+    db = db_of(client, pid)
+    a = request(client, pid, repo, "backend", "a.py")
+    b = request(client, pid, repo, "frontend", "b.ts", [a["id"]])
+    c = request(client, pid, repo, "qa", "c.py", [b["id"]])
+    client.post(f"/api/p/{pid}/commits/{a['id']}/decide", json={"decision": "reject", "note": "redo"})
+    msg = f"#{b['id']} requires #{a['id']}, which was rejected: re-file #{a['id']}, or re-file #{b['id']} without it"
+    assert [m["id"] for m in workflow.commit_group(db, c["id"])] == [b["id"], c["id"]]
+    for cid, grp in ((b["id"], False), (b["id"], True), (c["id"], True)):
+        r = decide(client, pid, cid, group=grp)
+        assert r.status_code == 409 and r.json()["detail"] == msg, (cid, grp, r.text)
+    g = client.get(f"/api/p/{pid}/inbox").json()["groups"][0]
+    assert (g["ready"], g["blocked"]) == (False, msg)
+    assert db.commit(b["id"])["state"] == "master_review"
+    # the review script's view of the group: open members in order, their files
+    r = client.get(f"/internal/commits/{c['id']}/files", headers=hdr(client, pid, "lead")).json()
+    assert r == {"ids": [b["id"], c["id"]], "files": ["b.ts", "c.py"]}
+    r = client.get(f"/internal/commits/{a['id']}/files", headers=hdr(client, pid, "lead")).json()
+    assert r == {"ids": [a["id"]], "files": ["a.py"]}  # a rejected request alone
+    assert client.get("/internal/commits/999/files", headers=hdr(client, pid, "lead")).status_code == 404
