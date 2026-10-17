@@ -19,9 +19,10 @@ function ToastItem({ t, onOpen, onClose }: { t: Toast; onOpen: () => void; onClo
       role="status"
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      className={`w-80 bg-white border border-gray-200 border-l-4 ${t.tone === 'error' ? 'border-l-red-500' : 'border-l-blue-500'} rounded shadow-sm text-[13px] text-gray-800 flex items-start`}
+      className={`w-96 bg-white border border-gray-200 border-l-4 ${t.tone === 'error' ? 'border-l-red-500' : 'border-l-blue-500'} rounded shadow-sm text-[13px] text-gray-800 flex items-start`}
     >
-      <button className="flex-1 min-w-0 text-left px-3 py-2 line-clamp-2" onClick={onOpen}>
+      {/* Up to 5 lines; the full text is in the hover title (hover also pauses the timer). */}
+      <button className="flex-1 min-w-0 text-left px-3 py-2 break-words line-clamp-5" title={t.text} onClick={onOpen}>
         {t.text}
       </button>
       <button className="shrink-0 px-2 py-1.5 text-gray-400 hover:text-gray-700" aria-label="Dismiss" onClick={onClose}>

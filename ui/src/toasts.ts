@@ -15,6 +15,8 @@ export type Toast = {
 export type ToastCtx = { features: Feature[]; prevRateLimit: RateLimitInfo | null }
 
 const firstLine = (s: string | null | undefined) => (s || '').trim().split('\n')[0].trim()
+// Whole body as one paragraph; the toast clamps it and shows the full text on hover.
+const oneParagraph = (s: string | null | undefined) => (s || '').trim().replace(/\s+/g, ' ')
 
 // Feature conversation for an approval/commit, else the requesting role's DM.
 const convFor = (featureId: number | null, role: string, features: Feature[]) =>
@@ -33,7 +35,7 @@ export function toastFor(f: WsFrame, ctx: ToastCtx): Toast | null {
       // Same rule as db.inbox_messages.
       const m = f.data as Message
       if (!m || (m.type !== 'Question' && m.type !== 'Blocker') || !m.mentions?.includes('master') || m.author === 'master') return null
-      const line = firstLine(m.text).replace(/^(@\w+[\s,]*)+/, '')
+      const line = oneParagraph(m.text).replace(/^(@\w+[\s,]*)+/, '')
       const text = m.type === 'Blocker' ? `Blocker from ${roleName(m.author)}: ${line}` : `${roleName(m.author)} asks: ${line}`
       return { key: `msg:${m.id}`, text, tone: 'info', conversation: m.conversation_id, message: m.id }
     }
