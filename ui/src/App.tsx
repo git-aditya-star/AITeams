@@ -19,6 +19,8 @@ import HistoryView from './components/HistoryView'
 import RoleActions from './components/RoleActions'
 import StandupButton from './components/StandupButton'
 import { CardContext } from './components/CardContext'
+import Toasts, { pushToast } from './components/Toasts'
+import { toastFor, type Toast } from './toasts'
 
 const PAGE = 50
 type Tab = 'chat' | 'live' | 'docs'
@@ -61,6 +63,9 @@ export default function App() {
   const [rateLimit, setRateLimit] = useState<RateLimitInfo | null>(null)
   const [health, setHealth] = useState<Health | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [toasts, setToasts] = useState<Toast[]>([])
+  // Toast keys already shown this page load (rate_limit is cleared when the limit clears).
+  const seenToasts = useRef(new Set<string>())
 
   // Fan-out for components (LiveSession) that want raw WS frames.
   const listeners = useRef(new Set<(f: WsFrame) => void>())
@@ -186,6 +191,11 @@ export default function App() {
     listeners.current.forEach((fn) => fn(f))
     // waits_on / stale / counts only come from /dashboard, so refetch it while it is on screen.
     const touchDash = () => { if (current === 'dashboard') refreshDashboard() }
+    const toast = toastFor(f, { features, prevRateLimit: rateLimit })
+    if (toast && !seenToasts.current.has(toast.key)) {
+      seenToasts.current.add(toast.key)
+      setToasts((ts) => pushToast(ts, toast))
+    }
     switch (f.event) {
       case 'message': {
         const m = f.data as Message
@@ -274,7 +284,9 @@ export default function App() {
         break
       case 'rate_limit': {
         const info = f.data?.info as RateLimitInfo | undefined
-        setRateLimit(info && !info.status.startsWith('allowed') ? info : null)
+        const limited = info && !info.status.startsWith('allowed')
+        setRateLimit(limited ? info : null)
+        if (!limited) seenToasts.current.delete('rate_limit')
         break
       }
       case 'paused':
@@ -503,6 +515,14 @@ export default function App() {
           )}
         </main>
       </div>
+      <Toasts
+        toasts={toasts}
+        onOpen={(t) => {
+          if (t.conversation) select(t.conversation, undefined, t.message)
+          setToasts((ts) => ts.filter((x) => x.key !== t.key))
+        }}
+        onDismiss={(key) => setToasts((ts) => ts.filter((x) => x.key !== key))}
+      />
     </CardContext.Provider>
   )
 }
