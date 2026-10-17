@@ -67,7 +67,7 @@ export default function DashboardView({
               <span className="text-gray-500">{k}</span>
             </button>
           ))}
-          <div className="ml-auto min-w-[260px]">
+          <div className="ml-auto">
             <NewTaskForm onNewTask={onNewTask} buttonClass="" />
           </div>
         </div>

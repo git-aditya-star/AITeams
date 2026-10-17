@@ -1,12 +1,15 @@
+import { Plus } from 'lucide-react'
 import { useState } from 'react'
 import { roleName } from '../roles'
 import { Button } from './ui/button'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog'
 import { Textarea } from './ui/textarea'
+import { ToggleGroup, ToggleGroupItem } from './ui/toggle-group'
 
 const STARTERS = ['product', 'lead', 'manager'] as const
 
-// "New task" button that expands into the one-box form (sidebar and dashboard).
+// F-15: the prominent "New task" button (sidebar and dashboard) and the modal where the Master writes the brief.
+// The draft lives here, outside the dialog, so closing without starting keeps it for the next open.
 export default function NewTaskForm({
   onNewTask,
   buttonClass = 'w-full',
@@ -14,7 +17,7 @@ export default function NewTaskForm({
   onNewTask: (body: { text: string; starter: string }) => Promise<void>
   buttonClass?: string
 }) {
-  const [creating, setCreating] = useState(false)
+  const [open, setOpen] = useState(false)
   const [text, setText] = useState('')
   const [starter, setStarter] = useState<string>('product')
   const [busy, setBusy] = useState(false)
@@ -28,56 +31,74 @@ export default function NewTaskForm({
     try {
       await onNewTask({ text: t, starter })
       setText('')
-      setCreating(false)
+      setOpen(false)
     } catch (e: any) {
-      setErr(e?.message || 'failed')
+      setErr(e?.message || 'failed') // the dialog and the text stay
     } finally {
       setBusy(false)
     }
   }
 
-  if (!creating) {
-    return (
-      <Button onClick={() => setCreating(true)} className={buttonClass}>
+  return (
+    <>
+      <Button size="lg" onClick={() => setOpen(true)} className={buttonClass}>
+        <Plus />
         New task
       </Button>
-    )
-  }
-  return (
-    <div className="flex flex-col gap-1.5">
-      <Textarea
-        autoFocus
-        value={text}
-        rows={3}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void submit()
-          if (e.key === 'Escape') setCreating(false)
+      <Dialog
+        open={open}
+        onOpenChange={(o) => {
+          setOpen(o)
+          if (o) setErr(null)
         }}
-        placeholder="What should the team do?"
-        className="resize-none"
-      />
-      <div className="flex gap-1 items-center">
-        <Select value={starter} onValueChange={setStarter}>
-          <SelectTrigger size="sm" aria-label="Starter" className="flex-1 min-w-0">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {STARTERS.map((r) => (
-              <SelectItem key={r} value={r}>
-                {roleName(r)}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Button size="sm" disabled={busy || !text.trim()} onClick={submit}>
-          Start
-        </Button>
-        <Button variant="ghost" size="sm" onClick={() => setCreating(false)}>
-          Cancel
-        </Button>
-      </div>
-      {err && <div className="text-caption text-red-600 truncate">{err}</div>}
-    </div>
+      >
+        <DialogContent className="sm:max-w-2xl p-6 gap-4" data-new-task>
+          <DialogHeader>
+            <DialogTitle className="text-title">What should the team build?</DialogTitle>
+            <DialogDescription className="text-meta">Describe it in a few lines. Product will interview you for the details.</DialogDescription>
+          </DialogHeader>
+          <Textarea
+            autoFocus
+            aria-label="Brief"
+            rows={6}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault()
+                void submit()
+              }
+            }}
+            placeholder="Add CSV export to the reports page, so finance can pull last month's orders without asking us."
+            className="field-sizing-content min-h-36 max-h-[50vh] resize-none px-3 py-2 text-body"
+          />
+          {err && <div className="text-caption text-red-600 break-words">{err}</div>}
+          <div className="flex items-center gap-3">
+            <span className="text-meta text-gray-500" id="new-task-starter">
+              Starts with
+            </span>
+            {/* Radix sends '' when the active item is clicked again; ignore it so a starter is always picked. */}
+            <ToggleGroup type="single" variant="outline" aria-labelledby="new-task-starter" value={starter} onValueChange={(v) => v && setStarter(v)}>
+              {STARTERS.map((r) => (
+                <ToggleGroupItem key={r} value={r} className="px-3">
+                  {roleName(r)}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
+          </div>
+          <DialogFooter className="items-center sm:justify-between">
+            <span className="text-caption text-gray-400">⌘↵ to start</span>
+            <div className="flex gap-2">
+              <Button variant="ghost" onClick={() => setOpen(false)}>
+                Cancel
+              </Button>
+              <Button disabled={busy || !text.trim()} onClick={submit}>
+                Start
+              </Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 }
