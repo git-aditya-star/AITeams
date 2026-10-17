@@ -3,13 +3,14 @@ import type { Commit } from '../api'
 export type LeadReview = { label: string; tone: 'approved' | 'own' | 'waiting'; note: string | null }
 
 // F-7: what the Lead did with a commit request. `rejected` gets nothing: the Lead or the Master may have rejected it.
-// The note is the Lead's only while the request waits on the Master; decide_commit overwrites it afterwards.
+// The note (trimmed; blank means none) is the Lead's only while the request waits on the Master; decide_commit
+// overwrites it afterwards.
 export function leadReview(c: Commit): LeadReview | null {
   if (c.state === 'rejected') return null
   if (c.role === 'lead') return { label: "Lead's own, not reviewed", tone: 'own', note: null }
   if (c.state === 'lead_review') return { label: 'Waiting on Lead', tone: 'waiting', note: null }
   if (c.state === 'master_review' || c.state === 'committed' || c.state === 'failed')
-    return { label: 'Lead approved', tone: 'approved', note: c.state === 'master_review' ? c.note || null : null }
+    return { label: 'Lead approved', tone: 'approved', note: c.state === 'master_review' ? c.note?.trim() || null : null }
   return null
 }
 
