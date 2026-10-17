@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import signal
 import sys
 from pathlib import Path
@@ -88,12 +89,42 @@ class ClaudeProc:
         self.saw_init = False
         self.interrupted = False
         self._err_task: asyncio.Task | None = None
+        self._caffeinate: asyncio.subprocess.Process | None = None
 
     async def start(self) -> None:
         self.proc = await asyncio.create_subprocess_exec(
             *self.cmd, cwd=self.cwd, env=self.env, stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, limit=16 * 1024 * 1024)
         self._err_task = asyncio.create_task(self._read_err())
+        await self._keep_awake()
+
+    async def _keep_awake(self) -> None:
+        """F-13: on macOS, `caffeinate -i -w <claude pid>` holds off idle sleep until claude exits. Best effort."""
+        exe = shutil.which("caffeinate") if sys.platform == "darwin" else None
+        if not exe or not self.proc:
+            return
+        dn = asyncio.subprocess.DEVNULL
+        try:
+            self._caffeinate = await asyncio.create_subprocess_exec(exe, "-i", "-w", str(self.proc.pid),
+                                                                    stdin=dn, stdout=dn, stderr=dn)
+        except (OSError, ValueError):
+            self._caffeinate = None
+
+    async def _reap_caffeinate(self) -> None:
+        c = self._caffeinate
+        if c is None:
+            return
+        try:
+            await asyncio.wait_for(c.wait(), 2)
+        except asyncio.TimeoutError:
+            try:
+                c.terminate()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(c.wait(), 2)
+            except asyncio.TimeoutError:
+                pass
 
     @property
     def pid(self) -> int | None:
@@ -176,6 +207,7 @@ class ClaudeProc:
                 await asyncio.wait_for(self._err_task, 2)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 pass
+        await self._reap_caffeinate()
         return self.proc.returncode
 
 

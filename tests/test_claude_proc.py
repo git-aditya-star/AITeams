@@ -213,3 +213,82 @@ def test_turn_records_resolved_effort(db, home, monkeypatch):
     ev = proj.db.turn_events(t["id"])[0]["data"]
     assert (ev["type"], ev["model"], ev["effort"]) == ("aiteams_cmd", "sonnet", "low")
     proj.db.close()
+
+
+# ---- F-13: caffeinate -i -w <claude pid> keeps the Mac awake for the turn ----------------------------
+# Fake caffeinate: records its argv, then waits until the -w pid is gone (like the real one) or 10 s pass.
+FAKE_CAFFEINATE = r'''#!{py}
+import json, os, sys, time
+open(os.environ["CAFF_LOG"], "w").write(json.dumps(sys.argv[1:]))
+pid = int(sys.argv[sys.argv.index("-w") + 1])
+for _ in range(100):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        break
+    time.sleep(0.1)
+'''
+
+
+def fake_caffeinate(tmp_path, monkeypatch):
+    from aiteams.orchestrator import claude_proc
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    exe = bin_dir / "caffeinate"
+    exe.write_text(FAKE_CAFFEINATE.replace("{py}", sys.executable))
+    exe.chmod(0o755)
+    log = tmp_path / "caff.json"
+    monkeypatch.setenv("CAFF_LOG", str(log))
+    monkeypatch.setenv("PATH", f"{bin_dir}:{__import__('os').environ['PATH']}")
+    monkeypatch.setattr(claude_proc.sys, "platform", "darwin")
+    return log
+
+
+def run_turn(tmp_path):
+    async def go():
+        p = ClaudeProc(fake_cmd(), str(tmp_path), fake_env([INIT, RESULT]))
+        await p.start()
+        caff = p._caffeinate
+        p.send_user("hello")
+        evs = await collect(p)
+        rc = await p.finish()
+        return p, caff, evs, rc
+    return asyncio.run(go())
+
+
+def test_caffeinate_holds_for_the_turn_and_is_reaped(tmp_path, monkeypatch):
+    log = fake_caffeinate(tmp_path, monkeypatch)
+    p, caff, evs, rc = run_turn(tmp_path)
+    assert evs[-1]["type"] == "result" and rc == 0
+    assert caff is not None and caff.returncode is not None  # reaped by finish(): no zombie
+    assert json.loads(log.read_text()) == ["-i", "-w", str(p.pid)]
+
+
+def test_no_caffeinate_on_path_turn_runs_as_before(tmp_path, monkeypatch):
+    from aiteams.orchestrator import claude_proc
+    monkeypatch.setattr(claude_proc.sys, "platform", "darwin")
+    monkeypatch.setattr(claude_proc.shutil, "which", lambda name: None)
+    p, caff, evs, rc = run_turn(tmp_path)
+    assert caff is None and evs[-1]["type"] == "result" and rc == 0
+
+
+def test_caffeinate_spawn_failure_is_swallowed(tmp_path, monkeypatch):
+    from aiteams.orchestrator import claude_proc
+    fake_caffeinate(tmp_path, monkeypatch)
+    real = asyncio.create_subprocess_exec
+
+    async def spawn(*args, **kw):
+        if str(args[0]).endswith("caffeinate"):
+            raise OSError("exec format error")
+        return await real(*args, **kw)
+    monkeypatch.setattr(claude_proc.asyncio, "create_subprocess_exec", spawn)
+    p, caff, evs, rc = run_turn(tmp_path)
+    assert caff is None and evs[-1]["type"] == "result" and rc == 0
+
+
+def test_no_caffeinate_off_macos(tmp_path, monkeypatch):
+    from aiteams.orchestrator import claude_proc
+    log = fake_caffeinate(tmp_path, monkeypatch)
+    monkeypatch.setattr(claude_proc.sys, "platform", "linux")
+    p, caff, evs, rc = run_turn(tmp_path)
+    assert caff is None and rc == 0 and not log.exists()
