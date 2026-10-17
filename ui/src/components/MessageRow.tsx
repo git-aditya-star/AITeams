@@ -7,10 +7,10 @@ import CommitCard from './CommitCard'
 import Markdown from './Markdown'
 import Receipts from './Receipts'
 
-export default function MessageRow({ m }: { m: Message }) {
+export default function MessageRow({ m, highlight = false }: { m: Message; highlight?: boolean }) {
   const card = m.ref?.startsWith('approval:') && m.approval ? <ApprovalCard a={m.approval} /> : m.ref?.startsWith('commit:') && m.commit ? <CommitCard c={m.commit} /> : null
   return (
-    <div className="flex gap-2.5 px-4 py-1.5 hover:bg-gray-50">
+    <div id={`m-${m.id}`} className={`flex gap-2.5 px-4 py-1.5 ${highlight ? 'bg-amber-50' : 'hover:bg-gray-50'}`}>
       <Avatar author={m.author} className="mt-0.5" />
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">

@@ -100,3 +100,30 @@ class InternalReviewBody(BaseModel):
 class LockBody(BaseModel):
     path: str = Field(min_length=1)
     force: bool = False
+
+
+class FreshStartBody(BaseModel):
+    handoff: bool = True
+
+
+class FeatureFreshStartBody(BaseModel):
+    mode: str = "keep_docs"
+
+
+class HandoffBody(BaseModel):
+    text: str = Field(min_length=1)
+
+
+class StandupSaveBody(BaseModel):
+    text: str = Field(min_length=1)
+
+
+class InterruptBody(BaseModel):
+    role: str
+    reason: str = ""
+
+
+class CheckpointBody(BaseModel):
+    role: str
+    reason: str = ""
+    handoff: bool = True

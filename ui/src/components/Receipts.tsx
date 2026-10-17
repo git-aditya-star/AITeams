@@ -1,10 +1,11 @@
 import type { Receipt, ReceiptState } from '../api'
 import Avatar from './Avatar'
+import { Check, Clock, Eye } from './icons'
 
-const GROUPS: { state: ReceiptState; icon: string; title: string }[] = [
-  { state: 'acked', icon: '✓', title: 'acknowledged' },
-  { state: 'seen', icon: '👁', title: 'seen' },
-  { state: 'queued', icon: '⏳', title: 'queued' },
+const GROUPS: { state: ReceiptState; Icon: typeof Check; title: string }[] = [
+  { state: 'acked', Icon: Check, title: 'acknowledged' },
+  { state: 'seen', Icon: Eye, title: 'seen' },
+  { state: 'queued', Icon: Clock, title: 'queued' },
 ]
 
 export default function Receipts({ receipts }: { receipts: Receipt[] }) {
@@ -18,7 +19,7 @@ export default function Receipts({ receipts }: { receipts: Receipt[] }) {
         const extra = roles.length - shown.length
         return (
           <div key={g.state} className="flex items-center" title={`${g.title}: ${roles.join(', ')}`}>
-            <span className="text-[11px] text-gray-400 mr-1 leading-none">{g.icon}</span>
+            <g.Icon size={12} className="text-gray-400 mr-1" />
             <div className="flex">
               {shown.map((r, i) => (
                 <Avatar key={r} author={r} size={18} className={`ring-2 ring-white ${i ? '-ml-1.5' : ''}`} />

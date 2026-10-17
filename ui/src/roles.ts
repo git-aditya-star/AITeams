@@ -27,6 +27,7 @@ export const TYPE_CHIP: Record<string, string> = {
   Blocker: 'bg-red-100 text-red-800',
   Approval: 'bg-amber-50 text-amber-800',
   Commit: 'bg-teal-50 text-teal-700',
+  Standup: 'bg-indigo-50 text-indigo-700',
 }
 
 export const dotClass = (state: string) =>
@@ -35,6 +36,14 @@ export const dotClass = (state: string) =>
     : state === 'queued'
       ? 'bg-amber-400'
       : 'bg-gray-300'
+
+// State word for a role: the running turn's kind wins over the plain state.
+export const stateWord = (t: { state: string; kind?: string | null } | undefined) => {
+  if (!t) return 'idle'
+  if (t.state === 'running' && t.kind === 'handoff') return 'handoff'
+  if (t.state === 'running' && (t.kind === 'standup' || t.kind === 'standup_compile')) return 'standup'
+  return t.state
+}
 
 export const meterClass = (pct: number) =>
   pct >= 0.6 ? 'bg-red-500' : pct >= 0.4 ? 'bg-amber-400' : 'bg-green-500'

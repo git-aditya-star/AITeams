@@ -9,11 +9,11 @@ import time
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 
 from .. import config
-from ..config import ROLES, model_for
-from ..models import AnswerBody, ConversationBody, MessageBody, PauseBody, RegisterBody
+from ..config import ROLES
+from .. import workflow
+from ..models import AnswerBody, ConversationBody, FreshStartBody, MessageBody, PauseBody, RegisterBody
 from ..orchestrator import router as routing
 from ..orchestrator import receipts
-from ..orchestrator.turn import context_window_from
 from ..runtime import Project
 
 api = APIRouter(prefix="/api")
@@ -130,24 +130,69 @@ async def create_message(request: Request, pid: str, body: MessageBody):
 
 @api.get("/p/{pid}/team")
 def team(request: Request, pid: str):
+    return {"roles": workflow.team_status(_state(request), _project(request, pid))}
+
+
+@api.get("/p/{pid}/dashboard")
+def dashboard(request: Request, pid: str):
+    return workflow.dashboard(_state(request), _project(request, pid))
+
+
+@api.post("/p/{pid}/team/{role}/stop")
+async def stop_role(request: Request, pid: str, role: str):
     st = _state(request)
     proj = _project(request, pid)
-    db = proj.db
+    if role not in ROLES:
+        raise HTTPException(404, "unknown role")
+    if not (st.scheduler and st.scheduler.stop(proj.id, role, "master")):
+        raise HTTPException(409, "not running")
+    return {"ok": True}
+
+
+@api.post("/p/{pid}/team/{role}/fresh-start")
+async def fresh_start_role(request: Request, pid: str, role: str, body: FreshStartBody):
+    from ..orchestrator.lifecycle import request_rotation
+    st = _state(request)
+    proj = _project(request, pid)
+    if role not in ROLES:
+        raise HTTPException(404, "unknown role")
+    if not await request_rotation(st, proj, role, "fresh start", body.handoff):
+        raise HTTPException(409, "a rotation is already pending")
+    return proj.db.role_state(role)
+
+
+@api.post("/p/{pid}/standup")
+async def standup(request: Request, pid: str):
+    return await workflow.start_standup(_state(request), _project(request, pid), "master")
+
+
+@api.get("/p/{pid}/standups")
+def standups(request: Request, pid: str, limit: int = 20):
+    return _project(request, pid).db.standups(min(max(limit, 1), 100))
+
+
+@api.get("/p/{pid}/standups/{sid}/report")
+def standup_report(request: Request, pid: str, sid: int):
+    return workflow.standup_report(_project(request, pid), sid)
+
+
+@api.get("/p/{pid}/handoffs")
+def handoffs(request: Request, pid: str, role: str | None = None, limit: int = 20):
+    proj = _project(request, pid)
     out = []
-    for role in ROLES:
-        turns = db.turns(role, limit=20)
-        last = turns[0] if turns else None
-        running = (proj.id, role) in (st.scheduler.running if st.scheduler else {})
-        state = "running" if running else ("queued" if db.queued_wake(role) else "idle")
-        ctx = next((t["context_tokens"] for t in turns if t.get("context_tokens")), 0) or 0
-        model = model_for(st.settings, role)
-        window = next((context_window_from(json.loads(t["result_json"]), None)
-                       for t in turns if t.get("result_json")), context_window_from(None))
-        out.append({"role": role, "state": state, "session_id": db.active_session(role), "last_turn": last,
-                    "context_tokens": ctx, "context_window": window,
-                    "context_pct": (ctx / window) if window else 0.0,
-                    "cost_today": db.cost_today(role), "model": model})
-    return {"roles": out}
+    for h in proj.db.handoffs(role, min(max(limit, 1), 100)):
+        try:
+            with open(h["path"], encoding="utf-8", errors="replace") as f:
+                h["text"] = f.read()
+        except OSError:
+            h["text"] = ""
+        out.append(h)
+    return out
+
+
+@api.get("/p/{pid}/activity")
+def activity(request: Request, pid: str, limit: int = 30):
+    return _project(request, pid).db.activity(min(max(limit, 1), 200))
 
 
 @api.get("/p/{pid}/turns")

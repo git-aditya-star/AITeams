@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { Feature, Lock } from '../api'
 import { PHASES, ROLES, phaseChip, roleName } from '../roles'
+import { X } from './icons'
 
 export type FeatureTab = 'chat' | 'docs'
 
@@ -12,6 +13,7 @@ export default function FeatureHeader({
   onTab,
   onPatch,
   onReleaseLock,
+  onFreshStart,
 }: {
   feature: Feature
   locks: Lock[]
@@ -20,14 +22,18 @@ export default function FeatureHeader({
   onTab: (t: FeatureTab) => void
   onPatch: (patch: { phase?: string; owner?: string | null; archived?: boolean }) => Promise<void>
   onReleaseLock: (path: string) => Promise<void>
+  onFreshStart: (mode: 'keep_docs' | 'start_over') => Promise<void>
 }) {
   const [busy, setBusy] = useState(false)
+  const [fresh, setFresh] = useState<null | 'choose' | 'confirm'>(null)
   const archived = !!feature.archived
   const run = (p: Promise<void>) => {
     setBusy(true)
     p.catch(() => {}).finally(() => setBusy(false))
   }
   const sel = 'rounded-md border border-gray-300 bg-white px-1.5 py-0.5 text-xs'
+  const small = 'text-xs text-gray-500 hover:text-gray-800 border border-gray-300 rounded-md px-2 py-0.5 disabled:opacity-40'
+  const freshStart = (mode: 'keep_docs' | 'start_over') => run(onFreshStart(mode).then(() => setFresh(null)))
 
   return (
     <div className="border-b border-gray-200 shrink-0">
@@ -58,6 +64,9 @@ export default function FeatureHeader({
         <button disabled={busy} onClick={() => run(onPatch({ archived: !archived }))} className="text-xs text-gray-500 hover:text-gray-800 border border-gray-300 rounded-md px-2 py-0.5 disabled:opacity-40">
           {archived ? 'Unarchive' : 'Archive'}
         </button>
+        <button disabled={busy} onClick={() => setFresh(fresh ? null : 'choose')} className={small}>
+          Fresh start
+        </button>
         <div className="flex gap-1 text-[13px] ml-auto">
           {(['chat', 'docs'] as const).map((t) => (
             <button key={t} onClick={() => onTab(t)} className={`px-2 py-0.5 rounded-md ${tab === t ? 'bg-gray-100 font-medium text-gray-900' : 'text-gray-500 hover:text-gray-800'}`}>
@@ -67,6 +76,32 @@ export default function FeatureHeader({
         </div>
         {error && <span className="text-xs text-red-600 truncate">{error}</span>}
       </div>
+      {fresh && (
+        <div className="px-4 pb-2 flex items-center gap-3 text-xs flex-wrap">
+          {fresh === 'choose' ? (
+            <>
+              <button disabled={busy} onClick={() => freshStart('keep_docs')} className={small}>
+                Keep docs
+              </button>
+              <span className="text-gray-500">conversation restarts from here; docs, phase and owner stay</span>
+              <button disabled={busy} onClick={() => setFresh('confirm')} className={small}>
+                Start over
+              </button>
+              <span className="text-gray-500">docs archived, back to intake, the original request is re-posted</span>
+            </>
+          ) : (
+            <>
+              <span className="text-gray-700">Archive docs and restart?</span>
+              <button disabled={busy} onClick={() => freshStart('start_over')} className="rounded-md bg-red-600 text-white px-2.5 py-0.5 font-medium hover:bg-red-700 disabled:opacity-40">
+                Yes, start over
+              </button>
+            </>
+          )}
+          <button onClick={() => setFresh(null)} className="text-gray-500 hover:text-gray-800">
+            Cancel
+          </button>
+        </div>
+      )}
       {locks.length > 0 && (
         <div className="px-4 pb-2 flex items-center gap-1.5 flex-wrap">
           <span className="text-[11px] text-gray-400">locks</span>
@@ -76,7 +111,7 @@ export default function FeatureHeader({
               <span className="text-gray-400">·</span>
               <span>{roleName(l.role)}</span>
               <button onClick={() => void onReleaseLock(l.path)} className="text-gray-400 hover:text-red-600 leading-none" title="force-release">
-                ✕
+                <X size={11} />
               </button>
             </span>
           ))}

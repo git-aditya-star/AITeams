@@ -6,7 +6,8 @@ import os
 from fastapi import APIRouter, HTTPException, Request
 
 from .. import workflow
-from ..models import (ApprovalDecideBody, CommitDecideBody, FeaturePatchBody, NewTaskBody, ResolveBody)
+from ..models import (ApprovalDecideBody, CommitDecideBody, FeatureFreshStartBody, FeaturePatchBody, NewTaskBody,
+                      ResolveBody)
 from .public import _project, _state
 
 feat_api = APIRouter(prefix="/api")
@@ -34,9 +35,20 @@ async def new_task(request: Request, pid: str, body: NewTaskBody):
     return await workflow.new_feature(_state(request), proj, title, by="master", text=text, starter=body.starter)
 
 
+@feat_api.get("/p/{pid}/features/history")
+def features_history(request: Request, pid: str):
+    return _project(request, pid).db.features_history()
+
+
 @feat_api.get("/p/{pid}/features/{fid}")
 def feature(request: Request, pid: str, fid: int):
     return _feature(_project(request, pid), fid)
+
+
+@feat_api.post("/p/{pid}/features/{fid}/fresh-start")
+async def fresh_start_feature(request: Request, pid: str, fid: int, body: FeatureFreshStartBody):
+    proj = _project(request, pid)
+    return await workflow.fresh_start_feature(_state(request), proj, _feature(proj, fid), body.mode)
 
 
 @feat_api.patch("/p/{pid}/features/{fid}")

@@ -15,6 +15,9 @@ export type MessageType =
   | 'Blocker'
   | 'Approval'
   | 'Commit'
+  | 'Standup'
+
+export type WakeKind = 'normal' | 'handoff' | 'standup' | 'standup_compile'
 
 export type Phase = 'intake' | 'spec' | 'design' | 'build' | 'qa' | 'done'
 export type ApprovalState = 'pending' | 'approved' | 'changes_requested'
@@ -46,6 +49,7 @@ export interface Conversation {
   role: string | null
   created_at: number
   last_message_at: number | null
+  reset_after?: number
 }
 
 export interface Receipt {
@@ -153,6 +157,8 @@ export interface Turn {
   context_tokens: number
   cost_usd: number
   error: string | null
+  kind?: WakeKind | string
+  prompt?: string | null
 }
 
 export interface TeamRole {
@@ -165,6 +171,70 @@ export interface TeamRole {
   context_pct: number
   cost_today: number
   model: string
+  session_seq?: number | null
+  fresh_starts?: number
+  rotation?: string | null
+  rotation_handoff_pending?: boolean
+  current?: { conversation_id: string; label: string; feature_key: string | null } | null
+  kind?: WakeKind | string | null
+}
+
+// M1c: activity feed, standups, handoffs, dashboard.
+export interface Activity {
+  id: number
+  ts: number
+  kind: string
+  role: string | null
+  feature_id: number | null
+  conversation_id: string | null
+  text: string
+  ref: string | null
+}
+
+export interface Standup {
+  id: number
+  state: 'collecting' | 'compiling' | 'done' | 'failed' | string
+  roles: string[]
+  requested_by: string
+  start_message_id: number | null
+  path: string | null
+  message_id: number | null
+  created_at: number
+  ended_at: number | null
+}
+
+export interface Handoff {
+  id: number
+  role: string
+  session_id: string | null
+  seq: number | null
+  path: string
+  message_id: number | null
+  reason: string | null
+  context_pct: number | null
+  created_at: number
+  text?: string
+}
+
+export interface WaitsOn {
+  kind: 'approval' | 'question' | 'commit' | 'review' | 'running' | 'queued' | 'message' | string
+  who: string
+  since: number | null
+}
+
+export interface DashboardFeature extends Feature {
+  waits_on: WaitsOn | null
+  stale: boolean
+}
+
+export interface Dashboard {
+  needs_you: { questions: number; approvals: number; commits: number; messages: number; total: number }
+  phase_counts: Record<string, number>
+  features: DashboardFeature[]
+  team: TeamRole[]
+  activity: Activity[]
+  standup: Standup | null
+  last_standup: Standup | null
 }
 
 export interface TurnEvent {
@@ -296,6 +366,21 @@ export const api = {
     del<unknown>(`/api/p/${pid}/locks?path=${encodeURIComponent(path)}`),
   inbox: (pid: string) => req<Inbox>(`/api/p/${pid}/inbox`),
   resolveInbox: (pid: string, message_id: number) => post<unknown>(`/api/p/${pid}/inbox/resolve`, { message_id }),
+
+  // M1c: dashboard, stop / fresh start, standups, handoffs, history, activity.
+  dashboard: (pid: string) => req<Dashboard>(`/api/p/${pid}/dashboard`),
+  stopRole: (pid: string, role: string) => post<unknown>(`/api/p/${pid}/team/${role}/stop`, {}),
+  freshStartRole: (pid: string, role: string, handoff: boolean) =>
+    post<unknown>(`/api/p/${pid}/team/${role}/fresh-start`, { handoff }),
+  startStandup: (pid: string) => post<Standup | { status: 'nothing_changed' }>(`/api/p/${pid}/standup`, {}),
+  standups: (pid: string) => req<Standup[]>(`/api/p/${pid}/standups`),
+  standupReport: (pid: string, id: number) => req<{ text: string }>(`/api/p/${pid}/standups/${id}/report`),
+  handoffs: (pid: string, role?: string) =>
+    req<Handoff[]>(`/api/p/${pid}/handoffs${role ? `?role=${encodeURIComponent(role)}` : ''}`),
+  freshStartFeature: (pid: string, fid: number, mode: 'keep_docs' | 'start_over') =>
+    post<unknown>(`/api/p/${pid}/features/${fid}/fresh-start`, { mode }),
+  featuresHistory: (pid: string) => req<Feature[]>(`/api/p/${pid}/features/history`),
+  activity: (pid: string, limit = 30) => req<Activity[]>(`/api/p/${pid}/activity?limit=${limit}`),
 }
 
 // Stale file list from a failed commit approve (409), or null for any other error.

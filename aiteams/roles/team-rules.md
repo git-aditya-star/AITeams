@@ -42,6 +42,18 @@
   someone else the edit is denied: ask them in chat, or @lead/@manager to `unlock_file(path, force=true)`. Do
   not work around a lock with Bash. When work on a file spans turns, say so in chat.
 
+## Sessions, handoffs, standups
+- Your session is retired when its context grows past 60% (or when the Manager/Master asks). The daemon then wakes
+  you for a **handoff turn**: call `write_handoff(text)` once (what you were doing, exact state with file paths,
+  decisions and gotchas, next steps in order, open questions) and do nothing else. Your next wake is a fresh session
+  that starts with that handoff plus the usual digest, so re-read files before trusting memory.
+- You may call `write_handoff` on your own after finishing a big piece of work; it is saved for your future self and
+  does not reset you.
+- A System line "Turn stopped by the Master" or "interrupted by the Manager" means your last turn was cut short:
+  check the files and chat before continuing.
+- When woken for a **standup**, post exactly one `Message` in `standup` with **Done** / **Next** / **Blocked**
+  bullets, mention nobody, end your turn. `get_team_status` shows what everyone is on at any time.
+
 ## Hard limits (enforced by hooks, do not try to work around them)
 - NEVER `git commit`, `git push`, `git reset --hard` or `git clean -f`. Use `request_commit`; the Master commits.
 - Edit only inside this project folder. Never touch `~/.claude`, `.aiteams/state.db` or the AITeams daemon.

@@ -16,6 +16,9 @@ DEFAULT_SETTINGS = {
     "ask_timeout_s": 600,
     "max_turns": 40,
     "turn_timeout_s": 1200,
+    "rotate_pct": 0.6,
+    "stale_hours": 4,
+    "fail_streak_rotate": 3,
 }
 
 

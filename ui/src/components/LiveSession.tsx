@@ -171,6 +171,7 @@ export default function LiveSession({
   const [blocks, setBlocks] = useState<Block[]>([])
   const [now, setNow] = useState(Date.now() / 1000)
   const [copied, setCopied] = useState(false)
+  const [showPrompt, setShowPrompt] = useState(false)
   const follow = useRef(true) // auto-select newest until the user clicks a turn
   const lastSeq = useRef(0)
   const loading = useRef(false)
@@ -269,6 +270,7 @@ export default function LiveSession({
             <div className="flex items-center gap-2">
               <span className="font-mono text-gray-500">#{t.id}</span>
               <span className={`rounded-full px-1.5 py-px text-[10.5px] font-medium ${STATE_BADGE[t.state] || STATE_BADGE.queued}`}>{t.state}</span>
+              {t.kind && t.kind !== 'normal' && <span className="rounded-full px-1.5 py-px text-[10.5px] font-medium bg-violet-50 text-violet-700">{t.kind.replace('_', ' ')}</span>}
               <span className="ml-auto text-gray-400">{duration(t)}</span>
             </div>
             <div className="mt-0.5 text-gray-500 flex gap-3">
@@ -292,7 +294,15 @@ export default function LiveSession({
           ) : (
             <span className="text-gray-400">no session yet</span>
           )}
+          {sel?.prompt && (
+            <button onClick={() => setShowPrompt((o) => !o)} className={`ml-auto rounded border px-2 py-0.5 text-[11.5px] ${showPrompt ? 'border-blue-300 bg-blue-50 text-blue-700' : 'border-gray-300 hover:bg-gray-50'}`}>
+              Prompt
+            </button>
+          )}
         </div>
+        {showPrompt && sel?.prompt && (
+          <pre className="shrink-0 max-h-[40%] overflow-y-auto border-b border-gray-200 bg-gray-50 px-3 py-2 whitespace-pre-wrap break-words font-mono text-[12px] text-gray-700">{sel.prompt}</pre>
+        )}
         <div ref={listRef} className="flex-1 overflow-y-auto py-1">
           {sel?.error && <div className="mx-3 my-1 text-[12px] text-red-600 whitespace-pre-wrap">{sel.error}</div>}
           {blocks.map((b) => (

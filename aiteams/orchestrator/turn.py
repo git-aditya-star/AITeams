@@ -9,7 +9,8 @@ import uuid
 from ..config import model_for
 from . import receipts
 from .claude_proc import ClaudeProc, build_cmd, child_env
-from .prompt import build_wake_prompt, write_system_prompt
+from .prompt import (build_compile_prompt, build_handoff_prompt, build_standup_prompt, build_wake_prompt,
+                     live_message_ids, write_system_prompt)
 
 DEFAULT_CONTEXT_WINDOW = 200000
 
@@ -55,36 +56,65 @@ class TurnRunner:
         self.turn: dict | None = None
         self.proc: ClaudeProc | None = None
         self.interrupt_reason: str | None = None
+        self.interrupt_note: str | None = None
+        self.kind: str = wake.get("kind") or "normal"
         self.context_tokens: int | None = None
         self.model = model_for(state.settings, self.role)
         self.task: asyncio.Task | None = None
 
     # ---- public --------------------------------------------------------
-    def interrupt(self, reason: str) -> None:
+    def interrupt(self, reason: str, note: str | None = None) -> None:
         self.interrupt_reason = reason
+        self.interrupt_note = note
         if self.proc:
             self.proc.interrupt()
 
     async def run(self) -> dict:
         db, hub, role = self.db, self.project.hub, self.role
         db.set_wake_state(self.wake["id"], "started")
+        kind = self.kind
+        message_ids = live_message_ids(db, self.wake["message_ids"]) if kind == "normal" else []
+        if kind == "normal" and not message_ids:
+            db.set_wake_state(self.wake["id"], "done")  # every message fell behind a fresh-start marker
+            return {"state": "skipped", "id": None}
+        handoff = None
+        rs = db.role_state(role)
         session_id = db.active_session(role)
+        if kind == "handoff" and (session_id is None or not rs["rotate_reason"]):
+            db.set_wake_state(self.wake["id"], "done")
+            db.set_role_state(role, rotate_handoff=0)
+            return {"state": "skipped", "id": None}
+        reason = "first turn"
+        if rs["rotate_reason"] and not rs["rotate_handoff"] and kind == "normal":
+            # Rotation is consumed by the next NORMAL turn only, so the handoff lands in a prompt that shows it.
+            db.set_role_state(role, rotate_reason=None, rotate_handoff=0)
+            if session_id is not None:
+                session_id, reason, handoff = None, rs["rotate_reason"], db.latest_handoff(role)
         resume = session_id is not None
         if session_id is None:
-            session_id = db.new_session(role, str(uuid.uuid4()), "first turn")
-        self.turn = db.create_turn(role, session_id, self.wake["origin"], self.wake["conversation_id"])
+            session_id = db.new_session(role, str(uuid.uuid4()), reason)
+            if reason != "first turn":
+                seq = db.session_info(role)["seq"]
+                await self._system_message(f"Fresh session #{seq} ({reason})")
+                db.add_activity("fresh_session", f"{role} started session #{seq} ({reason})", role)
+        self.turn = db.create_turn(role, session_id, self.wake["origin"], self.wake["conversation_id"], kind)
         tid = self.turn["id"]
         self.turn = db.update_turn(tid, state="running", started_at=time.time(), wake_id=self.wake["id"])
         await hub.broadcast("turn_state", self.turn)
-        await receipts.mark(db, hub, self.wake["message_ids"], role, "seen")
+        if kind == "normal":
+            await receipts.mark(db, hub, message_ids, role, "seen")
 
         sys_file = write_system_prompt(self.project.path, self.project.name, role)
-        prompt = build_wake_prompt(db, role, self.wake["message_ids"])
+        prompt = self._prompt(kind, message_ids, handoff)
+        db.update_turn(tid, prompt=prompt)
+        settings = dict(self.state.settings)
+        if kind != "normal":
+            settings["max_turns"] = min(int(settings.get("max_turns", 40)), 10)
         result, rc = None, None
         for attempt in (1, 2):
             env = child_env(self.state.daemon_url, self.project.id, self.project.path, role, tid,
                             int(self.state.settings.get("ask_timeout_s", 600)))
-            cmd = build_cmd(self.state.settings, role, env, sys_file, session_id, resume, self.model)
+            cmd = build_cmd(settings, role, env, sys_file, session_id, resume, self.model)
             self.proc = ClaudeProc(cmd, self.project.path, env)
             try:
                 await self.proc.start()
@@ -113,6 +143,19 @@ class TurnRunner:
         return await self._end(result, rc, state, error)
 
     # ---- internals -----------------------------------------------------
+    def _prompt(self, kind: str, message_ids: list[int], handoff: dict | None) -> str:
+        db, role = self.db, self.role
+        if kind == "handoff":
+            return build_handoff_prompt(db, role, db.role_state(role)["rotate_reason"])
+        if kind in ("standup", "standup_compile"):
+            su = db.standup(self.wake.get("ref") or 0) or {"id": self.wake.get("ref"), "requested_by": "?", "start_message_id": 0}
+            if kind == "standup":
+                return build_standup_prompt(db, role, su)
+            from ..workflow import dashboard_features, team_status
+            return build_compile_prompt(db, self.project.path, su, team_status(self.state, self.project),
+                                        dashboard_features(self.state, self.project))
+        return build_wake_prompt(db, role, message_ids, handoff)
+
     async def _stream(self) -> dict | None:
         """Read events until `result` or EOF; SIGINT on turn_timeout_s."""
         assert self.proc and self.turn

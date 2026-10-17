@@ -24,7 +24,7 @@ def test_register_seeds_and_excludes(client, repo):
     assert (repo / ".aiteams" / "state.db").exists()
     assert ".aiteams/" in (repo / ".git" / "info" / "exclude").read_text().splitlines()
     convs = client.get(f"/api/p/{pid}/conversations").json()
-    assert [c["id"] for c in convs] == ["general", "dm-manager", "dm-lead", "dm-product", "dm-frontend", "dm-backend", "dm-qa"]
+    assert [c["id"] for c in convs] == ["general", "standup", "dm-manager", "dm-lead", "dm-product", "dm-frontend", "dm-backend", "dm-qa"]
     assert client.get("/api/health").json()["ok"] is True
     assert client.get(f"/api/p/{pid}").json()["paused"] is False
 

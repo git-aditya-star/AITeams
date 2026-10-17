@@ -40,7 +40,7 @@ def test_v1_db_migrates_threads_to_features(repo):
     conn.close()
     db = ProjectDB(str(repo))
     try:
-        assert db.get_kv("schema_version") == 2
+        assert db.get_kv("schema_version") == 3
         conv = db.conversation("login-feature")
         assert conv["kind"] == "feature"
         feats = db.features()

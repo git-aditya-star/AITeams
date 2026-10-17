@@ -1,5 +1,5 @@
 import type { TeamRole } from '../api'
-import { ROLES, dotClass, roleName } from '../roles'
+import { ROLES, dotClass, roleName, stateWord } from '../roles'
 
 export default function TeamStrip({ team, onSelect }: { team: TeamRole[]; onSelect: (role: string) => void }) {
   const byRole = Object.fromEntries(team.map((t) => [t.role, t]))
@@ -11,13 +11,14 @@ export default function TeamStrip({ team, onSelect }: { team: TeamRole[]; onSele
           <button
             key={r}
             onClick={() => onSelect(r)}
-            title={t ? `${t.model} · ${t.state}` : r}
+            title={t ? `${t.model} · ${stateWord(t)}` : r}
             className="flex items-center gap-1.5 rounded-full border border-gray-200 px-2 py-0.5 text-[11.5px] text-gray-600 hover:bg-gray-50"
           >
             <span className={`w-2 h-2 rounded-full ${dotClass(t?.state || 'idle')}`} />
             <span className="font-medium text-gray-700">{roleName(r)}</span>
             {t && (
               <>
+                {t.state !== 'idle' && <span className="text-gray-500">{stateWord(t)}</span>}
                 <span>{Math.round((t.context_pct || 0) * 100)}%</span>
                 <span className="text-gray-400">${(t.cost_today || 0).toFixed(2)}</span>
               </>

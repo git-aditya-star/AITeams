@@ -3,16 +3,23 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
+import shutil
 import subprocess
 import tempfile
 import time
 
 from fastapi import HTTPException
 
-from .config import ROLES
+from .config import ROLES, model_for
 from .db import PHASES, ProjectDB
 from .runtime import Project
+
+
+def _activity(proj: Project, kind: str, text: str, role=None, feature_id=None, conversation_id=None, ref=None):
+    row = proj.db.add_activity(kind, text, role, feature_id, conversation_id, ref)
+    return proj.hub.broadcast("activity", row)
 
 COMMIT_STATES = ("lead_review", "master_review", "rejected", "committed", "failed")
 
@@ -103,6 +110,8 @@ async def new_feature(st, proj: Project, title: str, phase: str = "intake", owne
         raise HTTPException(400, "unknown starter role")
     feat = proj.db.create_feature(title[:200], phase, owner)
     os.makedirs(docs_dir(proj.path, feat), exist_ok=True)
+    await _activity(proj, "feature_created", f"{feat['key']} {feat['title']} created by {'Master' if by == 'master' else by}",
+                    None if by == "master" else by, feat["id"], feat["conversation_id"])
     await proj.hub.broadcast("conversation", proj.db.conversation(feat["conversation_id"]))
     await proj.hub.broadcast("feature", feat)
     if by == "master":
@@ -144,6 +153,9 @@ async def set_feature(st, proj: Project, feat: dict, fields: dict, by: str) -> d
         else:
             lines.append(f"{who} set {k} {v if v is not None else 'none'}")
     await _post(st, proj, feat["conversation_id"], "system", "\n".join(lines), "System", [])
+    if "phase" in changes:
+        await _activity(proj, "phase", f"{feat['key']} phase → {changes['phase']} ({who})",
+                        None if by == "master" else by, feat["id"], feat["conversation_id"])
     await proj.hub.broadcast("feature", feat)
     return feat
 
@@ -198,6 +210,8 @@ async def decide_approval(st, proj: Project, aid: int, decision: str, note: str 
         text = f"Changes requested on {a['title']}: {note or '(no note)'}"
     conv = feat["conversation_id"] if feat else f"dm-{a['role']}"
     await _post(st, proj, conv, "master", f"@{a['role']} {text}", "Decision", [a["role"]])
+    await _activity(proj, "approval", f"{'Approved' if decision == 'approve' else 'Changes requested'}: {a['title']}",
+                    a["role"], a["feature_id"], conv, f"approval:{aid}")
     await proj.hub.broadcast("approval", a)
     await broadcast_inbox(proj)
     return a
@@ -303,6 +317,7 @@ async def review_commit(st, proj: Project, role: str, cid: int, decision: str, n
     else:
         c = proj.db.update_commit(cid, state="rejected", note=note or None)
         await _post(st, proj, conv, "lead", f"@{c['role']} Commit #{cid} rejected: {note or '(no note)'}", "Decision", [c["role"]])
+        await _activity(proj, "commit", f"Commit #{cid} rejected by the Lead", c["role"], c["feature_id"], conv, f"commit:{cid}")
     await proj.hub.broadcast("commit", c)
     await broadcast_inbox(proj)
     return c
@@ -360,6 +375,7 @@ async def decide_commit(st, proj: Project, cid: int, decision: str, message: str
     if decision == "reject":
         c = proj.db.update_commit(cid, state="rejected", note=note or None)
         await _post(st, proj, conv, "master", f"@{c['role']} Commit #{cid} rejected: {note or '(no note)'}", "Decision", [c["role"]])
+        await _activity(proj, "commit", f"Commit #{cid} rejected by the Master", c["role"], c["feature_id"], conv, f"commit:{cid}")
     else:
         stale = [f for f in c["files"] if _sha(proj.path, f) != c["hashes"].get(f)]
         if stale and not force:
@@ -370,6 +386,7 @@ async def decide_commit(st, proj: Project, cid: int, decision: str, message: str
             c = proj.db.update_commit(cid, state="committed", sha=out, message=msg_text, note=note or None)
             subject = msg_text.splitlines()[0]
             await _post(st, proj, conv, "master", f"@{c['role']} Committed `{out}`: {subject}", "Decision", [c["role"]])
+            await _activity(proj, "commit", f"Committed {out}: {subject}", c["role"], c["feature_id"], conv, f"commit:{cid}")
         else:
             c = proj.db.update_commit(cid, state="failed", note=out, message=msg_text)
             await _post(st, proj, conv, "master", f"@{c['role']} Commit #{cid} failed:\n```\n{out}\n```", "Decision", [c["role"]])
@@ -451,3 +468,232 @@ def inbox(proj: Project) -> dict:
 
 async def broadcast_inbox(proj: Project) -> None:
     await proj.hub.broadcast("inbox", {"count": inbox(proj)["count"]})
+
+
+# ---- M1c: team status, dashboard --------------------------------------------------
+def _conv_short(db: ProjectDB, cid: str | None) -> dict | None:
+    if not cid:
+        return None
+    conv = db.conversation(cid)
+    if conv is None:
+        return {"conversation_id": cid, "label": cid, "feature_key": None}
+    feat = db.feature(cid) if conv["kind"] == "feature" else None
+    label = feat["key"] if feat else ("#" + conv["title"] if conv["kind"] == "channel" else "DM " + conv["title"])
+    return {"conversation_id": cid, "label": label, "feature_key": feat["key"] if feat else None}
+
+
+def team_status(st, proj: Project) -> list[dict]:
+    from .orchestrator.turn import context_window_from
+    db = proj.db
+    running = st.scheduler.running if st.scheduler else {}
+    out = []
+    for role in ROLES:
+        info = db.session_info(role)
+        turns = db.turns(role, limit=20)
+        last = turns[0] if turns else None
+        runner = running.get((proj.id, role))
+        state = "running" if runner else ("queued" if (db.queued_wake(role) or db.queued_wake(role, "handoff")
+                                                       or db.queued_wake(role, "standup") or db.queued_wake(role, "standup_compile")) else "idle")
+        mine = [t for t in turns if t["session_id"] == info["session_id"]]
+        ctx = next((t["context_tokens"] for t in mine if t.get("context_tokens")), 0) or 0
+        model = model_for(st.settings, role)
+        window = next((context_window_from(json.loads(t["result_json"]), None)
+                       for t in turns if t.get("result_json")), context_window_from(None))
+        rs = db.role_state(role)
+        out.append({"role": role, "state": state, "session_id": info["session_id"], "last_turn": last,
+                    "context_tokens": ctx, "context_window": window,
+                    "context_pct": (ctx / window) if window else 0.0,
+                    "cost_today": db.cost_today(role), "model": model,
+                    "session_seq": info["seq"], "fresh_starts": info["fresh_starts"],
+                    "rotation": rs["rotate_reason"], "rotation_handoff_pending": bool(rs["rotate_handoff"]),
+                    "current": _conv_short(db, (last or {}).get("conversation_id")),
+                    "kind": (getattr(runner, "kind", None) if runner else None)})
+    return out
+
+
+def _waits_on(st, proj: Project, feat: dict, running_convs: dict[str, str], queued_convs: dict[str, str]) -> dict | None:
+    db, cid = proj.db, feat["conversation_id"]
+    apps = db.approvals("pending", feat["id"])
+    if apps:
+        return {"kind": "approval", "who": "master", "since": apps[-1]["created_at"]}
+    for q in db.questions("pending"):
+        t = db.turn(q["turn_id"])
+        if t and t.get("conversation_id") == cid:
+            return {"kind": "question", "who": "master", "since": q["created_at"]}
+    for c in db.commits("master_review", feat["id"]):
+        return {"kind": "commit", "who": "master", "since": c["created_at"]}
+    for c in db.commits("lead_review", feat["id"]):
+        return {"kind": "review", "who": "lead", "since": c["created_at"]}
+    if cid in running_convs:
+        return {"kind": "running", "who": running_convs[cid], "since": None}
+    if cid in queued_convs:
+        return {"kind": "queued", "who": queued_convs[cid], "since": None}
+    last = db.messages(cid, limit=1)
+    if last:
+        m = last[0]
+        if "master" in m["mentions"]:
+            return {"kind": "message", "who": "master", "since": m["created_at"]}
+        roles = [r for r in m["mentions"] if r in ROLES]
+        if roles:
+            return {"kind": "message", "who": roles[0], "since": m["created_at"]}
+    return None
+
+
+def dashboard_features(st, proj: Project) -> list[dict]:
+    db = proj.db
+    running = st.scheduler.running if st.scheduler else {}
+    running_convs = {r.wake["conversation_id"]: role for (pid, role), r in running.items() if pid == proj.id}
+    queued_convs = {w["conversation_id"]: w["role"] for w in db.queued_wakes() if w["kind"] == "normal"}
+    stale_s = float(st.settings.get("stale_hours", 4)) * 3600
+    now = time.time()
+    out = []
+    for f in db.features():
+        f["waits_on"] = _waits_on(st, proj, f, running_convs, queued_convs)
+        f["stale"] = f["phase"] != "done" and not f["archived"] and (now - (f["last_activity"] or 0)) > stale_s
+        out.append(f)
+    return out
+
+
+def dashboard(st, proj: Project) -> dict:
+    db = proj.db
+    ib = inbox(proj)
+    feats = dashboard_features(st, proj)
+    counts = {p: 0 for p in PHASES}
+    for f in feats:
+        counts[f["phase"]] = counts.get(f["phase"], 0) + 1
+    return {"needs_you": {"questions": len(ib["questions"]), "approvals": len(ib["approvals"]),
+                          "commits": len(ib["commits"]), "messages": len(ib["messages"]), "total": ib["count"]},
+            "phase_counts": counts, "features": feats, "team": team_status(st, proj),
+            "activity": db.activity(30), "standup": db.current_standup(), "last_standup": db.last_standup()}
+
+
+# ---- M1c: handoffs ------------------------------------------------------------------
+def handoffs_dir(project_path: str, role: str) -> str:
+    return os.path.join(project_path, ".aiteams", "handoffs", role)
+
+
+async def write_handoff(st, proj: Project, role: str, turn: dict, text: str) -> dict:
+    text = (text or "").strip()
+    if not text:
+        raise HTTPException(400, "text required")
+    db = proj.db
+    rs = db.role_state(role)  # outside a rotation the handoff is saved on the role's own initiative
+    info = db.session_info(role)
+    d = handoffs_dir(proj.path, role)
+    os.makedirs(d, exist_ok=True)
+    n = len(db.handoffs(role, 10000)) + 1
+    path = os.path.join(d, f"{n}.md")
+    reason = rs["rotate_reason"] or "own initiative"
+    last = db.turns(role, limit=1)
+    pct = None
+    if last and last[0].get("context_tokens"):
+        from .orchestrator.turn import context_window_from
+        res = json.loads(last[0]["result_json"]) if last[0].get("result_json") else None
+        pct = last[0]["context_tokens"] / (context_window_from(res, None) or 1)
+    header = (f"# Handoff — {role.capitalize()}, session #{info['seq']}\n"
+              f"written {time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime())}\nreason: {reason}\n"
+              + (f"context: {pct:.0%}\n" if pct is not None else "") + "\n")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(header + text + "\n")
+    rel = os.path.relpath(path, proj.path)
+    msg = await _post(st, proj, f"dm-{role}", role, text, "Handoff", [], turn["id"])
+    h = db.add_handoff(role, info["session_id"] or turn["session_id"], n, path, msg["id"], reason, pct)
+    await _activity(proj, "handoff", f"{role} wrote handoff #{n} ({reason})", role, None, f"dm-{role}", f"handoff:{h['id']}")
+    return {"id": h["id"], "path": rel}
+
+
+# ---- M1c: standup -------------------------------------------------------------------
+async def start_standup(st, proj: Project, requested_by: str) -> dict:
+    db = proj.db
+    if db.current_standup():
+        raise HTTPException(409, "standup in progress")
+    last = db.last_standup()
+    since = last["created_at"] if last else 0.0
+    roles = [r for r in ROLES if r != "manager" and db.turns_since(r, since)]
+    who = "the Master" if requested_by == "master" else requested_by
+    if not roles:
+        when = time.strftime("%H:%M", time.localtime(since)) if since else "the start"
+        await _post(st, proj, "standup", "system", f"Standup requested by {who}: nothing changed since {when}.", "System", [])
+        return {"status": "nothing_changed", "since": since}
+    su = db.create_standup(roles, requested_by)
+    msg = await _post(st, proj, "standup", "system",
+                      f"Standup #{su['id']} called by {who} — waiting for {', '.join(roles)}", "System", [])
+    su = db.update_standup(su["id"], start_message_id=msg["id"])
+    origin = "master" if requested_by == "master" else "role"
+    for r in roles:
+        db.add_wake(r, "standup", [], origin, kind="standup", ref=su["id"])
+    await proj.hub.broadcast("standup", su)
+    if st.scheduler:
+        st.scheduler.notify()
+    return {"status": "collecting", **su}
+
+
+async def save_standup(st, proj: Project, role: str, turn: dict, text: str) -> dict:
+    if role != "manager":
+        raise HTTPException(403, "only the Manager saves the standup")
+    text = (text or "").strip()
+    if not text:
+        raise HTTPException(400, "text required")
+    db = proj.db
+    su = db.current_standup()
+    if not su or su["state"] != "compiling":
+        raise HTTPException(409, "no standup is being compiled")
+    d = os.path.join(proj.path, ".aiteams", "standups")
+    os.makedirs(d, exist_ok=True)
+    stamp = time.strftime("%Y-%m-%d-%H%M")
+    path = os.path.join(d, f"{stamp}.md")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(f"# Standup #{su['id']} — {stamp}\n\n{text}\n")
+    msg = await _post(st, proj, "standup", "manager", text, "Standup", ["master"], turn["id"])
+    su = db.update_standup(su["id"], state="done", path=path, message_id=msg["id"], ended_at=time.time())
+    await _activity(proj, "standup", f"Standup #{su['id']} report saved", "manager", None, "standup", f"standup:{su['id']}")
+    await proj.hub.broadcast("standup", su)
+    return {"id": su["id"], "path": os.path.relpath(path, proj.path)}
+
+
+def standup_report(proj: Project, sid: int) -> dict:
+    su = proj.db.standup(sid)
+    if su is None:
+        raise HTTPException(404, "unknown standup")
+    text = ""
+    if su.get("path") and os.path.isfile(su["path"]):
+        with open(su["path"], encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    return {**su, "text": text}
+
+
+# ---- M1c: feature fresh start --------------------------------------------------------
+async def fresh_start_feature(st, proj: Project, feat: dict, mode: str) -> dict:
+    if mode not in ("keep_docs", "start_over"):
+        raise HTTPException(400, "mode must be keep_docs|start_over")
+    db, cid = proj.db, feat["conversation_id"]
+    first_master = next((m for m in db.messages(cid, limit=1000) if m["author"] == "master"), None)
+    r = db.one("SELECT MAX(id) AS m FROM messages WHERE conversation_id=?", cid)
+    db.set_reset_after(cid, int(r["m"] or 0))
+    label = "keep docs" if mode == "keep_docs" else "start over"
+    await _post(st, proj, cid, "system", f"Fresh start ({label}) by the Master", "System", [])
+    await _activity(proj, "fresh_start", f"{feat['key']} fresh start ({label})", None, feat["id"], cid)
+    if mode == "start_over":
+        d = docs_dir(proj.path, feat)
+        names = [n for n in (os.listdir(d) if os.path.isdir(d) else []) if n != "archive"]
+        if names:
+            arch = os.path.join(d, "archive", time.strftime("%Y-%m-%d-%H%M%S"))
+            os.makedirs(arch, exist_ok=True)
+            for n in names:
+                shutil.move(os.path.join(d, n), os.path.join(arch, n))
+        for a in db.approvals("pending", feat["id"]):
+            await proj.hub.broadcast("approval", db.resolve_approval(a["id"], "changes_requested", "fresh start"))
+        for c in db.commits("all", feat["id"]):
+            if c["state"] in ("lead_review", "master_review"):
+                await proj.hub.broadcast("commit", db.update_commit(c["id"], state="rejected", note="fresh start"))
+        feat = db.update_feature(feat["id"], phase="intake", owner=None)
+        if first_master:
+            await _post(st, proj, cid, "master", first_master["text"], "Message", first_master["mentions"])
+    for w in db.queued_wakes():
+        if w["kind"] == "normal" and w["message_ids"] and all(db.reset_after(m["conversation_id"]) >= m["id"]
+                                                            for m in db.messages_by_ids(w["message_ids"])):
+            db.set_wake_state(w["id"], "done")
+    await proj.hub.broadcast("conversation", db.conversation(cid))
+    await proj.hub.broadcast("feature", db.feature(feat["id"]))
+    await broadcast_inbox(proj)
+    return db.feature(feat["id"])

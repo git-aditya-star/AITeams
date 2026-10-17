@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import time
 
+from . import lifecycle
 from .claude_proc import kill_orphan
 from .turn import TurnRunner
 
@@ -43,9 +44,16 @@ class Scheduler:
         for proj in self.state.projects.values():
             if proj.paused:
                 continue
-            for w in proj.db.queued_wakes():
-                if (proj.id, w["role"]) not in self.running:
-                    candidates.append((0 if w["origin"] == "master" else 1, w["created_at"], proj, w))
+            per_role: dict[str, dict] = {}
+            for w in proj.db.queued_wakes():  # master-first, then FIFO
+                if (proj.id, w["role"]) in self.running:
+                    continue
+                cur = per_role.get(w["role"])
+                # A pending handoff turn goes first for its role; everything else waits for the fresh session.
+                if cur is None or (w["kind"] == "handoff" and cur["kind"] != "handoff"):
+                    per_role[w["role"]] = w
+            for w in per_role.values():
+                candidates.append((0 if w["origin"] == "master" else 1, w["created_at"], proj, w))
         candidates.sort(key=lambda c: (c[0], c[1]))
         started_roles = set()
         for _, _, proj, w in candidates:
@@ -76,9 +84,21 @@ class Scheduler:
         finally:
             self.running.pop(key, None)
             await self.release_locks(runner.project, runner.role)
+            try:
+                await lifecycle.after_turn(self.state, runner.project, runner)
+            except Exception as e:
+                print("after_turn error:", e)
             if runner.interrupt_reason == "shutdown":
                 await self.requeue_once(runner.project, runner.wake, runner.role)
             self.notify()
+
+    def stop(self, pid: str, role: str, reason: str, note: str | None = None) -> bool:
+        """SIGINT the role's running turn (Master Stop / Manager interrupt). False when idle."""
+        runner = self.running.get((pid, role))
+        if runner is None:
+            return False
+        runner.interrupt(reason, note)
+        return True
 
     # ---- recovery / shutdown ----------------------------------------------
     async def release_locks(self, project, role: str) -> None:
@@ -91,7 +111,12 @@ class Scheduler:
 
     async def requeue_once(self, project, wake: dict | None, role: str) -> None:
         db = project.db
-        if wake and wake.get("origin") != "system":
+        if wake and wake.get("kind", "normal") != "normal":
+            if wake["kind"] == "handoff" and db.role_state(role)["rotate_handoff"]:
+                db.add_wake(role, wake["conversation_id"], [], "system", kind="handoff")
+            elif wake["kind"] in ("standup", "standup_compile"):
+                db.add_wake(role, wake["conversation_id"], [], "system", kind=wake["kind"], ref=wake.get("ref"))
+        elif wake and wake.get("origin") != "system":
             db.add_wake(role, wake["conversation_id"], wake["message_ids"], "system")
         else:
             msg = db.add_message("dm-" + role, "system", "System",
@@ -110,6 +135,9 @@ class Scheduler:
                 wake = db.wake(t["wake_id"]) if t.get("wake_id") else None
                 await self.release_locks(proj, t["role"])
                 await self.requeue_once(proj, wake, t["role"])
+            for role in [r["role"] for r in db.q("SELECT role FROM role_state WHERE rotate_handoff=1")]:
+                if not db.queued_wake(role, "handoff"):
+                    db.add_wake(role, "dm-" + role, [], "system", kind="handoff")
         self.notify()
 
     async def shutdown(self) -> None:

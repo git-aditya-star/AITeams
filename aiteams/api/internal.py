@@ -6,13 +6,16 @@ import asyncio
 from fastapi import APIRouter, HTTPException, Request
 
 from .. import workflow
-from ..models import (InternalApprovalBody, InternalCommitBody, InternalFeatureBody, InternalFeaturePatchBody,
-                      InternalMessageBody, InternalReviewBody, LockBody, PermissionBody)
+from ..config import ROLES
+from ..models import (CheckpointBody, HandoffBody, InternalApprovalBody, InternalCommitBody, InternalFeatureBody,
+                      InternalFeaturePatchBody, InternalMessageBody, InternalReviewBody, InterruptBody, LockBody,
+                      PermissionBody, StandupSaveBody)
+from ..orchestrator.lifecycle import request_rotation
 from ..orchestrator import receipts
 from ..orchestrator import router as routing
 from .public import post_message
 
-MESSAGE_TYPES = ("Message", "Question", "Decision", "Concern", "Finding", "Handoff", "Blocker")
+MESSAGE_TYPES = ("Message", "Question", "Decision", "Concern", "Finding", "Handoff", "Blocker", "Standup")
 
 internal = APIRouter(prefix="/internal")
 
@@ -57,7 +60,7 @@ def get(request: Request, conversation: str, before: int | None = None, limit: i
     conv = proj.db.conversation(conversation)
     if conv is None:
         raise HTTPException(404, f"unknown conversation: {conversation}")
-    msgs = proj.db.messages(conv["id"], before, min(max(limit, 1), 100))
+    msgs = proj.db.messages(conv["id"], before, min(max(limit, 1), 100), after=int(conv.get("reset_after") or 0))
     return [{k: m[k] for k in ("id", "author", "type", "text", "mentions", "created_at")} for m in msgs]
 
 
@@ -162,3 +165,68 @@ async def acquire_lock(request: Request, body: LockBody):
 async def release_lock(request: Request, body: LockBody):
     st, proj, turn = _auth(request)
     return await workflow.release_lock(st, proj, turn["role"], body.path, body.force)
+
+
+# ---- handoffs / standup / manager controls (M1c) -----------------------------------
+@internal.post("/handoff")
+async def write_handoff(request: Request, body: HandoffBody):
+    st, proj, turn = _auth(request)
+    return await workflow.write_handoff(st, proj, turn["role"], turn, body.text)
+
+
+@internal.get("/team")
+def team(request: Request):
+    st, proj, _ = _auth(request)
+    rows = workflow.team_status(st, proj)
+    lines = []
+    for t in rows:
+        cur = (t.get("current") or {}).get("label") or "-"
+        last = t["last_turn"]
+        lines.append(f"{t['role']}: {t['state']} · context {t['context_pct']:.0%} · session #{t['session_seq']} · on {cur}"
+                     + (f" · last turn {last['state']}" if last else "") + (f" · rotation pending ({t['rotation']})" if t["rotation"] else ""))
+    return {"team": lines}
+
+
+def _manager_only(turn: dict, body_role: str | None = None) -> None:
+    if turn["role"] != "manager":
+        raise HTTPException(403, "Manager only")
+    if body_role is not None:
+        if body_role not in ROLES:
+            raise HTTPException(400, "unknown role")
+        if body_role == "manager":
+            raise HTTPException(400, "not on yourself")
+
+
+@internal.post("/standup")
+async def run_standup(request: Request):
+    st, proj, turn = _auth(request)
+    _manager_only(turn)
+    return await workflow.start_standup(st, proj, "manager")
+
+
+@internal.post("/standup/save")
+async def save_standup(request: Request, body: StandupSaveBody):
+    st, proj, turn = _auth(request)
+    return await workflow.save_standup(st, proj, turn["role"], turn, body.text)
+
+
+@internal.post("/interrupt")
+async def interrupt(request: Request, body: InterruptBody):
+    st, proj, turn = _auth(request)
+    _manager_only(turn, body.role)
+    ok = bool(st.scheduler and st.scheduler.stop(proj.id, body.role, "manager", body.reason or None))
+    return {"ok": ok, "running": ok}
+
+
+@internal.post("/checkpoint")
+async def checkpoint(request: Request, body: CheckpointBody):
+    st, proj, turn = _auth(request)
+    _manager_only(turn, body.role)
+    reason = "checkpoint" + (f": {body.reason}" if body.reason else "")
+    if not await request_rotation(st, proj, body.role, reason, body.handoff):
+        raise HTTPException(409, "a rotation is already pending for that role")
+    msg = proj.db.add_message("dm-" + body.role, "system", "System",
+                              f"The Manager requested a checkpoint ({body.reason or 'no reason given'}); "
+                              + ("a handoff turn is queued." if body.handoff else "the next wake starts a fresh session."), [], turn["id"])
+    await proj.hub.broadcast("message", msg)
+    return proj.db.role_state(body.role)

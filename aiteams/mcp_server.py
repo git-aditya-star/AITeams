@@ -2,8 +2,8 @@
 """AITeams stdio MCP server (stdlib only; spawned by `claude`, talks to the daemon over HTTP).
 
 Tools: post_message, get_messages, list_conversations, list_features, get_feature, create_feature, set_feature,
-request_approval, request_commit, review_commit, lock_file, unlock_file, list_locks,
-permission (the --permission-prompt-tool).
+request_approval, request_commit, review_commit, lock_file, unlock_file, list_locks, write_handoff, get_team_status,
+run_standup, save_standup, interrupt, checkpoint (Manager only), permission (the --permission-prompt-tool).
 """
 import json
 import os
@@ -25,7 +25,7 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {
          "conversation": {"type": "string"},
          "text": {"type": "string"},
-         "type": {"type": "string", "enum": ["Message", "Question", "Decision", "Concern", "Finding", "Handoff", "Blocker"],
+         "type": {"type": "string", "enum": ["Message", "Question", "Decision", "Concern", "Finding", "Handoff", "Blocker", "Standup"],
                   "default": "Message"},
          "mentions": {"type": "array", "items": {"type": "string"}, "default": []}},
          "required": ["conversation", "text"]}},
@@ -82,6 +82,32 @@ TOOLS = [
          "path": {"type": "string"}, "force": {"type": "boolean", "default": False}}, "required": ["path"]}},
     {"name": "list_locks", "description": "Files locked right now and by whom.",
      "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "write_handoff",
+     "description": "Save a handoff note for your future self (what you were doing, exact state, decisions/gotchas, "
+                    "next steps, open questions). Called once in a handoff turn; may also be called after finishing a "
+                    "big piece of work. Saved to .aiteams/handoffs/<role>/ and posted in your DM.",
+     "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}},
+    {"name": "get_team_status",
+     "description": "One line per role: state, context %, session number, what they are on, pending rotation.",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "run_standup",
+     "description": "Manager only: start a standup. Roles active since the last one are asked for Done/Next/Blocked "
+                    "in #standup; you are woken afterwards to compile the report. Returns 'nothing changed' when idle.",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "save_standup",
+     "description": "Manager only, during a standup compile turn: save the report (Markdown) and post it to #standup.",
+     "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}},
+    {"name": "interrupt",
+     "description": "Manager only: SIGINT a role's running turn (its wake is dropped; a System line tells the role). "
+                    "Use only for clearly wrong or runaway work.",
+     "inputSchema": {"type": "object", "properties": {"role": {"type": "string"}, "reason": {"type": "string"}},
+                     "required": ["role", "reason"]}},
+    {"name": "checkpoint",
+     "description": "Manager only: retire a role's session. With handoff=true (default) the role first writes a handoff; "
+                    "handoff=false restarts it with only the chat digest (use when its memory is the problem).",
+     "inputSchema": {"type": "object", "properties": {"role": {"type": "string"}, "reason": {"type": "string"},
+                                                     "handoff": {"type": "boolean", "default": True}},
+                     "required": ["role", "reason"]}},
     {"name": "permission",
      "description": "Permission prompt tool used by Claude Code (internal).",
      "inputSchema": {"type": "object", "properties": {
@@ -214,7 +240,42 @@ def tool_list_locks(_a):
     return "\n".join("%s (%s)" % (l["path"], l["role"]) for l in locks) or "no locks"
 
 
+def tool_write_handoff(a):
+    res = http("POST", "/internal/handoff", {"text": str(a.get("text") or "")})
+    return "saved %s" % res["path"]
+
+
+def tool_get_team_status(_a):
+    return "\n".join(http("GET", "/internal/team").get("team") or [])
+
+
+def tool_run_standup(_a):
+    res = http("POST", "/internal/standup")
+    if res.get("status") == "nothing_changed":
+        return "nothing changed since the last standup; nobody was woken"
+    return "standup #%s started; waiting for %s. You will be woken to compile the report." % (res["id"], ", ".join(res["roles"]))
+
+
+def tool_save_standup(a):
+    res = http("POST", "/internal/standup/save", {"text": str(a.get("text") or "")})
+    return "saved %s and posted to #standup" % res["path"]
+
+
+def tool_interrupt(a):
+    res = http("POST", "/internal/interrupt", {"role": str(a.get("role") or ""), "reason": str(a.get("reason") or "")})
+    return "interrupted %s" % a.get("role") if res.get("ok") else "%s is not running" % a.get("role")
+
+
+def tool_checkpoint(a):
+    http("POST", "/internal/checkpoint", {"role": str(a.get("role") or ""), "reason": str(a.get("reason") or ""),
+                                          "handoff": bool(a.get("handoff", True))})
+    return "checkpoint requested for %s%s" % (a.get("role"), "" if a.get("handoff", True) else " (no handoff)")
+
+
 HANDLERS = {"post_message": tool_post_message, "get_messages": tool_get_messages,
+            "write_handoff": tool_write_handoff, "get_team_status": tool_get_team_status,
+            "run_standup": tool_run_standup, "save_standup": tool_save_standup,
+            "interrupt": tool_interrupt, "checkpoint": tool_checkpoint,
             "list_conversations": tool_list_conversations, "permission": tool_permission,
             "list_features": tool_list_features, "get_feature": tool_get_feature,
             "create_feature": tool_create_feature, "set_feature": tool_set_feature,
