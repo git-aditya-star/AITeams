@@ -247,6 +247,11 @@ async def ask_master(st, proj: Project, role: str, turn_id: int | None, feature,
             raise HTTPException(400, "a concern card needs a feature")
         if role not in voices(db, feat):
             raise HTTPException(403, f"{role} has no voice on {feat['key']} (voices: {', '.join(voices(db, feat))})")
+    if purpose == "a_vs_b":
+        owners = ["lead", "product"] + ([feat["owner"]] if feat and feat["owner"] not in (None, "lead", "product") else [])
+        if role not in owners:
+            raise HTTPException(403, f"only the owner ({', '.join(owners[:-1])} or {owners[-1]}) sends an A vs B card; "
+                                     "post the owner a Concern saying you still disagree")
     bs = None
     if purpose == "brainstorm":
         bs = _compiling_brainstorm(db, role, turn_id)

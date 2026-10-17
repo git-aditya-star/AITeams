@@ -70,7 +70,7 @@ TOOLS = [
                     "always adds a free-text Other, so don't). Non-blocking: end your turn after posting; the "
                     "Master's answer arrives as a Decision that wakes you. Put your recommended option first with "
                     "' (Recommended)' in its label. purpose: ask | interview | concern (needs a voice on the "
-                    "feature) | a_vs_b | brainstorm (Product only, in a brainstorm compile turn). `intro` is a short "
+                    "feature) | a_vs_b (the owner only: Lead, Product or the feature's owner) | brainstorm (Product only, in a brainstorm compile turn). `intro` is a short "
                     "lead-in (your honest take, or both sides' case). Multi-select labels can't contain commas.",
      "inputSchema": {"type": "object", "properties": {
          "questions": {"type": "array", "minItems": 1, "maxItems": 6, "items": {"type": "object", "properties": {
