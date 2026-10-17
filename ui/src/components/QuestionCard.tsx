@@ -1,6 +1,11 @@
 import { useState } from 'react'
 import type { Question, QuestionItem } from '../api'
 import { roleName } from '../roles'
+import { useAppDispatch } from '../store'
+import { answerQuestion } from '../store/thunks'
+import { Badge } from './ui/badge'
+import { Button } from './ui/button'
+import { Input } from './ui/input'
 
 function Item({ q, value, onChange }: { q: QuestionItem; value: string[]; onChange: (v: string[]) => void }) {
   const [other, setOther] = useState('')
@@ -12,7 +17,7 @@ function Item({ q, value, onChange }: { q: QuestionItem; value: string[]; onChan
   const otherSelected = value.length === 1 && !labels.includes(value[0])
   return (
     <div className="mb-3 last:mb-0">
-      {q.header && <span className="inline-block text-[11px] font-medium rounded-full bg-blue-100 text-blue-800 px-2 py-px mb-1">{q.header}</span>}
+      {q.header && <Badge className="mb-1 bg-blue-100 text-blue-800">{q.header}</Badge>}
       <div className="font-medium mb-1.5">{q.question}</div>
       <div className="flex flex-col gap-1">
         {q.options.map((o) => {
@@ -22,29 +27,31 @@ function Item({ q, value, onChange }: { q: QuestionItem; value: string[]; onChan
               key={o.label}
               type="button"
               onClick={() => toggle(o.label)}
-              className={`text-left rounded-md border px-3 py-1.5 flex gap-2 items-start ${on ? 'border-blue-500 bg-white' : 'border-blue-200 bg-white/60 hover:bg-white'}`}
+              className={`cursor-pointer text-left rounded-md border px-3 py-1.5 flex gap-2 items-start ${on ? 'border-blue-500 bg-white' : 'border-blue-200 bg-white/60 hover:bg-white'}`}
             >
               {q.multiSelect && <input type="checkbox" readOnly checked={on} className="mt-1" />}
               <span>
                 <span className="font-semibold">{o.label}</span>
-                {o.description && <span className="block text-xs text-gray-500">{o.description}</span>}
+                {o.description && <span className="block text-caption text-gray-500">{o.description}</span>}
               </span>
             </button>
           )
         })}
-        <input
+        <Input
           type="text"
           placeholder="Other…"
           value={otherSelected ? value[0] : other}
           onChange={(e) => { setOther(e.target.value); onChange(e.target.value ? [e.target.value] : []) }}
-          className="rounded-md border border-blue-200 px-3 py-1.5 text-[13px] bg-white/60 focus:bg-white focus:outline-none focus:border-blue-400"
+          className="h-auto border-blue-200 px-3 py-1.5 bg-white/60 focus:bg-white"
         />
       </div>
     </div>
   )
 }
 
-export default function QuestionCard({ q, onAnswer }: { q: Question; onAnswer: (answers: Record<string, string>) => Promise<void> }) {
+export default function QuestionCard({ q }: { q: Question }) {
+  const dispatch = useAppDispatch()
+  const onAnswer = (answers: Record<string, string>) => dispatch(answerQuestion(q, answers))
   const [values, setValues] = useState<Record<string, string[]>>({})
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -56,7 +63,7 @@ export default function QuestionCard({ q, onAnswer }: { q: Question; onAnswer: (
         ? `Answered: ${Object.values(q.answers || {}).join(' · ') || '—'}`
         : 'Expired'
     return (
-      <div className="mx-4 my-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-[13px] text-gray-500">
+      <div className="mx-4 my-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-meta text-gray-500">
         <span className="font-medium text-gray-600">{roleName(q.role)} asked:</span> {items[0]?.question}
         <div className="mt-0.5">{outcome}</div>
       </div>
@@ -82,7 +89,7 @@ export default function QuestionCard({ q, onAnswer }: { q: Question; onAnswer: (
 
   return (
     <div className="mx-4 my-2 rounded-md border border-blue-300 bg-blue-50 px-3 py-2.5">
-      <div className="text-xs text-blue-700 font-medium mb-1.5">{roleName(q.role)} is asking</div>
+      <div className="text-caption text-blue-700 font-medium mb-1.5">{roleName(q.role)} is asking</div>
       {items.map((it) => (
         <Item
           key={it.question}
@@ -99,15 +106,10 @@ export default function QuestionCard({ q, onAnswer }: { q: Question; onAnswer: (
         />
       ))}
       <div className="flex items-center gap-2 mt-2">
-        <button
-          type="button"
-          disabled={!complete || busy}
-          onClick={submit}
-          className="rounded-md bg-blue-600 text-white px-3 py-1 text-[13px] font-medium disabled:opacity-40 hover:bg-blue-700"
-        >
+        <Button type="button" size="sm" disabled={!complete || busy} onClick={submit}>
           Submit
-        </button>
-        {err && <span className="text-xs text-red-600">{err}</span>}
+        </Button>
+        {err && <span className="text-caption text-red-600">{err}</span>}
       </div>
     </div>
   )

@@ -254,6 +254,10 @@ def _tracked(project_path: str, rel: str) -> bool:
     return _git(project_path, "ls-files", "--error-unmatch", "--", rel).returncode == 0
 
 
+def _ignored(project_path: str, rel: str) -> bool:
+    return _git(project_path, "check-ignore", "-q", "--", rel).returncode == 0
+
+
 def _commit_text(c: dict, feat: dict | None) -> str:
     lines = [f"**Commit request #{c['id']}** ({len(c['files'])} file{'s' if len(c['files']) != 1 else ''})"]
     lines += [f"- {f}" for f in c["files"]]
@@ -278,6 +282,8 @@ async def request_commit(st, proj: Project, role: str, turn_id: int | None, feat
         rel = normalize_path(proj.path, f)
         if rel in rels:
             continue
+        if rel != "." and await asyncio.to_thread(_ignored, proj.path, rel):
+            raise HTTPException(400, f"{rel} is gitignored (build output is not committed)")
         full = os.path.join(proj.path, rel)
         if rel == "." or os.path.isdir(full):
             raise HTTPException(400, f"{rel} is a directory; list files one by one")

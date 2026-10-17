@@ -60,7 +60,8 @@ The full decision log is in [`BRAINSTORM.md`](BRAINSTORM.md); the milestone spec
 
 ## Requirements
 
-- macOS or Linux, Python 3.12+, [uv](https://docs.astral.sh/uv/), Node 20+ (only to build the UI).
+- macOS or Linux, Python 3.12+, [uv](https://docs.astral.sh/uv/), Node ≥ 22.12 with npm (24 LTS recommended,
+  e.g. `brew install node@24`): `aiteams upgrade` builds the UI.
 - [Claude Code](https://docs.claude.com/en/docs/claude-code) CLI installed and logged in with a
   Claude Team plan (that is what it was built and tested with; no API key is used). Agents share your plan's usage window; the daemon pauses the team when
   the limit is hit and tells you.
@@ -77,9 +78,20 @@ aiteams upgrade        # snapshots HEAD into ~/.aiteams/runtime/<sha>/ and runs 
 The daemon never runs from the checkout: `aiteams upgrade [ref]` takes a `git archive` of the source
 repo (HEAD by default, any ref works and an older ref is the rollback), installs it as a non-editable
 tool and restarts the daemon. Edits in the checkout, by you or by the team, take effect only on the
-next `aiteams upgrade`. The UI is committed pre-built in `aiteams/static/`; after changing `ui/src`
-run `cd ui && npm install && npm run build` and commit the result before upgrading (`upgrade` warns
-when `ui/src` is newer than the build).
+next `aiteams upgrade`. The UI build output (`aiteams/static/`) is not committed: `upgrade` runs
+`npm ci` + `npm run build` inside the snapshot before it stops the daemon, so a missing Node or a broken
+build aborts with the old daemon still running.
+
+**Crossing into M2c** (the release that moved the UI build into `upgrade`): the `aiteams` on PATH is
+whatever the last upgrade installed, and a pre-M2c one has no build step. Run the first upgrade to M2c,
+and every roll-forward after a rollback to a pre-M2c ref, from the checkout:
+`uv run --no-sync python -B -m aiteams.cli upgrade` (or run `aiteams upgrade` twice).
+
+UI development (in `ui/`): `npm ci` once, `npm run dev` (Vite dev server, proxies the daemon), `npm run
+build` (writes the gitignored `aiteams/static/` for local checks), `npm run e2e:install` once per
+Playwright version, `npm run e2e` (build + Playwright suite against a sandbox daemon) and
+`npm run shot -- /p/demo` (PNG of a route). The sandbox is `scripts/qa_sandbox.py` on ports 8790–8799; it
+never touches `~/.aiteams` or the live daemon. See the [guide](docs/GUIDE.md#ui-development-and-qa).
 
 ## Use
 
@@ -118,9 +130,10 @@ curl -X PUT 127.0.0.1:7700/api/settings -H "Authorization: Bearer $(cat ~/.aitea
 ```
 aiteams/            daemon, CLI, SQLite schema, scheduler/turn runner, MCP server, hook, role prompts
 aiteams/roles/      manager.md, lead.md, ... and team-rules.md (override per project in .aiteams/roles/)
-ui/                 React + Vite + Tailwind UI (built into aiteams/static/)
+ui/                 React 19 + Vite + Tailwind 4 + shadcn-style kit on Radix + Redux Toolkit, built into aiteams/static/ by upgrade
+ui/e2e/             Playwright suite + screenshot command, run against scripts/qa_sandbox.py
 tests/              pytest suite (no real claude needed; a fake child process stands in)
-scripts/            end-to-end verification walkthroughs run against the real CLI
+scripts/            QA sandbox daemon + end-to-end verification walkthroughs run against the real CLI
 specs/, SPEC.md     milestone specs; BRAINSTORM.md is the decision log
 docs/               this guide, screenshots, walkthrough GIF
 ```
@@ -133,8 +146,10 @@ docs/               this guide, screenshots, walkthrough GIF
   fresh start, History.
 - **M2a (done):** `aiteams upgrade` runtime snapshot, Master token on `/api` and `/ws`, per-turn secret on
   `/internal`, schema migrations, so the team can safely edit this repo while the daemon runs it.
-- **M2 (next):** the AITeams team builds AITeams on this repo (dogfooding): toast notifications,
-  settings UI, digests.
+- **M2b (done):** first dogfood run: the team built toast notifications and the commit review view.
+- **M2c (done):** UI build moved into `aiteams upgrade`, React 19 / Vite 8 / Tailwind 4 / shadcn-style Radix kit with
+  a four-step type scale, Redux Toolkit store, QA sandbox + Playwright suite.
+- **Next:** the team dogfoods the M2c task list (project notes for roles, a better diff view, ...).
 
 Personal project. Issues and ideas welcome; expect rough edges.
 

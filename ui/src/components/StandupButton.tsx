@@ -1,15 +1,14 @@
 import { useEffect, useState } from 'react'
-import type { Standup } from '../api'
 import { roleName } from '../roles'
+import { useAppDispatch, useAppSelector } from '../store'
+import { startStandup } from '../store/thunks'
+import { Button } from './ui/button'
 
 // Standup button + status line; shows the "nothing changed" result inline for a few seconds.
-export default function StandupButton({
-  standup,
-  onStart,
-}: {
-  standup: Standup | null
-  onStart: () => Promise<Standup | { status: string }>
-}) {
+export default function StandupButton() {
+  const dispatch = useAppDispatch()
+  const standup = useAppSelector((s) => s.dashboard?.standup ?? null)
+  const onStart = () => dispatch(startStandup())
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -35,10 +34,10 @@ export default function StandupButton({
   }
 
   return (
-    <div className="flex items-center gap-2 text-xs flex-wrap">
-      <button disabled={busy || !!active} onClick={() => void start()} className="rounded-md border border-gray-300 bg-white px-2 py-0.5 text-gray-700 hover:bg-gray-50 disabled:opacity-40">
+    <div className="flex items-center gap-2 text-caption flex-wrap">
+      <Button variant="outline" size="xs" disabled={busy || !!active} onClick={() => void start()}>
         Standup
-      </button>
+      </Button>
       {active && (
         <span className="text-gray-600">
           Standup #{standup.id}: {standup.state === 'compiling' ? 'compiling' : `waiting for ${standup.roles.map(roleName).join(', ')}`}

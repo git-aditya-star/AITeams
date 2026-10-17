@@ -68,6 +68,16 @@ def test_spa_route_needs_cookie(client, repo):
     assert "aiteams token --link" not in client.get("/p/abc").text  # index.html (or the 503 when the UI is not built)
 
 
+def test_spa_without_built_ui_is_a_503_page(home, tmp_path, monkeypatch):
+    from aiteams import daemon
+    monkeypatch.setattr(daemon, "STATIC", tmp_path / "no-static")
+    with TestClient(daemon.create_app(7799, write_daemon_json=False)) as c:
+        c.cookies.set("aiteams_token", TOKEN)
+        r = c.get("/p/abc/x")
+    assert r.status_code == 503 and r.headers["content-type"].startswith("text/html")
+    assert "UI not built: run <code>aiteams upgrade</code> in the AITeams checkout" in r.text
+
+
 def test_ws_auth(client, repo):
     pid = client.post("/api/projects/register", json={"path": str(repo)}, headers=AUTH).json()["id"]
     from starlette.websockets import WebSocketDisconnect

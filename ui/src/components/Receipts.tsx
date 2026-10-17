@@ -1,8 +1,10 @@
+import { Check, Clock, Eye, type LucideIcon } from 'lucide-react'
 import type { Receipt, ReceiptState } from '../api'
+import { roleName } from '../roles'
 import Avatar from './Avatar'
-import { Check, Clock, Eye } from './icons'
+import { Tip } from './ui/tooltip'
 
-const GROUPS: { state: ReceiptState; Icon: typeof Check; title: string }[] = [
+const GROUPS: { state: ReceiptState; Icon: LucideIcon; title: string }[] = [
   { state: 'acked', Icon: Check, title: 'acknowledged' },
   { state: 'seen', Icon: Eye, title: 'seen' },
   { state: 'queued', Icon: Clock, title: 'queued' },
@@ -18,19 +20,21 @@ export default function Receipts({ receipts }: { receipts: Receipt[] }) {
         const shown = roles.slice(0, 3)
         const extra = roles.length - shown.length
         return (
-          <div key={g.state} className="flex items-center" title={`${g.title}: ${roles.join(', ')}`}>
-            <g.Icon size={12} className="text-gray-400 mr-1" />
-            <div className="flex">
-              {shown.map((r, i) => (
-                <Avatar key={r} author={r} size={18} className={`ring-2 ring-white ${i ? '-ml-1.5' : ''}`} />
-              ))}
-              {extra > 0 && (
-                <span className="inline-flex items-center justify-center rounded-full bg-gray-200 text-gray-600 ring-2 ring-white -ml-1.5 text-[10px] font-medium" style={{ width: 18, height: 18 }}>
-                  +{extra}
-                </span>
-              )}
+          <Tip key={g.state} content={`${g.title}: ${roles.map(roleName).join(', ')}`}>
+            <div className="flex items-center" data-receipts={g.state}>
+              <g.Icon size={12} className="text-gray-400 mr-1" />
+              <div className="flex">
+                {shown.map((r, i) => (
+                  <Avatar key={r} author={r} size={18} tip={false} className={`ring-2 ring-white ${i ? '-ml-1.5' : ''}`} />
+                ))}
+                {extra > 0 && (
+                  <span className="inline-flex items-center justify-center rounded-full bg-gray-200 text-gray-600 ring-2 ring-white -ml-1.5 text-caption font-medium" style={{ width: 18, height: 18 }}>
+                    +{extra}
+                  </span>
+                )}
+              </div>
             </div>
-          </div>
+          </Tip>
         )
       })}
     </div>

@@ -1,6 +1,8 @@
+import { ChevronDown, ChevronRight } from 'lucide-react'
 import { useMemo } from 'react'
 import type { DiffFile as DiffFileT } from '../api'
 import { fmtSize, parseFileDiff } from '../diff'
+import { Badge } from './ui/badge'
 
 const LARGE = 300
 
@@ -19,11 +21,11 @@ const BADGE_LABEL: Record<string, string> = { added: 'new', deleted: 'deleted', 
 
 export function StatusBadge({ status }: { status: string }) {
   if (!BADGE[status]) return null
-  return <span className={`text-[11px] rounded-full px-2 py-px font-medium ${BADGE[status]}`}>{BADGE_LABEL[status]}</span>
+  return <Badge className={BADGE[status]}>{BADGE_LABEL[status]}</Badge>
 }
 
 export const Counts = ({ a, d }: { a: number; d: number }) => (
-  <span className="font-mono text-xs whitespace-nowrap">
+  <span className="font-mono text-code whitespace-nowrap">
     <span className="text-green-700">+{a}</span> <span className="text-red-700">−{d}</span>
   </span>
 )
@@ -42,13 +44,13 @@ export default function DiffFile({ f, open, onToggle }: { f: DiffFileT; open: bo
     <section id={`diff-${f.path}`} className="rounded-md border border-gray-200 bg-white">
       <button
         onClick={onToggle}
-        className={`sticky top-0 z-10 w-full flex items-center gap-2 px-3 py-1.5 bg-gray-50 text-left text-[13px] ${open ? 'border-b border-gray-200 rounded-t-md' : 'rounded-md'}`}
+        className={`sticky top-0 z-10 w-full cursor-pointer flex items-center gap-2 px-3 py-1.5 bg-gray-50 text-left text-meta ${open ? 'border-b border-gray-200 rounded-t-md' : 'rounded-md'}`}
       >
-        <span className="text-gray-400 w-3">{open ? '▾' : '▸'}</span>
-        <span className="font-mono text-xs text-gray-800 truncate">{f.path}</span>
+        {open ? <ChevronDown size={12} className="shrink-0 text-gray-400" /> : <ChevronRight size={12} className="shrink-0 text-gray-400" />}
+        <span className="font-mono text-code text-gray-800 truncate">{f.path}</span>
         <StatusBadge status={f.status} />
         {f.binary && <StatusBadge status="binary" />}
-        {note && <span className={`text-xs ${f.status === 'missing' ? 'text-red-700' : 'text-gray-500'}`}>{note}</span>}
+        {note && <span className={`text-caption ${f.status === 'missing' ? 'text-red-700' : 'text-gray-500'}`}>{note}</span>}
         <span className="ml-auto">
           <Counts a={f.additions} d={f.deletions} />
         </span>
@@ -56,13 +58,13 @@ export default function DiffFile({ f, open, onToggle }: { f: DiffFileT; open: bo
       {open && (
         <div className="overflow-x-auto">
           {hunks.length === 0 ? (
-            <div className="px-3 py-2 text-xs text-gray-500">
+            <div className="px-3 py-2 text-caption text-gray-500">
               {f.status === 'missing' ? (
                 <span className="text-red-700">File not on disk; committing will fail.</span>
               ) : f.binary ? 'Binary file, no text diff.' : f.status === 'unchanged' ? 'No changes against HEAD.' : 'No text diff.'}
             </div>
           ) : (
-            <table className="min-w-full font-mono text-[12px] leading-[18px] border-collapse">
+            <table className="min-w-full font-mono text-code border-collapse">
               <tbody>
                 {hunks.map((h, i) => [
                   <tr key={`h${i}`} className="bg-blue-50 text-blue-700">

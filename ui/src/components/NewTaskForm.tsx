@@ -1,12 +1,15 @@
 import { useState } from 'react'
 import { roleName } from '../roles'
+import { Button } from './ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
+import { Textarea } from './ui/textarea'
 
 const STARTERS = ['product', 'lead', 'manager'] as const
 
 // "New task" button that expands into the one-box form (sidebar and dashboard).
 export default function NewTaskForm({
   onNewTask,
-  buttonClass = 'w-full rounded-md bg-blue-600 text-white py-1.5 text-[13px] font-medium hover:bg-blue-700',
+  buttonClass = 'w-full',
 }: {
   onNewTask: (body: { text: string; starter: string }) => Promise<void>
   buttonClass?: string
@@ -35,14 +38,14 @@ export default function NewTaskForm({
 
   if (!creating) {
     return (
-      <button onClick={() => setCreating(true)} className={buttonClass}>
+      <Button onClick={() => setCreating(true)} className={buttonClass}>
         New task
-      </button>
+      </Button>
     )
   }
   return (
     <div className="flex flex-col gap-1.5">
-      <textarea
+      <Textarea
         autoFocus
         value={text}
         rows={3}
@@ -52,24 +55,29 @@ export default function NewTaskForm({
           if (e.key === 'Escape') setCreating(false)
         }}
         placeholder="What should the team do?"
-        className="w-full resize-none rounded-md border border-gray-300 px-2 py-1 text-[13px] focus:outline-none focus:border-blue-400"
+        className="resize-none"
       />
       <div className="flex gap-1 items-center">
-        <select value={starter} onChange={(e) => setStarter(e.target.value)} className="flex-1 min-w-0 rounded-md border border-gray-300 bg-white px-1.5 py-1 text-xs" title="starter">
-          {STARTERS.map((r) => (
-            <option key={r} value={r}>
-              {roleName(r)}
-            </option>
-          ))}
-        </select>
-        <button disabled={busy || !text.trim()} onClick={submit} className="rounded-md bg-blue-600 text-white px-2.5 py-1 text-xs font-medium hover:bg-blue-700 disabled:opacity-40">
+        <Select value={starter} onValueChange={setStarter}>
+          <SelectTrigger size="sm" aria-label="Starter" className="flex-1 min-w-0">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {STARTERS.map((r) => (
+              <SelectItem key={r} value={r}>
+                {roleName(r)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button size="sm" disabled={busy || !text.trim()} onClick={submit}>
           Start
-        </button>
-        <button onClick={() => setCreating(false)} className="text-xs text-gray-500 hover:text-gray-800 px-1">
+        </Button>
+        <Button variant="ghost" size="sm" onClick={() => setCreating(false)}>
           Cancel
-        </button>
+        </Button>
       </div>
-      {err && <div className="text-[11px] text-red-600 truncate">{err}</div>}
+      {err && <div className="text-caption text-red-600 truncate">{err}</div>}
     </div>
   )
 }

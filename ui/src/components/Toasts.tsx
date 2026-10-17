@@ -1,6 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { Bell, Check, Clock, MessageCircleQuestion, RotateCw, Square, TriangleAlert, X, type LucideIcon } from 'lucide-react'
+import { toast as sonner } from 'sonner'
 import { KINDS, type Kind, type Tone, type Toast } from '../toasts'
-import { AlertTriangle, Bell, Check, Clock, MessageQuestion, Refresh, Stop } from './icons'
+import { Button } from './ui/button'
+import { Toaster } from './ui/sonner'
+import { Tip } from './ui/tooltip'
 
 const MAX = 4
 const DISMISS_MS = 15000
@@ -14,81 +17,65 @@ const TONE: Record<Tone, { accent: string; text: string; circle: string }> = {
   info: { accent: 'bg-sky-600', text: 'text-sky-600', circle: 'bg-sky-50' },
 }
 
-const ICON: Record<Kind, (p: { size?: number }) => JSX.Element> = {
-  question: MessageQuestion,
-  blocker: AlertTriangle,
+const ICON: Record<Kind, LucideIcon> = {
+  question: MessageCircleQuestion,
+  blocker: TriangleAlert,
   approval: Bell,
   commit_request: Bell,
   committed: Check,
-  commit_failed: AlertTriangle,
+  commit_failed: TriangleAlert,
   standup: Bell,
-  stopped: Stop,
-  interrupted: Stop,
-  fresh_session: Refresh,
+  stopped: Square,
+  interrupted: Square,
+  fresh_session: RotateCw,
   rate_limit: Clock,
 }
 
-function ToastItem({ t, onOpen, onClose }: { t: Toast; onOpen: () => void; onClose: () => void }) {
-  const [hover, setHover] = useState(false)
-  // Bumped on mouse-leave so the countdown bar restarts from full width along with the timer.
-  const [round, setRound] = useState(0)
-  // onClose is a fresh closure each render; keep it out of the effect deps so re-renders don't reset the timer.
-  const close = useRef(onClose)
-  close.current = onClose
-  // Timer runs only while not hovered; leaving restarts it at the full duration.
-  useEffect(() => {
-    if (hover) return
-    const id = setTimeout(() => close.current(), DISMISS_MS)
-    return () => clearTimeout(id)
-  }, [hover])
-
+// The F-1 rev3 card, rendered by Sonner through toast.custom (Sonner owns stacking and the 15 s timer).
+function ToastCard({ t, onOpen, onClose }: { t: Toast; onOpen: () => void; onClose: () => void }) {
   const tone = TONE[t.tone]
   const Icon = ICON[t.kind]
   const pulse = t.tone === 'action' || t.tone === 'error'
   return (
-    <div
-      role="status"
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => {
-        setHover(false)
-        setRound((r) => r + 1)
-      }}
-      className="relative w-96 bg-white rounded-xl shadow-xl ring-1 ring-black/5 overflow-hidden flex items-start gap-3 pl-3 pr-2 py-3 motion-safe:animate-toast-in"
-    >
+    <div role="status" data-toast={t.kind} className="relative w-96 bg-white rounded-xl shadow-xl ring-1 ring-black/5 overflow-hidden flex items-start gap-3 pl-3 pr-2 py-3">
       <span className={`absolute inset-y-0 left-0 w-1 ${tone.accent}`} />
       <span className={`ml-1 shrink-0 w-9 h-9 rounded-full flex items-center justify-center ${tone.circle} ${tone.text} ${pulse ? 'motion-safe:animate-ring-pulse' : ''}`}>
         <Icon size={18} />
       </span>
-      {/* Up to 5 lines; the full text is in the hover title (hover also pauses the timer). */}
-      <button className="flex-1 min-w-0 text-left break-words" title={t.text} onClick={onOpen}>
-        <span className={`block text-[11px] font-semibold uppercase tracking-wide ${tone.text}`}>{KINDS[t.kind].label}</span>
-        <span className="block text-[13.5px] text-gray-800 leading-snug line-clamp-5">{t.text}</span>
+      {/* Up to 5 lines; the full text is in the hover title. */}
+      <button className="flex-1 min-w-0 cursor-pointer text-left wrap-break-word" title={t.text} onClick={onOpen}>
+        <span className={`block text-caption font-semibold uppercase tracking-wide ${tone.text}`}>{KINDS[t.kind].label}</span>
+        <span className="text-body text-gray-800 line-clamp-5">{t.text}</span>
       </button>
-      <button className="shrink-0 px-1.5 text-lg leading-none text-gray-400 hover:text-gray-700" aria-label="Dismiss" onClick={onClose}>
-        ×
-      </button>
-      <span
-        key={round}
-        className={`absolute bottom-0 left-0 h-[3px] w-full origin-left ${tone.accent} motion-safe:animate-toast-bar`}
-        style={{ animationPlayState: hover ? 'paused' : 'running' }}
-      />
+      <Tip content="Dismiss">
+        <Button variant="ghost" size="icon-xs" className="text-gray-400" aria-label="Dismiss" onClick={onClose}>
+          <X className="size-4" />
+        </Button>
+      </Tip>
+      {/* Paused with Sonner's timer while the pointer is over the stack (index.css). */}
+      <span className={`toast-bar absolute bottom-0 left-0 h-[3px] w-full origin-left ${tone.accent} motion-safe:animate-toast-bar`} />
     </div>
   )
 }
 
-// Add a toast, dropping the oldest beyond MAX (dropped toasts are gone, not queued).
-export const pushToast = (ts: Toast[], t: Toast) => [...ts, t].slice(-MAX)
-
-// Bottom-right stack, newest on top; `toasts` is oldest-first.
-export default function Toasts({ toasts, onOpen, onDismiss }: { toasts: Toast[]; onOpen: (t: Toast) => void; onDismiss: (key: string) => void }) {
-  if (!toasts.length) return null
-  return (
-    <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-3">
-      {[...toasts]
-        .reverse()
-        .map((t) => (
-          <ToastItem key={t.key} t={t} onOpen={() => onOpen(t)} onClose={() => onDismiss(t.key)} />
-        ))}
-    </div>
+// Show one live-event toast; `t.key` is the Sonner id, so a repeated key replaces instead of stacking.
+export function showToast(t: Toast, onOpen: (t: Toast) => void) {
+  sonner.custom(
+    (id) => (
+      <ToastCard
+        t={t}
+        onOpen={() => {
+          sonner.dismiss(id)
+          onOpen(t)
+        }}
+        onClose={() => sonner.dismiss(id)}
+      />
+    ),
+    { id: t.key, duration: DISMISS_MS },
   )
+}
+
+// Bottom-right column, newest at the bottom edge, up to MAX visible.
+export default function Toasts() {
+  return <Toaster position="bottom-right" expand visibleToasts={MAX} gap={12} offset={20} style={{ '--width': '384px' } as React.CSSProperties} />
 }

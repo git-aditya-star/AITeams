@@ -15,7 +15,7 @@ function linkifyMentions(text: string): string {
 
 export default function Markdown({ text }: { text: string }) {
   return (
-    <div className="md break-words">
+    <div className="md wrap-break-word">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{

@@ -225,3 +225,16 @@ def test_diff_overlap_lists_only_pending_requests(client, pid, repo):
         {"path": "b.py", "commit_id": both["id"], "role": "backend", "state": "lead_review", "feature": None}]
     assert other["id"] not in [o["commit_id"] for o in d["overlap"]]
     assert client.get(f"/api/p/{pid}/commits/{review['id']}/diff").json()["commit"]["feature"] == "F-1"
+
+
+def test_gitignored_path_is_rejected(client, pid, repo):
+    (repo / ".gitignore").write_text("aiteams/static/\n*.log\n")
+    (repo / "aiteams" / "static").mkdir(parents=True)
+    (repo / "aiteams" / "static" / "index.html").write_text("<p>\n")
+    (repo / "debug.log").write_text("x\n")
+    (repo / "ok.py").write_text("x = 1\n")
+    lead = turn(client, pid, "lead")
+    for path in ("aiteams/static/index.html", "debug.log", "aiteams/static"):
+        r = client.post("/internal/commits", json={"files": ["ok.py", path], "message": "m"}, headers=lead)
+        assert r.status_code == 400 and r.json()["detail"] == f"{path} is gitignored (build output is not committed)"
+    assert client.post("/internal/commits", json={"files": ["ok.py", ".gitignore"], "message": "m"}, headers=lead).status_code == 200

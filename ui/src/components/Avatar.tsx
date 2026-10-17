@@ -1,13 +1,15 @@
-import { avatarClass, avatarInitial } from '../roles'
+import { avatarClass, avatarInitial, roleName } from '../roles'
+import { Tip } from './ui/tooltip'
 
-export default function Avatar({ author, size = 28, className = '' }: { author: string; size?: number; className?: string }) {
-  return (
+// `tip={false}` where a surrounding element already explains the avatar (receipt groups).
+export default function Avatar({ author, size = 28, className = '', tip = true }: { author: string; size?: number; className?: string; tip?: boolean }) {
+  const circle = (
     <span
       className={`inline-flex items-center justify-center rounded-full font-semibold shrink-0 ${avatarClass(author)} ${className}`}
       style={{ width: size, height: size, fontSize: Math.round(size * 0.45) }}
-      title={author}
     >
       {avatarInitial(author)}
     </span>
   )
+  return tip ? <Tip content={roleName(author)}>{circle}</Tip> : circle
 }

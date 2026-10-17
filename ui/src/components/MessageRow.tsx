@@ -6,6 +6,7 @@ import Avatar from './Avatar'
 import CommitCard from './CommitCard'
 import Markdown from './Markdown'
 import Receipts from './Receipts'
+import { Badge } from './ui/badge'
 
 export default function MessageRow({ m, highlight = false }: { m: Message; highlight?: boolean }) {
   const card = m.ref?.startsWith('approval:') && m.approval ? <ApprovalCard a={m.approval} /> : m.ref?.startsWith('commit:') && m.commit ? <CommitCard c={m.commit} /> : null
@@ -15,9 +16,9 @@ export default function MessageRow({ m, highlight = false }: { m: Message; highl
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
           <span className="font-bold">{roleName(m.author)}</span>
-          <span className="text-xs text-gray-400">{fmtTime(m.created_at)}</span>
+          <span className="text-caption text-gray-400">{fmtTime(m.created_at)}</span>
           {m.type && m.type !== 'Message' && (
-            <span className={`text-[11px] rounded-full px-2 py-px font-medium ${TYPE_CHIP[m.type] || TYPE_CHIP.System}`}>{m.type}</span>
+            <Badge className={TYPE_CHIP[m.type] || TYPE_CHIP.System}>{m.type}</Badge>
           )}
         </div>
         <Markdown text={m.text} />

@@ -54,6 +54,20 @@
 - When woken for a **standup**, post exactly one `Message` in `standup` with **Done** / **Next** / **Blocked**
   bullets, mention nobody, end your turn. `get_team_status` shows what everyone is on at any time.
 
+## UI work and QA (when this project is the AITeams repo)
+- UI build output is not committed: never list `aiteams/static` in `request_commit` (it is gitignored and is refused).
+  `cd ui && npm run build` is for local checks only; `aiteams upgrade` builds the UI itself.
+- UI code uses the kit in `ui/src/components/ui/*` (add a component with `npx shadcn add <name>`, then retune the new
+  file's text sizes onto the tokens), lucide icons and the five type tokens only (`text-title`, `text-body`,
+  `text-meta`, `text-caption`, `text-code`): no native `<select>`, no hand-rolled menus/popovers/dialogs, no
+  `text-[Npx]`.
+- QA tests the UI through `scripts/qa_sandbox.py` + Playwright (`cd ui && npm run e2e`, `npm run shot -- <route>`) on
+  ports 8790-8799, never against the live daemon. The sandbox seeds project id `demo`; `POST /qa/fire {kind}` emits a
+  live event.
+- A commit request that touches `ui/` states in "how tested" the `npm run e2e` result (`N passed`) and the
+  `npm run shot` PNG path(s); new UI behaviour adds or extends a spec in `ui/e2e/`. The Lead re-runs `npm run e2e`
+  before approving such a request.
+
 ## Hard limits (enforced by hooks, do not try to work around them)
 - NEVER `git commit`, `git push`, `git reset --hard` or `git clean -f`. Use `request_commit`; the Master commits.
 - Edit only inside this project folder. Never touch `~/.claude`, `.aiteams/state.db` or the AITeams daemon.

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { api, type Health } from './api'
 
 export default function Home() {
@@ -19,17 +19,17 @@ export default function Home() {
   return (
     <div className="h-full flex flex-col">
       {upgradeAvailable && (
-        <div className="bg-gray-50 border-b border-gray-200 text-gray-700 px-4 py-1.5 text-[13px] shrink-0">
-          New commits since the running version, run <code className="font-mono bg-gray-100 rounded px-1">aiteams upgrade</code>
+        <div className="bg-gray-50 border-b border-gray-200 text-gray-700 px-4 py-1.5 text-meta shrink-0">
+          New commits since the running version, run <code className="font-mono text-code bg-gray-100 rounded-sm px-1">aiteams upgrade</code>
         </div>
       )}
     <div className="flex-1 flex items-center justify-center text-gray-600">
       {state === 'loading' && <span>Loading…</span>}
       {state === 'empty' && (
         <div className="text-center">
-          <div className="font-semibold text-gray-800 mb-1">No projects yet</div>
+          <div className="text-title text-gray-800 mb-1">No projects yet</div>
           <div>
-            Run <code className="font-mono bg-gray-100 rounded px-1">aiteams</code> in a git folder to register one.
+            Run <code className="font-mono text-code bg-gray-100 rounded-sm px-1">aiteams</code> in a git folder to register one.
           </div>
         </div>
       )}

@@ -1,16 +1,18 @@
-import type { Inbox, InboxMessage, Question } from '../api'
 import ApprovalCard from './ApprovalCard'
 import CommitCard from './CommitCard'
 import MessageRow from './MessageRow'
 import QuestionCard from './QuestionCard'
-import { featureLabel, useCards } from './CardContext'
 import { roleName } from '../roles'
+import { useAppDispatch, useAppSelector } from '../store'
+import { featureLabel } from '../store/selectors'
+import { resolveInboxMessage } from '../store/thunks'
+import { Button } from './ui/button'
 
 function Group({ title, count, children }: { title: string; count: number; children: React.ReactNode }) {
   if (!count) return null
   return (
     <section className="mb-5">
-      <div className="px-4 mb-1 text-[11px] uppercase tracking-wide text-gray-500 font-semibold">
+      <div className="px-4 mb-1 text-caption uppercase tracking-wide text-gray-500 font-semibold">
         {title} <span className="text-gray-400">({count})</span>
       </div>
       {children}
@@ -18,28 +20,20 @@ function Group({ title, count, children }: { title: string; count: number; child
   )
 }
 
-export default function InboxView({
-  inbox,
-  onAnswer,
-  onOpen,
-  onResolve,
-}: {
-  inbox: Inbox | null
-  onAnswer: (q: Question) => (answers: Record<string, string>) => Promise<void>
-  onOpen: (conversationId: string) => void
-  onResolve: (m: InboxMessage) => Promise<void>
-}) {
-  const ctx = useCards()
-  if (!inbox) return <div className="flex-1 px-4 py-6 text-gray-400 text-[13px]">Loading…</div>
+export default function InboxView({ onOpen }: { onOpen: (conversationId: string) => void }) {
+  const dispatch = useAppDispatch()
+  const inbox = useAppSelector((s) => s.inbox.data)
+  const features = useAppSelector((s) => s.features)
+  if (!inbox) return <div className="flex-1 px-4 py-6 text-gray-400 text-meta">Loading…</div>
   const total = inbox.questions.length + inbox.approvals.length + inbox.commits.length + inbox.messages.length
-  if (!total) return <div className="flex-1 px-4 py-6 text-gray-500 text-[13px]">Nothing needs you.</div>
+  if (!total) return <div className="flex-1 px-4 py-6 text-gray-500 text-meta">Nothing needs you.</div>
   const commits = inbox.commits.filter((c) => c.state === 'master_review')
 
   return (
     <div className="flex-1 overflow-y-auto py-3">
       <Group title="Questions" count={inbox.questions.length}>
         {inbox.questions.map((q) => (
-          <QuestionCard key={`${q.id}-${q.state}`} q={q} onAnswer={onAnswer(q)} />
+          <QuestionCard key={`${q.id}-${q.state}`} q={q} />
         ))}
       </Group>
       <Group title="Approvals" count={inbox.approvals.length}>
@@ -58,20 +52,20 @@ export default function InboxView({
       </Group>
       <Group title="Messages" count={inbox.messages.length}>
         {inbox.messages.map((m) => {
-          const feat = ctx ? ctx.features.find((f) => f.conversation_id === m.conversation_id) : undefined
-          const where = feat ? featureLabel(ctx!.features, feat.id) : m.conversation_title || m.conversation_id
+          const feat = features.find((f) => f.conversation_id === m.conversation_id)
+          const where = feat ? featureLabel(features, feat.id) : m.conversation_title || m.conversation_id
           return (
             <div key={m.id} className="mx-4 my-2 rounded-md border border-gray-200">
-              <div className="flex items-center gap-2 px-4 pt-2 text-xs text-gray-500">
+              <div className="flex items-center gap-2 px-4 pt-2 text-caption text-gray-500">
                 <span>
                   {roleName(m.author)} in <span className="font-medium text-gray-700">{where}</span>
                 </span>
-                <button onClick={() => onOpen(m.conversation_id)} className="ml-auto text-blue-600 hover:underline">
+                <Button variant="link" size="inline" className="ml-auto text-caption" onClick={() => onOpen(m.conversation_id)}>
                   Open
-                </button>
-                <button onClick={() => void onResolve(m)} className="rounded-md border border-gray-300 px-2 py-0.5 text-gray-700 hover:bg-gray-50">
+                </Button>
+                <Button variant="outline" size="xs" onClick={() => void dispatch(resolveInboxMessage(m))}>
                   Resolve
-                </button>
+                </Button>
               </div>
               <MessageRow m={m} />
             </div>

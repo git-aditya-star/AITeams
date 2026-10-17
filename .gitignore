@@ -6,3 +6,6 @@ ui/dist/
 .pytest_cache/
 .aiteams/
 .project-notes/
+aiteams/static/
+ui/test-results/
+ui/playwright-report/

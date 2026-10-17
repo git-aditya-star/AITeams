@@ -1,9 +1,10 @@
+import { ChevronDown, ChevronRight, RotateCw } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Message } from '../api'
 import { fmtTime } from '../api'
 import { roleName } from '../roles'
 import MessageRow from './MessageRow'
-import { Chevron, Refresh } from './icons'
+import { Button } from './ui/button'
 
 type Chunk = { kind: 'single'; m: Message } | { kind: 'run'; key: number; items: Message[] }
 
@@ -78,9 +79,9 @@ export default function MessageList({
     if (dividerShown || !resetAfter || first.id <= resetAfter) return null
     dividerShown = true
     return (
-      <div key={`reset-${first.id}`} className="flex items-center gap-2 px-4 py-2 text-[11.5px] text-gray-500 select-none">
+      <div key={`reset-${first.id}`} className="flex items-center gap-2 px-4 py-2 text-caption text-gray-500 select-none">
         <span className="flex-1 border-t border-gray-200" />
-        <Refresh size={12} className="text-gray-400" />
+        <RotateCw size={12} className="text-gray-400" />
         <span>Fresh start · {fmtTime(first.created_at)}</span>
         <span className="flex-1 border-t border-gray-200" />
       </div>
@@ -91,9 +92,9 @@ export default function MessageList({
     <div ref={ref} onScroll={onScroll} className="flex-1 overflow-y-auto py-2">
       {hasMore && (
         <div className="text-center py-1">
-          <button className="text-xs text-blue-600 hover:underline" onClick={onLoadMore}>
+          <Button variant="link" size="inline" className="text-caption" onClick={onLoadMore}>
             Load earlier messages
-          </button>
+          </Button>
         </div>
       )}
       {chunks.map((c) => (
@@ -106,19 +107,21 @@ export default function MessageList({
               {c.items.map((m) => (
                 <MessageRow key={m.id} m={m} highlight={m.id === highlight} />
               ))}
-              <button
-                className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-800 px-4 py-1"
+              <Button
+                variant="ghost"
+                size="xs"
+                className="mx-3 my-0.5 font-normal"
                 onClick={() => setExpanded((s) => { const n = new Set(s); n.delete(c.key); return n })}
               >
-                <Chevron size={12} down /> collapse
-              </button>
+                <ChevronDown /> collapse
+              </Button>
             </div>
           ) : (
             <button
-              className="w-full text-left flex items-center gap-2 px-4 py-1.5 text-[13px] text-gray-500 hover:bg-gray-50"
+              className="w-full cursor-pointer text-left flex items-center gap-2 px-4 py-1.5 text-meta text-gray-500 hover:bg-gray-50"
               onClick={() => setExpanded((s) => new Set(s).add(c.key))}
             >
-              <Chevron size={12} className="text-gray-400" />
+              <ChevronRight size={12} className="text-gray-400" />
               <span className="font-medium text-gray-600">{c.items.length} replies</span>
               <span>· {[...new Set(c.items.map((m) => roleName(m.author)))].join(', ')}</span>
             </button>

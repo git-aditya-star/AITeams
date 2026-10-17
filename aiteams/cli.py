@@ -220,13 +220,11 @@ def cmd_upgrade(args) -> None:
         print(f"resolve   {ref} -> {sha[:7]} in {src}")
         if ref == "HEAD" and upgrade.dirty(src):
             print("warning: working tree has uncommitted changes; the snapshot is HEAD, not the tree")
-        if upgrade.ui_stale(src, sha):
-            print(f"ui/src is newer than aiteams/static at {sha[:7]}; run `cd ui && npm run build` and commit before upgrading")
-            if not args.yes and input("Continue? [y/N] ").strip().lower() not in ("y", "yes"):
-                sys.exit(1)
         snap = upgrade.snapshot(src, sha, config.runtime_dir())
         version = upgrade.snapshot_version(snap)
         print(f"snapshot  {snap}")
+        # Before the stop, so a missing Node or a broken build costs no downtime.
+        print(upgrade.build_ui(snap))
         print("stop      " + ("daemon stopped" if stop_daemon() else "daemon was not running"))
         print(f"install   uv tool install --reinstall --force {snap}")
         upgrade.install(snap)
@@ -258,7 +256,6 @@ def main(argv: list[str] | None = None) -> None:
     u = sub.add_parser("upgrade", help="snapshot the source repo at REF (default HEAD) and run the daemon from it")
     u.add_argument("ref", nargs="?")
     u.add_argument("--src", help="AITeams checkout to snapshot (default: the one remembered in runtime.json, else cwd)")
-    u.add_argument("--yes", action="store_true", help="do not ask when ui/src is newer than aiteams/static")
     t = sub.add_parser("token", help="print the Master token")
     t.add_argument("--link", action="store_true", help="print a fresh single-use sign-in URL")
     t.add_argument("--rotate", action="store_true", help="write a new token and tell the daemon; open tabs sign out")

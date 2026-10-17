@@ -1,71 +1,69 @@
 import type { Commit } from '../api'
 import { fmtAgo } from '../api'
 import { roleName, stateChip, stateLabel } from '../roles'
-import { featureLabel, useCards } from './CardContext'
+import { useAppSelector } from '../store'
+import { selectFeatureLabel } from '../store/selectors'
+import { useCards } from './CardContext'
+import { Badge } from './ui/badge'
+import { Button } from './ui/button'
+import { Input } from './ui/input'
+import { Textarea } from './ui/textarea'
 import { useCommitDecision } from './useCommitDecision'
-
-const btn = 'rounded-md px-3 py-1 text-[13px] font-medium disabled:opacity-40'
 
 type Decision = ReturnType<typeof useCommitDecision>
 
 // Editable commit message, or the plain message once the request is no longer reviewable.
 export function CommitMessage({ c, d }: { c: Commit; d: Decision }) {
   return c.state === 'master_review' ? (
-    <textarea
+    <Textarea
       value={d.message}
       onChange={(e) => d.setMessage(e.target.value)}
       rows={Math.min(8, Math.max(2, d.message.split('\n').length))}
-      className="mt-2 w-full resize-y rounded-md border border-gray-300 px-2 py-1 font-mono text-xs focus:outline-none focus:border-blue-400"
+      className="mt-2 resize-y font-mono text-code"
     />
   ) : (
-    <pre className="mt-2 whitespace-pre-wrap font-mono text-xs text-gray-700 bg-gray-50 rounded-md border border-gray-100 px-2 py-1">{c.message}</pre>
+    <pre className="mt-2 whitespace-pre-wrap font-mono text-code text-gray-700 bg-gray-50 rounded-md border border-gray-100 px-2 py-1">{c.message}</pre>
   )
 }
 
 // State lines, stale warning, note field and Approve / Commit anyway / Reject.
 export function CommitActions({ c, d, showStale = true }: { c: Commit; d: Decision; showStale?: boolean }) {
-  const ctx = useCards()
   const reviewable = c.state === 'master_review'
   return (
     <>
       {showStale && d.stale.length > 0 && reviewable && (
-        <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 text-amber-900 px-2 py-1.5 text-xs">
+        <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 text-amber-900 px-2 py-1.5 text-caption">
           Files changed since the request: {d.stale.join(', ')}. Review the diff again before committing.
         </div>
       )}
 
-      {c.state === 'lead_review' && <div className="mt-2 text-xs text-gray-500">Waiting on Lead review.</div>}
+      {c.state === 'lead_review' && <div className="mt-2 text-caption text-gray-500">Waiting on Lead review.</div>}
       {(c.state === 'rejected' || c.state === 'failed') && c.note && (
-        <pre className="mt-2 whitespace-pre-wrap font-mono text-xs text-red-700 bg-red-50 rounded-md border border-red-100 px-2 py-1">{c.note}</pre>
+        <pre className="mt-2 whitespace-pre-wrap font-mono text-code text-red-700 bg-red-50 rounded-md border border-red-100 px-2 py-1">{c.note}</pre>
       )}
       {c.state === 'committed' && c.sha && (
-        <div className="mt-2 text-xs text-gray-600">
-          Committed as <code className="font-mono bg-gray-100 rounded px-1">{c.sha}</code>
+        <div className="mt-2 text-caption text-gray-600">
+          Committed as <code className="font-mono text-code bg-gray-100 rounded-sm px-1">{c.sha}</code>
         </div>
       )}
 
-      {reviewable && ctx && (
+      {reviewable && d.canDecide && (
         <div className="mt-2 flex flex-col gap-1.5">
-          <input
-            value={d.note}
-            onChange={(e) => d.setNote(e.target.value)}
-            placeholder="Note (optional; shown to the requester on reject)"
-            className="rounded-md border border-gray-300 px-2 py-1 text-[13px] focus:outline-none focus:border-blue-400"
-          />
+          <Input value={d.note} onChange={(e) => d.setNote(e.target.value)} placeholder="Note (optional; shown to the requester on reject)" />
           <div className="flex items-center gap-2 flex-wrap">
             {d.stale.length > 0 ? (
-              <button disabled={d.busy} onClick={() => d.decide('approve', true)} className={`${btn} bg-amber-600 text-white hover:bg-amber-700`}>
+              <Button size="sm" disabled={d.busy} onClick={() => d.decide('approve', true)} className="bg-amber-600 hover:bg-amber-700">
                 Commit anyway
-              </button>
+              </Button>
             ) : (
-              <button disabled={d.busy} onClick={() => d.decide('approve')} className={`${btn} bg-blue-600 text-white hover:bg-blue-700`}>
+              <Button size="sm" disabled={d.busy} onClick={() => d.decide('approve')}>
                 Approve
-              </button>
+              </Button>
             )}
-            <button disabled={d.busy} onClick={() => d.decide('reject')} className={`${btn} border border-gray-300 text-gray-700 hover:bg-gray-50`}>
+            <Button variant="outline" size="sm" disabled={d.busy} onClick={() => d.decide('reject')}>
               Reject
-            </button>
-            {d.err && <span className="text-xs text-red-600 truncate">{d.err}</span>}
+            </Button>
+            {d.err && <span className="text-caption text-red-600 truncate">{d.err}</span>}
           </div>
         </div>
       )}
@@ -76,16 +74,16 @@ export function CommitActions({ c, d, showStale = true }: { c: Commit; d: Decisi
 export default function CommitCard({ c, showFeature = false }: { c: Commit; showFeature?: boolean }) {
   const ctx = useCards()
   const d = useCommitDecision(c)
-  const feature = ctx ? featureLabel(ctx.features, c.feature_id) : null
+  const feature = useAppSelector((s) => selectFeatureLabel(s, c.feature_id))
   const files = Array.isArray(c.files) ? c.files : []
 
   return (
-    <div className="mt-1.5 rounded-md border border-gray-200 bg-white px-3 py-2.5 text-[13px]">
+    <div data-card={`commit-${c.id}`} className="mt-1.5 rounded-md border border-gray-200 bg-white px-3 py-2.5 text-meta">
       <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-[11px] uppercase tracking-wide text-gray-500 font-semibold">Commit #{c.id}</span>
-        <span className={`text-[11px] rounded-full px-2 py-px font-medium ${stateChip(c.state)}`}>{stateLabel(c.state)}</span>
-        {c.sha && <code className="font-mono text-xs bg-gray-100 rounded px-1">{c.sha.slice(0, 7)}</code>}
-        <span className="text-xs text-gray-400">
+        <span className="text-caption uppercase tracking-wide text-gray-500 font-semibold">Commit #{c.id}</span>
+        <Badge className={stateChip(c.state)}>{stateLabel(c.state)}</Badge>
+        {c.sha && <code className="font-mono text-code bg-gray-100 rounded-sm px-1">{c.sha.slice(0, 7)}</code>}
+        <span className="text-caption text-gray-400">
           {roleName(c.role)}
           {showFeature && feature ? ` · ${feature}` : ''}
           {' · '}
@@ -93,11 +91,11 @@ export default function CommitCard({ c, showFeature = false }: { c: Commit; show
         </span>
       </div>
 
-      <ul className="mt-1.5 font-mono text-xs text-gray-700">
+      <ul className="mt-1.5 font-mono text-code text-gray-700">
         {files.map((f) => (
           <li key={f} className={d.stale.includes(f) ? 'text-amber-700' : ''}>
             {f}
-            {d.stale.includes(f) && <span className="ml-1 text-[11px] text-amber-700 font-sans">(changed since request)</span>}
+            {d.stale.includes(f) && <span className="ml-1 text-caption text-amber-700 font-sans">(changed since request)</span>}
           </li>
         ))}
       </ul>
@@ -106,9 +104,9 @@ export default function CommitCard({ c, showFeature = false }: { c: Commit; show
 
       {ctx && (
         <div className="mt-1.5">
-          <button onClick={() => ctx.onReview(c.id)} className="text-xs text-blue-600 hover:underline">
+          <Button variant="link" size="inline" className="text-caption" onClick={() => ctx.onReview(c.id)}>
             Review
-          </button>
+          </Button>
         </div>
       )}
 

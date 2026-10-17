@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config
@@ -18,6 +18,8 @@ from .orchestrator.scheduler import Scheduler
 from .runtime import AppState
 
 STATIC = Path(__file__).resolve().parent / "static"
+UI_MISSING_HTML = ("<!doctype html><meta charset=utf-8><title>AITeams</title><p>UI not built: run "
+                   "<code>aiteams upgrade</code> in the AITeams checkout (needs Node &ge; 22.12)</p>")
 
 
 def create_app(port: int, write_daemon_json: bool = True) -> FastAPI:
@@ -60,6 +62,6 @@ def create_app(port: int, write_daemon_json: bool = True) -> FastAPI:
             return signin_page()
         if index.exists():
             return FileResponse(str(index))
-        return JSONResponse({"error": "UI not built: run `cd ui && npm run build`, then `aiteams upgrade`"}, status_code=503)
+        return HTMLResponse(UI_MISSING_HTML, status_code=503)
 
     return app

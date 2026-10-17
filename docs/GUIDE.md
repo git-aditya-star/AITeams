@@ -20,7 +20,11 @@ page: run `aiteams` again, or paste the URL from `aiteams token --link`.
 The daemon runs from a **snapshot** of the AITeams repo, not from the checkout (`README` → Install).
 The sidebar footer shows `v<version> · <sha>`; when the source repo has newer commits a line under
 the top bar says so, and `aiteams upgrade` installs them (`aiteams upgrade <older ref>` goes back).
-Upgrading stops the daemon: running turns end `interrupted` and are re-queued on the new daemon.
+Upgrading builds the UI inside the snapshot first (`npm ci` + `npm run build`, Node ≥ 22.12), then stops
+the daemon: running turns end `interrupted` and are re-queued on the new daemon. A missing Node or a
+failed build aborts before the stop, so the old daemon keeps running. A rollback to a ref from before
+M2c uses the build committed in that ref (`ui        prebuilt in snapshot`); rolling forward from there
+needs the checkout's CLI once: `uv run --no-sync python -B -m aiteams.cli upgrade`.
 
 What the first run creates inside the repo:
 
@@ -175,9 +179,36 @@ the checkout reaches the team only after `aiteams upgrade`. Drop a file with the
 over the snapshot and apply at once. The repo's own `CLAUDE.md`, if any, is appended to every role's
 system prompt.
 
-Working on the UI: `cd ui && npm run dev` serves `localhost:5173` and proxies `/api`, `/ws` and `/auth`
-to the daemon. Sign the dev origin in by taking the `aiteams token --link` URL and swapping the host
-for `localhost:5173`. Commit the result of `npm run build` (`aiteams/static/`) with the source change.
+### UI development and QA
+
+Working on the UI: `cd ui && npm ci`, then `npm run dev` serves `localhost:5173` and proxies `/api`, `/ws`
+and `/auth` to the daemon. Sign the dev origin in by taking the `aiteams token --link` URL and swapping
+the host for `localhost:5173`. `npm run build` writes `aiteams/static/` in the working tree for local
+checks; it is gitignored and never committed (`aiteams upgrade` builds its own), and a commit request
+that lists it is refused.
+
+The UI is built from the shadcn/ui kit in `ui/src/components/ui/` (Radix primitives; add one with
+`npx shadcn add <name>`, then move its text sizes onto the type tokens), lucide icons and five text
+sizes: `text-title`, `text-body`, `text-meta`, `text-caption`, `text-code`.
+
+QA never uses the live daemon. `scripts/qa_sandbox.py` starts a throwaway one:
+
+```bash
+uv run --no-sync python -B scripts/qa_sandbox.py --port 8790   # temp home, project id `demo`, no claude
+```
+
+It seeds the project `demo` (features F-1 and F-2, docs, a chat with mentions, a pending approval and
+question, a Master-stage commit request with a modified, an added and a binary file, a finished Live
+session for Frontend) and adds two test-only routes: `POST /qa/fire {kind}` emits one live event
+(`question`, `question_message`, `blocker`, `approval`, `commit_request`, `committed`, `commit_failed`,
+`standup`, `stopped`, `interrupted`, `fresh_session`, `rate_limit`, `rate_clear`, `message`) and
+`POST /qa/reset` re-seeds. Both need the sandbox token (`qa-sandbox-token` by default). Ports
+8790–8799 are reserved for sandboxes.
+
+On top of it, in `ui/`: `npm run e2e:install` once (Chromium headless shell, ~100 MB), `npm run e2e`
+(build + the Playwright suite in `ui/e2e/`, which starts its own sandbox on `$AITEAMS_QA_PORT`, default
+8790) and `npm run shot -- /p/demo "/p/demo?c=inbox"` (one PNG per route in `ui/test-results/shots/`,
+sandbox on 8798). One e2e run per working copy at a time, because the build rewrites `aiteams/static/`.
 
 ## 14. When something looks wrong
 

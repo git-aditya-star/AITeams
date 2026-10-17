@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import type { Turn, TurnEvent } from '../api'
 import { api, fmtCost, fmtDuration, fmtTokens } from '../api'
 import type { WsFrame } from '../ws'
+import { Badge } from './ui/badge'
+import { Button } from './ui/button'
+import { Toggle } from './ui/toggle'
 
 type Block =
   | { kind: 'text'; id: number; text: string; live: boolean }
@@ -100,11 +103,11 @@ function Expandable({ text, limit, className }: { text: string; limit: number; c
   const long = text.length > limit
   return (
     <div className={className}>
-      <pre className="whitespace-pre-wrap break-words font-mono text-[12px]">{open || !long ? text : text.slice(0, limit) + '…'}</pre>
+      <pre className="whitespace-pre-wrap wrap-break-word font-mono text-code">{open || !long ? text : text.slice(0, limit) + '…'}</pre>
       {long && (
-        <button className="text-[11px] text-blue-600 hover:underline" onClick={() => setOpen((o) => !o)}>
+        <Button variant="link" size="inline" className="text-caption font-normal" onClick={() => setOpen((o) => !o)}>
           {open ? 'collapse' : 'expand'}
-        </button>
+        </Button>
       )}
     </div>
   )
@@ -114,17 +117,17 @@ function ToolUse({ name, input }: { name: string; input: unknown }) {
   const [open, setOpen] = useState(false)
   const compact = JSON.stringify(input ?? {})
   return (
-    <div className="px-3 py-1 text-[12.5px]">
+    <div className="px-3 py-1 text-meta">
       <span className="font-mono font-semibold text-violet-700">{name}</span>{' '}
       {open ? (
-        <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[12px] bg-gray-50 rounded p-2">{JSON.stringify(input ?? {}, null, 2)}</pre>
+        <pre className="mt-1 whitespace-pre-wrap wrap-break-word font-mono text-code bg-gray-50 rounded-sm p-2">{JSON.stringify(input ?? {}, null, 2)}</pre>
       ) : (
         <span className="font-mono text-gray-500 break-all">{compact.slice(0, 200)}{compact.length > 200 ? '…' : ''}</span>
       )}
       {compact.length > 200 && (
-        <button className="ml-1 text-[11px] text-blue-600 hover:underline" onClick={() => setOpen((o) => !o)}>
+        <Button variant="link" size="inline" className="ml-1 text-caption font-normal" onClick={() => setOpen((o) => !o)}>
           {open ? 'collapse' : 'expand'}
-        </button>
+        </Button>
       )}
     </div>
   )
@@ -133,23 +136,23 @@ function ToolUse({ name, input }: { name: string; input: unknown }) {
 function BlockView({ b }: { b: Block }) {
   switch (b.kind) {
     case 'text':
-      return <pre className="px-3 py-1 whitespace-pre-wrap break-words font-sans text-[13.5px]">{b.text}</pre>
+      return <pre className="px-3 py-1 whitespace-pre-wrap wrap-break-word font-sans text-body">{b.text}</pre>
     case 'thinking':
-      return <pre className="px-3 py-1 whitespace-pre-wrap break-words font-sans text-[12px] text-gray-400 italic">{b.text}</pre>
+      return <pre className="px-3 py-1 whitespace-pre-wrap wrap-break-word font-sans text-caption text-gray-400 italic">{b.text}</pre>
     case 'tool_use':
       return <ToolUse name={b.name} input={b.input} />
     case 'tool_result':
       return (
         <div className={`mx-3 my-1 ${b.denied ? 'border-l-2 border-red-500 pl-2' : ''}`}>
-          {b.denied && <span className="text-[11px] font-medium text-red-600">hook denied</span>}
+          {b.denied && <span className="text-caption font-medium text-red-600">hook denied</span>}
           <Expandable text={b.text} limit={300} className="text-gray-500" />
         </div>
       )
     case 'line':
-      return <div className={`px-3 py-0.5 text-[11px] ${b.denied ? 'text-red-600 border-l-2 border-red-500' : 'text-gray-400'}`}>{b.text}</div>
+      return <div className={`px-3 py-0.5 text-caption ${b.denied ? 'text-red-600 border-l-2 border-red-500' : 'text-gray-400'}`}>{b.text}</div>
     case 'result':
       return (
-        <div className="px-3 py-1.5 text-[12px] text-gray-600 border-t border-gray-100 mt-1">
+        <div className="px-3 py-1.5 text-caption text-gray-600 border-t border-gray-100 mt-1">
           <span className="font-medium">{b.subtype}</span> · {fmtCost(b.cost)} · {b.turns} turns · {fmtDuration(b.ms / 1000)}
           {b.error && <div className="text-red-600 mt-0.5 whitespace-pre-wrap">{b.error}</div>}
         </div>
@@ -260,17 +263,17 @@ export default function LiveSession({
   return (
     <div className="flex-1 flex min-h-0">
       <div className="w-[240px] shrink-0 border-r border-gray-200 overflow-y-auto">
-        {turns.length === 0 && <div className="p-3 text-xs text-gray-400">no turns yet</div>}
+        {turns.length === 0 && <div className="p-3 text-caption text-gray-400">no turns yet</div>}
         {turns.map((t) => (
           <button
             key={t.id}
             onClick={() => { follow.current = false; setSelected(t.id) }}
-            className={`w-full text-left px-3 py-2 border-b border-gray-100 text-[12.5px] ${t.id === selected ? 'bg-blue-50' : 'hover:bg-gray-50'}`}
+            className={`w-full cursor-pointer text-left px-3 py-2 border-b border-gray-100 text-meta ${t.id === selected ? 'bg-blue-50' : 'hover:bg-gray-50'}`}
           >
             <div className="flex items-center gap-2">
               <span className="font-mono text-gray-500">#{t.id}</span>
-              <span className={`rounded-full px-1.5 py-px text-[10.5px] font-medium ${STATE_BADGE[t.state] || STATE_BADGE.queued}`}>{t.state}</span>
-              {t.kind && t.kind !== 'normal' && <span className="rounded-full px-1.5 py-px text-[10.5px] font-medium bg-violet-50 text-violet-700">{t.kind.replace('_', ' ')}</span>}
+              <Badge className={`px-1.5 ${STATE_BADGE[t.state] || STATE_BADGE.queued}`}>{t.state}</Badge>
+              {t.kind && t.kind !== 'normal' && <Badge className="px-1.5 bg-violet-50 text-violet-700">{t.kind.replace('_', ' ')}</Badge>}
               <span className="ml-auto text-gray-400">{duration(t)}</span>
             </div>
             <div className="mt-0.5 text-gray-500 flex gap-3">
@@ -282,33 +285,33 @@ export default function LiveSession({
         ))}
       </div>
       <div className="flex-1 flex flex-col min-w-0">
-        <div className="px-3 py-2 border-b border-gray-200 text-[12.5px] flex items-center gap-2 flex-wrap">
+        <div className="px-3 py-2 border-b border-gray-200 text-meta flex items-center gap-2 flex-wrap">
           {cmd ? (
             <>
-              <code className="font-mono bg-gray-100 rounded px-1.5 py-0.5 text-[12px] truncate">{cmd}</code>
-              <button onClick={copy} className="rounded border border-gray-300 px-2 py-0.5 text-[11.5px] hover:bg-gray-50">
+              <code className="font-mono bg-gray-100 rounded-sm px-1.5 py-0.5 text-code truncate" title={cmd}>{cmd}</code>
+              <Button variant="outline" size="xs" onClick={copy}>
                 {copied ? 'copied' : 'copy'}
-              </button>
-              <span className="text-gray-400 text-[11.5px]">only while the role is idle</span>
+              </Button>
+              <span className="text-gray-400 text-caption">only while the role is idle</span>
             </>
           ) : (
             <span className="text-gray-400">no session yet</span>
           )}
           {sel?.prompt && (
-            <button onClick={() => setShowPrompt((o) => !o)} className={`ml-auto rounded border px-2 py-0.5 text-[11.5px] ${showPrompt ? 'border-blue-300 bg-blue-50 text-blue-700' : 'border-gray-300 hover:bg-gray-50'}`}>
+            <Toggle variant="outline" size="sm" pressed={showPrompt} onPressedChange={setShowPrompt} className="ml-auto data-[state=on]:border-blue-300 data-[state=on]:bg-blue-50 data-[state=on]:text-blue-700">
               Prompt
-            </button>
+            </Toggle>
           )}
         </div>
         {showPrompt && sel?.prompt && (
-          <pre className="shrink-0 max-h-[40%] overflow-y-auto border-b border-gray-200 bg-gray-50 px-3 py-2 whitespace-pre-wrap break-words font-mono text-[12px] text-gray-700">{sel.prompt}</pre>
+          <pre className="shrink-0 max-h-[40%] overflow-y-auto border-b border-gray-200 bg-gray-50 px-3 py-2 whitespace-pre-wrap wrap-break-word font-mono text-code text-gray-700">{sel.prompt}</pre>
         )}
         <div ref={listRef} className="flex-1 overflow-y-auto py-1">
-          {sel?.error && <div className="mx-3 my-1 text-[12px] text-red-600 whitespace-pre-wrap">{sel.error}</div>}
+          {sel?.error && <div className="mx-3 my-1 text-caption text-red-600 whitespace-pre-wrap">{sel.error}</div>}
           {blocks.map((b) => (
             <BlockView key={b.id} b={b} />
           ))}
-          {sel && blocks.length === 0 && <div className="p-3 text-xs text-gray-400">no events yet</div>}
+          {sel && blocks.length === 0 && <div className="p-3 text-caption text-gray-400">no events yet</div>}
         </div>
       </div>
     </div>

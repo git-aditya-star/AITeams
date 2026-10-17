@@ -1,20 +1,19 @@
+import { RotateCw, Square } from 'lucide-react'
 import { useState } from 'react'
-import type { TeamRole } from '../api'
-import { Refresh, Stop } from './icons'
-
-const btn = 'inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2 py-0.5 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-40'
+import { useAppDispatch, useAppSelector } from '../store'
+import { selectRole } from '../store/selectors'
+import { freshStartRole, stopRole } from '../store/thunks'
+import { Badge } from './ui/badge'
+import { Button } from './ui/button'
+import { Tip } from './ui/tooltip'
 
 // Stop + Fresh start for one role, with the inline fresh-start confirm. Used in the DM title bar
 // and the dashboard Team section.
-export default function RoleActions({
-  t,
-  onStop,
-  onFreshStart,
-}: {
-  t: TeamRole | undefined
-  onStop: () => Promise<void>
-  onFreshStart: (handoff: boolean) => Promise<void>
-}) {
+export default function RoleActions({ role }: { role: string }) {
+  const dispatch = useAppDispatch()
+  const t = useAppSelector((s) => selectRole(s, role))
+  const onStop = () => dispatch(stopRole(role))
+  const onFreshStart = (handoff: boolean) => dispatch(freshStartRole(role, handoff))
   const [confirm, setConfirm] = useState(false)
   const [skip, setSkip] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -36,21 +35,28 @@ export default function RoleActions({
   }
 
   return (
-    <div className="flex items-center gap-2 flex-wrap text-xs">
+    <div className="flex items-center gap-2 flex-wrap text-caption">
       {pending && (
-        <span className="rounded-full bg-amber-50 text-amber-800 px-2 py-px text-[11px] font-medium" title={`rotation pending: ${t?.rotation}`}>
-          {t?.rotation_handoff_pending ? 'handoff pending' : 'fresh session pending'}
-        </span>
+        <Tip content={`rotation pending: ${t?.rotation}`}>
+          <Badge className="bg-amber-50 text-amber-800">{t?.rotation_handoff_pending ? 'handoff pending' : 'fresh session pending'}</Badge>
+        </Tip>
       )}
       {running && (
-        <button disabled={busy} onClick={() => void run(onStop())} className={btn} title="SIGINT the running turn">
-          <Stop size={12} /> Stop
-        </button>
+        <Tip content="SIGINT the running turn">
+          <Button variant="outline" size="xs" disabled={busy} onClick={() => void run(onStop())}>
+            <Square /> Stop
+          </Button>
+        </Tip>
       )}
       {!confirm ? (
-        <button disabled={busy || pending} onClick={() => setConfirm(true)} className={btn} title={pending ? 'a rotation is already pending' : 'retire the session; the next wake starts fresh'}>
-          <Refresh size={12} /> Fresh start
-        </button>
+        <Tip content={pending ? 'a rotation is already pending' : 'retire the session; the next wake starts fresh'}>
+          {/* span: a disabled button gets no pointer events, so the tooltip hangs on the wrapper */}
+          <span className="inline-flex">
+            <Button variant="outline" size="xs" disabled={busy || pending} onClick={() => setConfirm(true)}>
+              <RotateCw /> Fresh start
+            </Button>
+          </span>
+        </Tip>
       ) : (
         <div className="flex flex-col gap-1 rounded-md border border-gray-200 bg-gray-50 px-2 py-1.5">
           <div className="text-gray-600">
@@ -61,12 +67,12 @@ export default function RoleActions({
             <label className="flex items-center gap-1 text-gray-700 cursor-pointer select-none">
               <input type="checkbox" checked={skip} onChange={(e) => setSkip(e.target.checked)} /> skip handoff
             </label>
-            <button disabled={busy} onClick={() => void run(onFreshStart(!skip))} className="rounded-md bg-blue-600 text-white px-2.5 py-0.5 font-medium hover:bg-blue-700 disabled:opacity-40">
+            <Button size="xs" disabled={busy} onClick={() => void run(onFreshStart(!skip))}>
               Confirm
-            </button>
-            <button onClick={() => setConfirm(false)} className="text-gray-500 hover:text-gray-800">
+            </Button>
+            <Button variant="ghost" size="xs" onClick={() => setConfirm(false)}>
               Cancel
-            </button>
+            </Button>
           </div>
         </div>
       )}

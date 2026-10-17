@@ -1,10 +1,11 @@
-"""`aiteams upgrade`: git-archive snapshot of the source repo -> ~/.aiteams/runtime/<sha>/ -> non-editable tool install.
+"""`aiteams upgrade`: git-archive snapshot -> ~/.aiteams/runtime/<sha>/ -> UI build (npm) -> non-editable tool install.
 
 Pure functions over a `run(cmd, stream=False) -> CompletedProcess` parameter so tests can inject a fake.
 """
 from __future__ import annotations
 
 import io
+import re
 import shutil
 import subprocess
 import tarfile
@@ -62,17 +63,6 @@ def dirty(src: str, run=None) -> bool:
     return bool(_out(_check(run(["git", "-C", src, "status", "--porcelain"]), "git status")))
 
 
-def _last_commit_ts(src: str, sha: str, path: str, run=None) -> int:
-    run = _use(run)
-    out = _out(run(["git", "-C", src, "log", "-1", "--format=%ct", sha, "--", path]))
-    return int(out) if out.isdigit() else 0
-
-
-def ui_stale(src: str, sha: str, run=None) -> bool:
-    """True when ui/src has a newer commit than aiteams/static at <sha> (the build was not committed)."""
-    return _last_commit_ts(src, sha, "ui/src", run) > _last_commit_ts(src, sha, "aiteams/static", run)
-
-
 def snapshot(src: str, sha: str, runtime_dir: Path, run=None) -> Path:
     """Extract `git archive <sha>` into runtime_dir/<sha>/ (fresh) and remove every other snapshot."""
     run = _use(run)
@@ -93,6 +83,53 @@ def snapshot(src: str, sha: str, runtime_dir: Path, run=None) -> Path:
 def snapshot_version(snap: Path) -> str:
     with open(Path(snap) / "pyproject.toml", "rb") as f:
         return str(tomllib.load(f).get("project", {}).get("version") or "0")
+
+
+NODE_MIN = (22, 12)
+NODE_HINT = "install Node 24 LTS, e.g. `brew install node@24`"
+
+
+def _tool_version(cmd: str, run) -> str | None:
+    try:
+        cp = run([cmd, "--version"])
+    except FileNotFoundError:
+        return None
+    return (_out(cp) or None) if cp.returncode == 0 else None
+
+
+def node_version(run=None) -> str | None:
+    """`node --version` as printed (e.g. `v24.11.0`), or None when node is not on PATH."""
+    return _tool_version("node", _use(run))
+
+
+def _vtuple(ver: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in re.findall(r"\d+", ver)[:3])
+
+
+def build_ui(snap: Path, run=None) -> str:
+    """`npm ci` + `npm run build` in <snap>/ui (writes <snap>/aiteams/static); returns the status line.
+
+    A snapshot that already has aiteams/static/index.html (a pre-M2c ref, i.e. a rollback) is used as is.
+    """
+    run = _use(run)
+    snap = Path(snap)
+    index = snap / "aiteams" / "static" / "index.html"
+    if index.exists():
+        return "ui        prebuilt in snapshot"
+    node, npm = node_version(run), _tool_version("npm", run)
+    if not node or _vtuple(node) < NODE_MIN or not npm:
+        found = ", ".join([f"node {node}" if node else "no node", f"npm {npm}" if npm else "no npm"])
+        raise UpgradeError(f"Node >= 22.12 and npm are needed to build the UI (found: {found}); {NODE_HINT}")
+    ui = snap / "ui"
+    t0 = time.monotonic()
+    try:
+        _check(run(["npm", "ci", "--prefer-offline", "--no-audit", "--no-fund"], stream=True, cwd=str(ui)), "npm ci")
+        _check(run(["npm", "run", "build"], stream=True, cwd=str(ui)), "npm run build")
+        if not index.exists():
+            raise UpgradeError(f"npm run build did not write {index}")
+    finally:
+        shutil.rmtree(ui / "node_modules", ignore_errors=True)
+    return f"ui        built with node {node} in {time.monotonic() - t0:.0f}s"
 
 
 def install(snap: Path, run=None) -> None:
