@@ -104,8 +104,35 @@ def test_withdraw_rules(client, pid):
     # answered cards can't be withdrawn
     c2 = client.post("/internal/questions", json={"questions": CARD, "feature": "F-1"},
                      headers=turn(client, pid, "product")).json()["id"]
-    client.post(f"/api/p/{pid}/questions/{c2}/answer", json={"answers": {"Which format first?": "XLSX"}})
+    client.post(f"/api/p/{pid}/questions/{c2}/answer", json={"answers": {"Which format first?": "XLSX",
+                                                                         "Which columns?": "Date"}})
     assert client.post(f"/internal/questions/{c2}/withdraw", headers=turn(client, pid, "product")).status_code == 409
+
+
+def test_partial_answer_is_refused(client, pid):
+    """QA (a) / Lead #451: every question needs a non-empty answer; nothing is stored or posted otherwise."""
+    proj = proj_of(client, pid)
+    cid = client.post("/internal/questions", json={"questions": CARD, "feature": "F-1"},
+                      headers=turn(client, pid, "product")).json()["id"]
+    proj.db.x("DELETE FROM wake_queue")
+    n = len(proj.db.messages("feature-1"))
+    for answers in ({}, {"Which format first?": "XLSX"}, {"Which format first?": "XLSX", "Which columns?": "  "}):
+        r = client.post(f"/api/p/{pid}/questions/{cid}/answer", json={"answers": answers})
+        assert r.status_code == 400 and "answer every question" in r.json()["detail"], r.text
+    assert proj.db.question(cid)["state"] == "pending" and len(proj.db.messages("feature-1")) == n
+    assert proj.db.queued_wakes() == []
+    r = client.post(f"/api/p/{pid}/questions/{cid}/answer", json={"answers": {"Format": "XLSX", "Columns": "Date"}})
+    assert r.status_code == 200  # keyed by header works too
+
+
+def test_comma_in_multi_select_label_is_refused(client, pid):
+    """QA (b) / Lead #451: multi-select answers are comma-joined, so their labels can't hold a comma."""
+    hdr = turn(client, pid, "product")
+    r = client.post("/internal/questions", json={"questions": [q("Q", labels=("Date, time", "Amount"), multi=True)]},
+                    headers=hdr)
+    assert r.status_code == 400 and "comma" in r.json()["detail"]
+    r = client.post("/internal/questions", json={"questions": [q("Q", labels=("Yes, ship it", "No"))]}, headers=hdr)
+    assert r.status_code == 200, r.text  # single-select answers aren't split
 
 
 def test_voices_and_concern_gate(client, pid):
@@ -165,5 +192,6 @@ def test_pending_card_survives_a_restart(home, repo):
     app = create_app(7799, write_daemon_json=False)
     with TestClient(app, headers=AUTH) as c:
         assert [q["id"] for q in c.get(f"/api/p/{pid}/inbox").json()["questions"]] == [cid]
-        r = c.post(f"/api/p/{pid}/questions/{cid}/answer", json={"answers": {"Which format first?": "XLSX"}})
+        r = c.post(f"/api/p/{pid}/questions/{cid}/answer", json={"answers": {"Which format first?": "XLSX",
+                                                                             "Which columns?": "Amount"}})
         assert r.status_code == 200 and r.json()["state"] == "answered"

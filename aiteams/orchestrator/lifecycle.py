@@ -73,7 +73,7 @@ async def after_turn(st, proj, runner) -> None:
             db.set_role_state(role, fail_streak=0)
 
     rs = db.role_state(role)
-    if kind in ("normal", "standup") and state == "done" and not rs["rotate_reason"] and turn.get("context_tokens"):
+    if kind in ("normal", "standup", "brainstorm") and state == "done" and not rs["rotate_reason"] and turn.get("context_tokens"):
         result = json.loads(turn["result_json"]) if turn.get("result_json") else None
         window = context_window_from(result, runner.model) or 1
         pct = turn["context_tokens"] / window
@@ -95,6 +95,19 @@ async def after_turn(st, proj, runner) -> None:
             msg = db.add_message("standup", "system", "System", f"Standup #{su['id']}: the Manager did not save a report.", [], turn["id"])
             await proj.hub.broadcast("message", msg)
             await proj.hub.broadcast("standup", db.standup(su["id"]))
+    elif kind == "brainstorm":
+        await _brainstorm_progress(st, proj, turn)
+    elif kind == "brainstorm_compile":
+        wake = db.wake(turn["wake_id"]) if turn.get("wake_id") else None
+        bs = db.brainstorm(wake["ref"]) if wake and wake.get("ref") else None
+        if bs and bs["state"] == "compiling":
+            bs = db.update_brainstorm(bs["id"], state="failed", ended_at=time.time())
+            feat = db.feature(bs["feature_id"])
+            msg = db.add_message(feat["conversation_id"], "system", "System",
+                                 f"Brainstorm #{bs['id']}: Product did not post a summary card; the round failed.",
+                                 [], turn["id"], f"brainstorm:{bs['id']}")
+            await proj.hub.broadcast("message", msg)
+            await proj.hub.broadcast("brainstorm", bs)
 
     await broadcast_team(st, proj)
 
@@ -111,5 +124,23 @@ async def _standup_progress(st, proj, turn: dict) -> None:
     su = db.update_standup(su["id"], state="compiling")
     db.add_wake("manager", "standup", [], "system", kind="standup_compile", ref=su["id"])
     await proj.hub.broadcast("standup", su)
+    if st.scheduler:
+        st.scheduler.notify()
+
+
+async def _brainstorm_progress(st, proj, turn: dict) -> None:
+    """Every listed role's brainstorm turn ended (any state) -> compiling; Product is woken to compile the card."""
+    db = proj.db
+    wake = db.wake(turn["wake_id"]) if turn.get("wake_id") else None
+    bs = db.brainstorm(wake["ref"]) if wake and wake.get("ref") else None
+    if not bs or bs["state"] != "collecting":
+        return
+    ended = {t["role"] for t in db.turns_for_wake_ref("brainstorm", bs["id"]) if t["state"] in ("done", "failed", "interrupted")}
+    if not all(r in ended for r in bs["roles"]):
+        return
+    bs = db.update_brainstorm(bs["id"], state="compiling")
+    db.add_wake("product", db.feature(bs["feature_id"])["conversation_id"], [], "system", kind="brainstorm_compile",
+                ref=bs["id"])
+    await proj.hub.broadcast("brainstorm", bs)
     if st.scheduler:
         st.scheduler.notify()

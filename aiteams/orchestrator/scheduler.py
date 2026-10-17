@@ -114,7 +114,7 @@ class Scheduler:
         if wake and wake.get("kind", "normal") != "normal":
             if wake["kind"] == "handoff" and db.role_state(role)["rotate_handoff"]:
                 db.add_wake(role, wake["conversation_id"], [], "system", kind="handoff")
-            elif wake["kind"] in ("standup", "standup_compile"):
+            elif wake["kind"] in ("standup", "standup_compile", "brainstorm", "brainstorm_compile"):
                 db.add_wake(role, wake["conversation_id"], [], "system", kind=wake["kind"], ref=wake.get("ref"))
         elif wake and wake.get("origin") != "system":
             db.add_wake(role, wake["conversation_id"], wake["message_ids"], "system")

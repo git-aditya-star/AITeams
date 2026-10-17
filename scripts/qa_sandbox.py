@@ -24,7 +24,7 @@ DEMO_ID = "demo"
 DEFAULT_TOKEN = "qa-sandbox-token"
 FIRE_KINDS = ("message", "question", "question_message", "blocker", "approval", "commit_request", "committed",
               "commit_failed", "standup", "stopped", "interrupted", "fresh_session", "rate_limit", "rate_clear",
-              "reaction", "card", "card_withdraw")
+              "reaction", "card", "card_withdraw", "brainstorm")
 
 
 def isolate_env(home: Path, token: str) -> None:
@@ -254,6 +254,14 @@ async def fire(st, proj, body: dict) -> dict:
             raise ValueError(f"unknown card {body['question']}")
         q = await workflow.withdraw_question(st, proj, q["role"], q["id"])
         out.update(conversation=q["conversation_id"], question=q["id"], state=q["state"])
+    elif kind == "brainstorm":
+        # F-10: starts a round on `feature` (default F-1) through the real path; the sandbox runs no turns, so it
+        # stays `collecting` with one queued wake per voice
+        feat = workflow.resolve_feature(db, body.get("feature", "F-1"))
+        bs = await workflow.start_brainstorm(st, proj, feat, text or f"How should export handle big files ({n})?",
+                                             body.get("requested_by", "master"))
+        out.update(conversation=feat["conversation_id"], brainstorm=bs["id"], roles=bs["roles"],
+                   message=bs["start_message_id"])
     elif kind == "reaction":
         # toggles `role`'s emoji (default 👍) on message_id, else on the newest message in `conversation`
         from aiteams.db import EMOJI

@@ -124,6 +124,15 @@ class FeatureFreshStartBody(BaseModel):
     mode: str = "keep_docs"
 
 
+class BrainstormBody(BaseModel):
+    topic: str = ""  # empty -> 400 with a sentence in workflow.start_brainstorm
+
+
+class InternalBrainstormBody(BaseModel):
+    feature: str
+    topic: str = ""
+
+
 class HandoffBody(BaseModel):
     text: str = Field(min_length=1)
 

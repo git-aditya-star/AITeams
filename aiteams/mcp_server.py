@@ -2,7 +2,8 @@
 """AITeams stdio MCP server (stdlib only; spawned by `claude`, talks to the daemon over HTTP).
 
 Tools: post_message, get_messages, list_conversations, list_features, get_feature, create_feature, set_feature,
-request_approval, request_commit, review_commit, lock_file, unlock_file, list_locks, write_handoff, get_team_status,
+ask_master, withdraw_question, start_brainstorm (Product/Manager), request_approval, request_commit, review_commit,
+lock_file, unlock_file, list_locks, write_handoff, get_team_status,
 run_standup, save_standup, interrupt, checkpoint (Manager only), permission (the --permission-prompt-tool).
 """
 import json
@@ -69,7 +70,8 @@ TOOLS = [
                     "always adds a free-text Other, so don't). Non-blocking: end your turn after posting; the "
                     "Master's answer arrives as a Decision that wakes you. Put your recommended option first with "
                     "' (Recommended)' in its label. purpose: ask | interview | concern (needs a voice on the "
-                    "feature) | a_vs_b. `intro` is a short lead-in (your honest take, or both sides' case).",
+                    "feature) | a_vs_b | brainstorm (Product only, in a brainstorm compile turn). `intro` is a short "
+                    "lead-in (your honest take, or both sides' case). Multi-select labels can't contain commas.",
      "inputSchema": {"type": "object", "properties": {
          "questions": {"type": "array", "minItems": 1, "maxItems": 6, "items": {"type": "object", "properties": {
              "question": {"type": "string"}, "header": {"type": "string", "description": "<= 12 chars"},
@@ -78,11 +80,18 @@ TOOLS = [
                  "label": {"type": "string"}, "description": {"type": "string"}}, "required": ["label"]}}},
              "required": ["question", "header", "options"]}},
          "feature": {"type": ["string", "null"]}, "intro": {"type": "string", "default": ""},
-         "purpose": {"type": "string", "enum": ["ask", "interview", "concern", "a_vs_b"], "default": "ask"}},
+         "purpose": {"type": "string", "enum": ["ask", "interview", "concern", "a_vs_b", "brainstorm"],
+                     "default": "ask"}},
          "required": ["questions"]}},
     {"name": "withdraw_question",
      "description": "Withdraw a question card you posted that the Master hasn't answered yet.",
      "inputSchema": {"type": "object", "properties": {"id": {"type": "integer"}}, "required": ["id"]}},
+    {"name": "start_brainstorm",
+     "description": "Product or Manager only: start a brainstorm round on a feature. Every role with a voice on it "
+                    "posts one idea in the feature conversation; then Product compiles them into one card for the "
+                    "Master. One active round per feature.",
+     "inputSchema": {"type": "object", "properties": {"feature": {"type": "string"}, "topic": {"type": "string"}},
+                     "required": ["feature", "topic"]}},
     {"name": "request_approval",
      "description": "Ask the Master for a decision that is theirs (scope lock, scope change, Done, risky change). "
                     "It lands in their Inbox; end your turn afterwards. `feature` may be null.",
@@ -254,6 +263,11 @@ def tool_withdraw_question(a):
     return "card #%s withdrawn" % res["id"]
 
 
+def tool_start_brainstorm(a):
+    res = http("POST", "/internal/brainstorm", {"feature": str(a.get("feature") or ""), "topic": str(a.get("topic") or "")})
+    return "brainstorm #%s on %s started; waiting for %s" % (res["id"], res["feature"], ", ".join(res["roles"]))
+
+
 def tool_request_approval(a):
     res = http("POST", "/internal/approvals", {"feature": _feat(a), "title": str(a.get("title") or ""),
                                                "summary": str(a.get("summary") or "")})
@@ -329,7 +343,8 @@ HANDLERS = {"post_message": tool_post_message, "get_messages": tool_get_messages
             "list_features": tool_list_features, "get_feature": tool_get_feature,
             "create_feature": tool_create_feature, "set_feature": tool_set_feature,
             "request_approval": tool_request_approval, "ask_master": tool_ask_master,
-            "withdraw_question": tool_withdraw_question, "request_commit": tool_request_commit,
+            "withdraw_question": tool_withdraw_question, "start_brainstorm": tool_start_brainstorm,
+            "request_commit": tool_request_commit,
             "review_commit": tool_review_commit, "lock_file": tool_lock_file,
             "unlock_file": tool_unlock_file, "list_locks": tool_list_locks}
 

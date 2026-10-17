@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS activity(id INTEGER PRIMARY KEY, ts REAL, kind TEXT, 
 """
 
 PHASES = ("intake", "spec", "design", "build", "qa", "done")
-WAKE_KINDS = ("normal", "handoff", "standup", "standup_compile")
+WAKE_KINDS = ("normal", "handoff", "standup", "standup_compile", "brainstorm", "brainstorm_compile")
 # the fixed reaction set (F-6); stored and compared exactly, so the heart keeps its U+FE0F
 EMOJI = ("\U0001F44D", "❤️", "\U0001F602", "\U0001F389", "\U0001F440", "\U0001F680", "✅", "❌")
 
@@ -181,7 +181,7 @@ class ProjectDB:
     def _msg_dict(self, r: sqlite3.Row) -> dict:
         d = dict(r)
         d["mentions"] = json.loads(d["mentions"] or "[]")
-        d["approval"] = d["commit"] = d["question"] = None
+        d["approval"] = d["commit"] = d["question"] = d["brainstorm"] = None
         ref = d.get("ref")
         if ref and ":" in ref:
             kind, _, num = ref.partition(":")
@@ -191,6 +191,8 @@ class ProjectDB:
                 d["commit"] = self.commit(int(num))
             elif kind == "question" and num.isdigit():
                 d["question"] = self.question(int(num))
+            elif kind == "brainstorm" and num.isdigit():
+                d["brainstorm"] = self.brainstorm(int(num))
         return d
 
     def message(self, mid: int) -> dict | None:
@@ -362,6 +364,36 @@ class ProjectDB:
     def last_standup(self) -> dict | None:
         r = self.one("SELECT * FROM standups WHERE state='done' ORDER BY id DESC LIMIT 1")
         return self._standup_dict(r) if r else None
+
+    # F-10: brainstorm rounds (collecting -> compiling -> done | failed), at most one active per feature
+    def _brainstorm_dict(self, r: sqlite3.Row) -> dict:
+        d = dict(r)
+        d["roles"] = json.loads(d["roles"] or "[]")
+        return d
+
+    def create_brainstorm(self, feature_id: int, topic: str, roles: list[str], requested_by: str) -> dict:
+        bid = self.x("INSERT INTO brainstorms(feature_id, topic, state, roles, requested_by, created_at)"
+                     " VALUES(?,?,?,?,?,?)", feature_id, topic, "collecting", json.dumps(roles), requested_by, time.time())
+        return self.brainstorm(bid)
+
+    def brainstorm(self, bid: int) -> dict | None:
+        r = self.one("SELECT * FROM brainstorms WHERE id=?", bid)
+        return self._brainstorm_dict(r) if r else None
+
+    def update_brainstorm(self, bid: int, **fields) -> dict | None:
+        if fields:
+            cols = ", ".join(f"{k}=?" for k in fields)
+            self.x(f"UPDATE brainstorms SET {cols} WHERE id=?", *fields.values(), bid)
+        return self.brainstorm(bid)
+
+    def brainstorms(self, feature_id: int, limit: int = 20) -> list[dict]:
+        rows = self.q("SELECT * FROM brainstorms WHERE feature_id=? ORDER BY id DESC LIMIT ?", feature_id, limit)
+        return [self._brainstorm_dict(r) for r in rows]
+
+    def active_brainstorm(self, feature_id: int) -> dict | None:
+        r = self.one("SELECT * FROM brainstorms WHERE feature_id=? AND state IN ('collecting','compiling')"
+                     " ORDER BY id DESC LIMIT 1", feature_id)
+        return self._brainstorm_dict(r) if r else None
 
     def add_activity(self, kind: str, text: str, role: str | None = None, feature_id: int | None = None,
                      conversation_id: str | None = None, ref: str | None = None) -> dict:
@@ -752,4 +784,8 @@ MIGRATIONS: list = [
     "CREATE TABLE reactions(message_id INTEGER NOT NULL, role TEXT NOT NULL, emoji TEXT NOT NULL,"
     " created_at REAL NOT NULL, PRIMARY KEY(message_id, role, emoji))",
     _migration_4,
+    # F-10: brainstorm rounds
+    "CREATE TABLE brainstorms(id INTEGER PRIMARY KEY, feature_id INTEGER NOT NULL, topic TEXT NOT NULL,"
+    " state TEXT NOT NULL, roles TEXT NOT NULL, requested_by TEXT NOT NULL, start_message_id INTEGER NULL,"
+    " question_id INTEGER NULL, created_at REAL NOT NULL, ended_at REAL NULL)",
 ]

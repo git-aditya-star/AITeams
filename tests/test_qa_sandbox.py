@@ -97,3 +97,21 @@ def test_fire_card(sandbox):
         assert msgs[-1]["ref"] == f"question:{r['question']}" and msgs[-1]["question"]["id"] == r["question"]
         w = c.post("/qa/fire", json={"kind": "card_withdraw", "question": r["question"]}, headers=auth).json()
         assert w["state"] == "withdrawn"
+
+
+def test_fire_brainstorm(sandbox):
+    mod, work, _ = sandbox
+    app = mod.build_app(8790, work, "demo")
+    auth = {"Authorization": "Bearer sb-token"}
+    with TestClient(app) as c:
+        r = c.post("/qa/fire", json={"kind": "brainstorm", "text": "Big files?"}, headers=auth).json()
+        assert r["brainstorm"] and "product" in r["roles"] and "lead" in r["roles"]
+        msgs = c.get("/api/p/demo/messages", params={"conversation": r["conversation"]}, headers=auth).json()
+        assert msgs[-1]["id"] == r["message"] and msgs[-1]["brainstorm"]["state"] == "collecting"
+        assert msgs[-1]["text"].startswith(f"Brainstorm #{r['brainstorm']} on Big files?")
+        fid = c.get("/api/p/demo/features", headers=auth).json()
+        fid = next(f["id"] for f in fid if f["conversation_id"] == r["conversation"])
+        rounds = c.get(f"/api/p/demo/features/{fid}/brainstorms", headers=auth).json()
+        assert [b["id"] for b in rounds] == [r["brainstorm"]]
+        again = c.post(f"/api/p/demo/features/{fid}/brainstorm", json={"topic": "x"}, headers=auth)
+        assert again.status_code == 409

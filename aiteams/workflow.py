@@ -13,7 +13,7 @@ import time
 from fastapi import HTTPException
 
 from .config import ROLES, effort_for, model_for, model_label
-from .db import PHASES, ProjectDB
+from .db import PHASES, WAKE_KINDS, ProjectDB
 from .runtime import Project
 
 
@@ -217,6 +217,9 @@ def validate_card(questions) -> list[dict]:
                 bad(f"question {i} has an empty or repeated option label")
             if label.lower() == "other":
                 bad(f"question {i}: don't add an Other option, the UI always adds it")
+            if q.get("multiSelect") and "," in label:
+                bad(f"question {i}: option labels of a multi-select question can't contain a comma "
+                    "(the picked labels are joined with commas)")
             labels.add(label)
             clean.append({"label": label, "description": str(o.get("description") or "")})
         out.append({"question": text, "header": header, "multiSelect": bool(q.get("multiSelect")), "options": clean})
@@ -244,8 +247,12 @@ async def ask_master(st, proj: Project, role: str, turn_id: int | None, feature,
             raise HTTPException(400, "a concern card needs a feature")
         if role not in voices(db, feat):
             raise HTTPException(403, f"{role} has no voice on {feat['key']} (voices: {', '.join(voices(db, feat))})")
+    bs = None
     if purpose == "brainstorm":
-        raise HTTPException(403, "brainstorm cards come from Product's brainstorm compile turn (not available yet)")
+        bs = _compiling_brainstorm(db, role, turn_id)
+        if feat is not None and feat["id"] != bs["feature_id"]:
+            raise HTTPException(400, f"brainstorm #{bs['id']} belongs to {db.feature(bs['feature_id'])['key']}")
+        feat = db.feature(bs["feature_id"])
     conv = feat["conversation_id"] if feat else f"dm-{role}"
     intro = (intro or "").strip()
     q = db.create_card(turn_id, role, {"questions": qs}, purpose, intro, feat["id"] if feat else None, conv)
@@ -255,7 +262,22 @@ async def ask_master(st, proj: Project, role: str, turn_id: int | None, feature,
     q = db.question(q["id"])
     await proj.hub.broadcast("question", q)
     await broadcast_inbox(proj)
+    if bs:
+        bs = db.update_brainstorm(bs["id"], state="done", question_id=q["id"], ended_at=time.time())
+        await proj.hub.broadcast("brainstorm", bs)
     return q
+
+
+def _compiling_brainstorm(db: ProjectDB, role: str, turn_id: int | None) -> dict:
+    """The round a `purpose=brainstorm` card closes: only Product, only in its brainstorm compile turn."""
+    turn = db.turn(turn_id) if turn_id else None
+    wake = db.wake(turn["wake_id"]) if turn and turn.get("wake_id") else None
+    bs = db.brainstorm(wake["ref"]) if wake and wake.get("ref") and turn.get("kind") == "brainstorm_compile" else None
+    if role != "product" or bs is None:
+        raise HTTPException(403, "brainstorm cards come only from Product's brainstorm compile turn")
+    if bs["state"] != "compiling":
+        raise HTTPException(409, f"brainstorm #{bs['id']} is {bs['state']}")
+    return bs
 
 
 async def withdraw_question(st, proj: Project, role: str, qid: int) -> dict:
@@ -283,14 +305,17 @@ def _answer_line(q: dict, answer: str) -> str:
 
 async def answer_card(st, proj: Project, q: dict, answers: dict[str, str]) -> dict:
     """Store the Master's answers and post them as a Decision that mentions (and wakes) the asking role."""
-    q = proj.db.answer_question(q["id"], answers, "answered")
-    lines = [f"@{q['role']} Answers to card #{q['id']}:"]
+    picked = []
     for item in q["payload"].get("questions", []):
         ans = answers.get(item["question"])
         if ans is None:
             ans = answers.get(item["header"])
-        lines.append(f"- **{item['header'] or item['question']}**: "
-                     + (_answer_line(item, ans) if ans not in (None, "") else "(no answer)"))
+        if not (ans or "").strip():
+            raise HTTPException(400, f"answer every question: \"{item['header'] or item['question']}\" has no answer")
+        picked.append((item, ans))
+    q = proj.db.answer_question(q["id"], answers, "answered")
+    lines = [f"@{q['role']} Answers to card #{q['id']}:"]
+    lines += [f"- **{item['header'] or item['question']}**: {_answer_line(item, ans)}" for item, ans in picked]
     await _post(st, proj, q["conversation_id"], "master", "\n".join(lines), "Decision", [q["role"]])
     await proj.hub.broadcast("question", q)
     await broadcast_inbox(proj)
@@ -685,8 +710,7 @@ def team_status(st, proj: Project) -> list[dict]:
         turns = db.turns(role, limit=20)
         last = turns[0] if turns else None
         runner = running.get((proj.id, role))
-        state = "running" if runner else ("queued" if (db.queued_wake(role) or db.queued_wake(role, "handoff")
-                                                       or db.queued_wake(role, "standup") or db.queued_wake(role, "standup_compile")) else "idle")
+        state = "running" if runner else ("queued" if any(db.queued_wake(role, k) for k in WAKE_KINDS) else "idle")
         mine = [t for t in turns if t["session_id"] == info["session_id"]]
         ctx = next((t["context_tokens"] for t in mine if t.get("context_tokens")), 0) or 0
         model = model_for(st.settings, role)
@@ -854,6 +878,48 @@ def standup_report(proj: Project, sid: int) -> dict:
         with open(su["path"], encoding="utf-8", errors="replace") as f:
             text = f.read()
     return {**su, "text": text}
+
+
+# ---- F-10: brainstorm round ------------------------------------------------------------
+BRAINSTORM_STARTERS = ("product", "manager")
+
+
+async def start_brainstorm(st, proj: Project, feat: dict, topic: str, requested_by: str) -> dict:
+    """Wake every voice on the feature once (kind `brainstorm`) for one idea each; Product compiles them into a card."""
+    db = proj.db
+    if requested_by != "master" and requested_by not in BRAINSTORM_STARTERS:
+        raise HTTPException(403, "only Product, the Manager or the Master start a brainstorm")
+    topic = " ".join((topic or "").split())[:300]
+    if not topic:
+        raise HTTPException(400, "topic required")
+    cur = db.active_brainstorm(feat["id"])
+    if cur:
+        raise HTTPException(409, f"brainstorm #{cur['id']} on {feat['key']} is still {cur['state']}")
+    roles = voices(db, feat)
+    bs = db.create_brainstorm(feat["id"], topic, roles, requested_by)
+    who = "the Master" if requested_by == "master" else requested_by
+    msg = await _post(st, proj, feat["conversation_id"], "system",
+                      f"Brainstorm #{bs['id']} on {topic} (started by {who}) — waiting for {', '.join(roles)}",
+                      "System", [], ref=f"brainstorm:{bs['id']}")
+    bs = db.update_brainstorm(bs["id"], start_message_id=msg["id"])
+    origin = "master" if requested_by == "master" else "role"
+    for r in roles:
+        db.add_wake(r, feat["conversation_id"], [], origin, kind="brainstorm", ref=bs["id"])
+    await _activity(proj, "brainstorm", f"{feat['key']} brainstorm #{bs['id']}: {topic}",
+                    None if requested_by == "master" else requested_by, feat["id"], feat["conversation_id"],
+                    f"brainstorm:{bs['id']}")
+    await proj.hub.broadcast("brainstorm", bs)
+    if st.scheduler:
+        st.scheduler.notify()
+    return bs
+
+
+def brainstorm_ideas(db: ProjectDB, bs: dict) -> list[dict]:
+    """Messages posted by the round's brainstorm turns (one idea per role, in order)."""
+    tids = {t["id"] for t in db.turns_for_wake_ref("brainstorm", bs["id"])}
+    feat = db.feature(bs["feature_id"])
+    return [m for m in db.messages(feat["conversation_id"], limit=200)
+            if m["id"] > (bs.get("start_message_id") or 0) and m.get("turn_id") in tids]
 
 
 # ---- M1c: feature fresh start --------------------------------------------------------

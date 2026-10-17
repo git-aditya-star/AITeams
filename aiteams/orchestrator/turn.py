@@ -10,8 +10,9 @@ import uuid
 from ..config import effort_for, model_for
 from . import receipts
 from .claude_proc import ClaudeProc, build_cmd, child_env, display_argv
-from .prompt import (build_compile_prompt, build_handoff_prompt, build_standup_prompt, build_wake_prompt,
-                     live_message_ids, write_system_prompt)
+from .prompt import (build_brainstorm_compile_prompt, build_brainstorm_prompt, build_compile_prompt,
+                     build_handoff_prompt, build_standup_prompt, build_wake_prompt, live_message_ids,
+                     write_system_prompt)
 
 DEFAULT_CONTEXT_WINDOW = 200000
 
@@ -161,6 +162,13 @@ class TurnRunner:
             from ..workflow import dashboard_features, team_status
             return build_compile_prompt(db, self.project.path, su, team_status(self.state, self.project),
                                         dashboard_features(self.state, self.project))
+        if kind in ("brainstorm", "brainstorm_compile"):
+            bs = db.brainstorm(self.wake.get("ref") or 0)
+            if bs is None:
+                return f"# Brainstorm #{self.wake.get('ref')} no longer exists. Do nothing and end your turn.\n"
+            if kind == "brainstorm":
+                return build_brainstorm_prompt(db, self.project.path, role, bs)
+            return build_brainstorm_compile_prompt(db, self.project.path, bs)
         return build_wake_prompt(db, role, message_ids, handoff)
 
     async def _stream(self) -> dict | None:

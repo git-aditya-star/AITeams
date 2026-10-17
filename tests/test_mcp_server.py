@@ -86,7 +86,7 @@ def test_handshake_tools_list_and_errors():
         "post_message", "get_messages", "list_conversations", "permission", "list_features", "get_feature",
         "create_feature", "set_feature", "request_approval", "request_commit", "review_commit", "lock_file",
         "unlock_file", "list_locks", "write_handoff", "get_team_status", "run_standup", "save_standup",
-        "interrupt", "checkpoint", "react", "ask_master", "withdraw_question"}
+        "interrupt", "checkpoint", "react", "ask_master", "withdraw_question", "start_brainstorm"}
     assert by_id[4]["error"]["code"] == -32601
     assert by_id[5]["error"]["code"] == -32602
     assert by_id[6]["result"]["isError"] is True and "unreachable" in by_id[6]["result"]["content"][0]["text"]

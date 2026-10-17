@@ -9,9 +9,9 @@ from fastapi import APIRouter, HTTPException, Request
 from .. import workflow
 from ..config import ROLES
 from ..db import EMOJI
-from ..models import (AskMasterBody, CheckpointBody, HandoffBody, InternalApprovalBody, InternalCommitBody, InternalFeatureBody,
-                      InternalFeaturePatchBody, InternalMessageBody, InternalReviewBody, InterruptBody, LockBody,
-                      PermissionBody, ReactionBody, StandupSaveBody)
+from ..models import (AskMasterBody, CheckpointBody, HandoffBody, InternalApprovalBody, InternalBrainstormBody,
+                      InternalCommitBody, InternalFeatureBody, InternalFeaturePatchBody, InternalMessageBody,
+                      InternalReviewBody, InterruptBody, LockBody, PermissionBody, ReactionBody, StandupSaveBody)
 from ..orchestrator.lifecycle import request_rotation
 from ..orchestrator import receipts
 from ..orchestrator import router as routing
@@ -162,6 +162,19 @@ async def withdraw_question(request: Request, qid: int):
     st, proj, turn = _auth(request)
     q = await workflow.withdraw_question(st, proj, turn["role"], qid)
     return {"id": q["id"], "state": q["state"]}
+
+
+@internal.post("/brainstorm")
+async def start_brainstorm(request: Request, body: InternalBrainstormBody):
+    """F-10: Product or the Manager starts a brainstorm round on a feature."""
+    st, proj, turn = _auth(request)
+    if turn["role"] not in workflow.BRAINSTORM_STARTERS:
+        raise HTTPException(403, "only Product or the Manager start a brainstorm")
+    feat = workflow.resolve_feature(proj.db, body.feature)
+    if feat is None:
+        raise HTTPException(400, "feature required")
+    bs = await workflow.start_brainstorm(st, proj, feat, body.topic, turn["role"])
+    return {"id": bs["id"], "feature": feat["key"], "roles": bs["roles"], "state": bs["state"]}
 
 
 @internal.post("/approvals")

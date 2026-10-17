@@ -174,6 +174,44 @@ def build_standup_prompt(db: ProjectDB, role: str, standup: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def build_brainstorm_prompt(db: ProjectDB, project_path: str, role: str, bs: dict) -> str:
+    from ..workflow import feature_header
+    feat = db.feature(bs["feature_id"])
+    cid = feat["conversation_id"]
+    who = "the Master" if bs["requested_by"] == "master" else bs["requested_by"]
+    lines = [f"# Brainstorm #{bs['id']} on {feat['key']}, started by {who}",
+             f"Topic: {bs['topic']}",
+             "",
+             f"Post exactly ONE message in conversation `{cid}` (type `Message`, mention nobody): your own idea or"
+             " opinion on the topic, from your role's point of view, in a few lines. Disagree with earlier ideas if"
+             " you do; say why. You may `react` to others' ideas. Then end your turn. Do no other work: no edits,"
+             " no other messages, no commits.",
+             "", feature_header(db, project_path, feat),
+             f"\n# Conversation: {_conv_label(db, cid)} — last {LAST_N} messages"]
+    lines += [_fmt(m) for m in db.messages(cid, limit=LAST_N, after=db.reset_after(cid))]
+    return "\n".join(lines) + "\n"
+
+
+def build_brainstorm_compile_prompt(db: ProjectDB, project_path: str, bs: dict) -> str:
+    from ..workflow import brainstorm_ideas, feature_header
+    feat = db.feature(bs["feature_id"])
+    lines = [f"# Brainstorm #{bs['id']} on {feat['key']}: compile the ideas into one card",
+             f"Topic: {bs['topic']}",
+             "",
+             f"Call `ask_master(purpose=\"brainstorm\", feature=\"{feat['key']}\", intro=..., questions=[...])` ONCE:",
+             "- `intro`: the distinct options, who backs each, and the trade-offs, in a few lines",
+             "- one question whose options are the distinct ideas (2-4; merge near-duplicates), your pick first with"
+             " \" (Recommended)\" in its label; don't add Other, the UI does",
+             "- add a second question only if the ideas split on a separate choice",
+             "Then end your turn. Do no other work. If you end without the card, the round fails.",
+             "", "## Ideas"]
+    ideas = brainstorm_ideas(db, bs)
+    lines += [_fmt(m) for m in ideas] or ["- none: no role posted an idea. End your turn without a card; the round is"
+                                          " marked failed and can be started again."]
+    lines += ["", feature_header(db, project_path, feat)]
+    return "\n".join(lines) + "\n"
+
+
 def build_compile_prompt(db: ProjectDB, project_path: str, standup: dict, team_rows: list[dict], feature_rows: list[dict]) -> str:
     from ..workflow import _ago
     last = db.last_standup()

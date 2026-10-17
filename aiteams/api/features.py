@@ -6,8 +6,8 @@ import os
 from fastapi import APIRouter, HTTPException, Request
 
 from .. import workflow
-from ..models import (ApprovalDecideBody, CommitDecideBody, FeatureFreshStartBody, FeaturePatchBody, NewTaskBody,
-                      ResolveBody)
+from ..models import (ApprovalDecideBody, BrainstormBody, CommitDecideBody, FeatureFreshStartBody, FeaturePatchBody,
+                      NewTaskBody, ResolveBody)
 from .public import _project, _state
 
 feat_api = APIRouter(prefix="/api")
@@ -49,6 +49,18 @@ def feature(request: Request, pid: str, fid: int):
 async def fresh_start_feature(request: Request, pid: str, fid: int, body: FeatureFreshStartBody):
     proj = _project(request, pid)
     return await workflow.fresh_start_feature(_state(request), proj, _feature(proj, fid), body.mode)
+
+
+@feat_api.post("/p/{pid}/features/{fid}/brainstorm")
+async def start_brainstorm(request: Request, pid: str, fid: int, body: BrainstormBody):
+    proj = _project(request, pid)
+    return await workflow.start_brainstorm(_state(request), proj, _feature(proj, fid), body.topic, "master")
+
+
+@feat_api.get("/p/{pid}/features/{fid}/brainstorms")
+def brainstorms(request: Request, pid: str, fid: int, limit: int = 20):
+    proj = _project(request, pid)
+    return proj.db.brainstorms(_feature(proj, fid)["id"], min(max(limit, 1), 100))
 
 
 @feat_api.patch("/p/{pid}/features/{fid}")
