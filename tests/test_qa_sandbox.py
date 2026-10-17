@@ -82,3 +82,18 @@ def test_fire_reaction(sandbox):
         r = c.post("/qa/fire", json={"kind": "reaction", "message_id": m["message"], "emoji": EMOJI[3], "role": "qa"},
                    headers=auth).json()
         assert r["added"] is False and r["reactions"] == []
+
+
+def test_fire_card(sandbox):
+    mod, work, _ = sandbox
+    app = mod.build_app(8790, work, "demo")
+    auth = {"Authorization": "Bearer sb-token"}
+    with TestClient(app) as c:
+        r = c.post("/qa/fire", json={"kind": "card", "role": "product"}, headers=auth).json()
+        q = next(x for x in c.get("/api/p/demo/inbox", headers=auth).json()["questions"] if x["id"] == r["question"])
+        assert (q["kind"], q["purpose"], len(q["payload"]["questions"])) == ("card", "interview", 2)
+        assert q["payload"]["questions"][1]["multiSelect"] is True
+        msgs = c.get("/api/p/demo/messages", params={"conversation": r["conversation"]}, headers=auth).json()
+        assert msgs[-1]["ref"] == f"question:{r['question']}" and msgs[-1]["question"]["id"] == r["question"]
+        w = c.post("/qa/fire", json={"kind": "card_withdraw", "question": r["question"]}, headers=auth).json()
+        assert w["state"] == "withdrawn"

@@ -293,7 +293,7 @@ def turn_events(request: Request, pid: str, tid: int, after_seq: int = 0):
 
 @api.get("/p/{pid}/questions")
 def questions(request: Request, pid: str, state: str = "pending"):
-    if state not in ("pending", "answered", "expired"):
+    if state not in ("pending", "answered", "expired", "withdrawn"):
         raise HTTPException(400, "bad state")
     return _project(request, pid).db.questions(state)
 
@@ -306,6 +306,8 @@ async def answer(request: Request, pid: str, qid: int, body: AnswerBody):
         raise HTTPException(404, "unknown question")
     if q["state"] != "pending":
         raise HTTPException(409, f"question is {q['state']}")
+    if q.get("kind") == "card":  # F-10: no held tool call; the answer is posted as a Decision that wakes the role
+        return await workflow.answer_card(_state(request), proj, q, body.answers)
     q = proj.db.answer_question(qid, body.answers, "answered")
     fut = proj.pending_questions.pop(qid, None)
     if fut and not fut.done():

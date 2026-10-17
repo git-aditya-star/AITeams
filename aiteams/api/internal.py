@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from .. import workflow
 from ..config import ROLES
 from ..db import EMOJI
-from ..models import (CheckpointBody, HandoffBody, InternalApprovalBody, InternalCommitBody, InternalFeatureBody,
+from ..models import (AskMasterBody, CheckpointBody, HandoffBody, InternalApprovalBody, InternalCommitBody, InternalFeatureBody,
                       InternalFeaturePatchBody, InternalMessageBody, InternalReviewBody, InterruptBody, LockBody,
                       PermissionBody, ReactionBody, StandupSaveBody)
 from ..orchestrator.lifecycle import request_rotation
@@ -146,6 +146,22 @@ async def set_feature(request: Request, ident: str, body: InternalFeaturePatchBo
         raise HTTPException(404, "unknown feature")
     feat = await workflow.set_feature(st, proj, feat, body.model_dump(exclude_unset=True), turn["role"])
     return {"header": workflow.feature_header(proj.db, proj.path, feat)}
+
+
+@internal.post("/questions")
+async def ask_master(request: Request, body: AskMasterBody):
+    """F-10: a non-blocking question card to the Master (the role ends its turn; the answer wakes it)."""
+    st, proj, turn = _auth(request)
+    q = await workflow.ask_master(st, proj, turn["role"], turn["id"], body.feature, body.questions, body.intro,
+                                  body.purpose)
+    return {"id": q["id"], "conversation_id": q["conversation_id"], "message_id": q["message_id"]}
+
+
+@internal.post("/questions/{qid}/withdraw")
+async def withdraw_question(request: Request, qid: int):
+    st, proj, turn = _auth(request)
+    q = await workflow.withdraw_question(st, proj, turn["role"], qid)
+    return {"id": q["id"], "state": q["state"]}
 
 
 @internal.post("/approvals")

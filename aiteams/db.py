@@ -181,7 +181,7 @@ class ProjectDB:
     def _msg_dict(self, r: sqlite3.Row) -> dict:
         d = dict(r)
         d["mentions"] = json.loads(d["mentions"] or "[]")
-        d["approval"] = d["commit"] = None
+        d["approval"] = d["commit"] = d["question"] = None
         ref = d.get("ref")
         if ref and ":" in ref:
             kind, _, num = ref.partition(":")
@@ -189,6 +189,8 @@ class ProjectDB:
                 d["approval"] = self.approval(int(num))
             elif kind == "commit" and num.isdigit():
                 d["commit"] = self.commit(int(num))
+            elif kind == "question" and num.isdigit():
+                d["question"] = self.question(int(num))
         return d
 
     def message(self, mid: int) -> dict | None:
@@ -473,6 +475,18 @@ class ProjectDB:
                      " VALUES(?,?,?,?,?,?)", turn_id, role, tool_use_id, json.dumps(payload), "pending", time.time())
         return self.question(qid)
 
+    def create_card(self, turn_id: int | None, role: str, payload: dict, purpose: str, intro: str,
+                    feature_id: int | None, conversation_id: str) -> dict:
+        """F-10: a non-blocking question card (kind 'card'); never expires, only answered or withdrawn."""
+        qid = self.x("INSERT INTO questions(turn_id, role, tool_use_id, payload, state, created_at, kind, purpose, intro,"
+                     " feature_id, conversation_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)", turn_id, role, None,
+                     json.dumps(payload), "pending", time.time(), "card", purpose, intro, feature_id, conversation_id)
+        return self.question(qid)
+
+    def withdraw_question(self, qid: int) -> dict | None:
+        self.x("UPDATE questions SET state='withdrawn', answered_at=? WHERE id=? AND state='pending'", time.time(), qid)
+        return self.question(qid)
+
     def question(self, qid: int) -> dict | None:
         r = self.one("SELECT * FROM questions WHERE id=?", qid)
         return self._q_dict(r) if r else None
@@ -725,9 +739,17 @@ def _migration_1(conn: sqlite3.Connection) -> None:
     conn.execute("DELETE FROM kv WHERE key='schema_version'")  # retired: PRAGMA user_version is the version now
 
 
+def _migration_4(conn: sqlite3.Connection) -> None:
+    """F-10: non-blocking question cards share the `questions` table with blocking AskUserQuestion calls."""
+    for col in ("kind TEXT NOT NULL DEFAULT 'blocking'", "purpose TEXT NULL", "intro TEXT NULL",
+                "feature_id INTEGER NULL", "conversation_id TEXT NULL", "message_id INTEGER NULL"):
+        conn.execute(f"ALTER TABLE questions ADD COLUMN {col}")
+
+
 MIGRATIONS: list = [
     _migration_1,
     "ALTER TABLE turns ADD COLUMN token TEXT",
     "CREATE TABLE reactions(message_id INTEGER NOT NULL, role TEXT NOT NULL, emoji TEXT NOT NULL,"
     " created_at REAL NOT NULL, PRIMARY KEY(message_id, role, emoji))",
+    _migration_4,
 ]

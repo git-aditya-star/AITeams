@@ -91,6 +91,7 @@ def feature_header(db: ProjectDB, project_path: str, feat: dict, with_sizes: boo
             s += f" {c['sha']}" if c["sha"] else f" ({c['role']}, {len(c['files'])} files)"
             parts.append(s)
         lines.append("- commits: " + " · ".join(parts))
+    lines.append("- voices: " + ", ".join(voices(db, feat)))
     locks = db.locks()
     if locks:
         lines.append("- locks now: " + " · ".join(f"{l['path']} ({l['role']})" for l in locks))
@@ -167,6 +168,133 @@ def resolve_feature(db: ProjectDB, ident) -> dict | None:
     if feat is None:
         raise HTTPException(404, f"unknown feature: {ident}")
     return feat
+
+
+# ---- F-10: voices and question cards -----------------------------------------
+CARD_PURPOSES = ("ask", "interview", "concern", "a_vs_b", "brainstorm")
+
+
+def voices(db: ProjectDB, feat: dict) -> list[str]:
+    """Roles with a voice on a feature: authors of / mentioned in its conversation (non-system), plus Product and
+    Lead; in ROLES order."""
+    who = {"product", "lead"}
+    for r in db.q("SELECT author, mentions FROM messages WHERE conversation_id=? AND author != 'system'",
+                  feat["conversation_id"]):
+        who.add(r["author"])
+        try:
+            who.update(m for m in json.loads(r["mentions"] or "[]") if isinstance(m, str))
+        except ValueError:
+            pass
+    return [r for r in ROLES if r in who]
+
+
+def validate_card(questions) -> list[dict]:
+    """AskUserQuestion shape, 1-6 questions with 2-4 options each. Returns a normalized copy; HTTP 400 otherwise."""
+    def bad(msg):
+        raise HTTPException(400, msg)
+    if not isinstance(questions, list) or not 1 <= len(questions) <= 6:
+        bad("a card has 1 to 6 questions")
+    out, texts = [], set()
+    for i, q in enumerate(questions, 1):
+        if not isinstance(q, dict):
+            bad(f"question {i} must be an object")
+        text = str(q.get("question") or "").strip()
+        header = str(q.get("header") or "").strip()
+        if not text:
+            bad(f"question {i} has no text")
+        if text in texts:
+            bad(f"question {i} repeats an earlier question")
+        texts.add(text)
+        if not header or len(header) > 12:
+            bad(f"question {i} needs a header of 1 to 12 characters")
+        opts = q.get("options")
+        if not isinstance(opts, list) or not 2 <= len(opts) <= 4:
+            bad(f"question {i} needs 2 to 4 options (the UI adds Other itself)")
+        labels, clean = set(), []
+        for o in opts:
+            label = str((o or {}).get("label") or "").strip() if isinstance(o, dict) else ""
+            if not label or label in labels:
+                bad(f"question {i} has an empty or repeated option label")
+            if label.lower() == "other":
+                bad(f"question {i}: don't add an Other option, the UI always adds it")
+            labels.add(label)
+            clean.append({"label": label, "description": str(o.get("description") or "")})
+        out.append({"question": text, "header": header, "multiSelect": bool(q.get("multiSelect")), "options": clean})
+    return out
+
+
+def _card_text(intro: str, questions: list[dict]) -> str:
+    lines = [intro.strip(), ""] if intro.strip() else []
+    for i, q in enumerate(questions, 1):
+        lines.append(f"**{i}. {q['question']}**" + (" (pick any)" if q["multiSelect"] else ""))
+        lines += [f"- {o['label']}" + (f": {o['description']}" if o["description"] else "") for o in q["options"]]
+    return "\n".join(lines).strip()
+
+
+async def ask_master(st, proj: Project, role: str, turn_id: int | None, feature, questions, intro: str = "",
+                     purpose: str = "ask") -> dict:
+    """Post a non-blocking question card to the Master; the asking role ends its turn and is woken by the answer."""
+    db = proj.db
+    if purpose not in CARD_PURPOSES:
+        raise HTTPException(400, f"purpose must be one of {', '.join(CARD_PURPOSES)}")
+    qs = validate_card(questions)
+    feat = resolve_feature(db, feature)
+    if purpose == "concern":
+        if feat is None:
+            raise HTTPException(400, "a concern card needs a feature")
+        if role not in voices(db, feat):
+            raise HTTPException(403, f"{role} has no voice on {feat['key']} (voices: {', '.join(voices(db, feat))})")
+    if purpose == "brainstorm":
+        raise HTTPException(403, "brainstorm cards come from Product's brainstorm compile turn (not available yet)")
+    conv = feat["conversation_id"] if feat else f"dm-{role}"
+    intro = (intro or "").strip()
+    q = db.create_card(turn_id, role, {"questions": qs}, purpose, intro, feat["id"] if feat else None, conv)
+    msg = await _post(st, proj, conv, role, _card_text(intro, qs), "Concern" if purpose == "concern" else "Question",
+                      [], turn_id, f"question:{q['id']}")
+    db.x("UPDATE questions SET message_id=? WHERE id=?", msg["id"], q["id"])
+    q = db.question(q["id"])
+    await proj.hub.broadcast("question", q)
+    await broadcast_inbox(proj)
+    return q
+
+
+async def withdraw_question(st, proj: Project, role: str, qid: int) -> dict:
+    db = proj.db
+    q = db.question(qid)
+    if q is None or q.get("kind") != "card":
+        raise HTTPException(404, f"unknown card #{qid}")
+    if q["role"] != role:
+        raise HTTPException(403, f"card #{qid} belongs to {q['role']}")
+    if q["state"] != "pending":
+        raise HTTPException(409, f"card #{qid} is {q['state']}")
+    q = db.withdraw_question(qid)
+    await _post(st, proj, q["conversation_id"], "system", f"Card #{qid} withdrawn by {role}.", "System", [])
+    await proj.hub.broadcast("question", q)
+    await broadcast_inbox(proj)
+    return q
+
+
+def _answer_line(q: dict, answer: str) -> str:
+    labels = {o["label"] for o in q["options"]}
+    parts = [p.strip() for p in answer.split(",")] if q["multiSelect"] else [answer.strip()]
+    known = answer.strip() in labels or (q["multiSelect"] and all(p in labels for p in parts if p))
+    return answer.strip() if known else f"(Other) {answer.strip()}"
+
+
+async def answer_card(st, proj: Project, q: dict, answers: dict[str, str]) -> dict:
+    """Store the Master's answers and post them as a Decision that mentions (and wakes) the asking role."""
+    q = proj.db.answer_question(q["id"], answers, "answered")
+    lines = [f"@{q['role']} Answers to card #{q['id']}:"]
+    for item in q["payload"].get("questions", []):
+        ans = answers.get(item["question"])
+        if ans is None:
+            ans = answers.get(item["header"])
+        lines.append(f"- **{item['header'] or item['question']}**: "
+                     + (_answer_line(item, ans) if ans not in (None, "") else "(no answer)"))
+    await _post(st, proj, q["conversation_id"], "master", "\n".join(lines), "Decision", [q["role"]])
+    await proj.hub.broadcast("question", q)
+    await broadcast_inbox(proj)
+    return q
 
 
 # ---- approvals ---------------------------------------------------------------

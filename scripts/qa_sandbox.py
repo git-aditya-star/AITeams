@@ -24,7 +24,7 @@ DEMO_ID = "demo"
 DEFAULT_TOKEN = "qa-sandbox-token"
 FIRE_KINDS = ("message", "question", "question_message", "blocker", "approval", "commit_request", "committed",
               "commit_failed", "standup", "stopped", "interrupted", "fresh_session", "rate_limit", "rate_clear",
-              "reaction")
+              "reaction", "card", "card_withdraw")
 
 
 def isolate_env(home: Path, token: str) -> None:
@@ -236,6 +236,24 @@ async def fire(st, proj, body: dict) -> dict:
                 "fresh_session": f"{r} started session #2 (context 61%)"}[kind]
         await hub.broadcast("activity", db.add_activity(kind, text or line, r, conversation_id=conv))
         out["conversation"] = f"dm-{r}"
+    elif kind == "card":
+        # F-10: a 2-question card (one multi-select) through the real ask_master path
+        q = await workflow.ask_master(st, proj, role, None, body.get("feature", "F-1"), body.get("questions") or [
+            {"question": text or f"Which export format first ({n})?", "header": "Format", "options": [
+                {"label": "CSV (Recommended)", "description": "Opens everywhere"},
+                {"label": "XLSX", "description": "Keeps types"}]},
+            {"question": "Which columns matter?", "header": "Columns", "multiSelect": True, "options": [
+                {"label": "Date", "description": ""}, {"label": "Amount", "description": ""},
+                {"label": "Customer", "description": ""}]}],
+            body.get("intro", "My take: CSV first, XLSX later."), body.get("purpose", "interview"))
+        out.update(conversation=q["conversation_id"], question=q["id"], message=q["message_id"])
+    elif kind == "card_withdraw":
+        # withdraws card {question} as the role that asked it
+        q = db.question(int(body["question"]))
+        if q is None:
+            raise ValueError(f"unknown card {body['question']}")
+        q = await workflow.withdraw_question(st, proj, q["role"], q["id"])
+        out.update(conversation=q["conversation_id"], question=q["id"], state=q["state"])
     elif kind == "reaction":
         # toggles `role`'s emoji (default 👍) on message_id, else on the newest message in `conversation`
         from aiteams.db import EMOJI

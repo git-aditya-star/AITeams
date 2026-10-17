@@ -64,6 +64,25 @@ TOOLS = [
          "feature": {"type": "string"},
          "phase": {"type": "string", "enum": ["intake", "spec", "design", "build", "qa", "done"]},
          "owner": {"type": ["string", "null"]}, "title": {"type": "string"}}, "required": ["feature"]}},
+    {"name": "ask_master",
+     "description": "Ask the Master 1-6 multiple-choice questions as a clickable card (2-4 options each; the UI "
+                    "always adds a free-text Other, so don't). Non-blocking: end your turn after posting; the "
+                    "Master's answer arrives as a Decision that wakes you. Put your recommended option first with "
+                    "' (Recommended)' in its label. purpose: ask | interview | concern (needs a voice on the "
+                    "feature) | a_vs_b. `intro` is a short lead-in (your honest take, or both sides' case).",
+     "inputSchema": {"type": "object", "properties": {
+         "questions": {"type": "array", "minItems": 1, "maxItems": 6, "items": {"type": "object", "properties": {
+             "question": {"type": "string"}, "header": {"type": "string", "description": "<= 12 chars"},
+             "multiSelect": {"type": "boolean", "default": False},
+             "options": {"type": "array", "minItems": 2, "maxItems": 4, "items": {"type": "object", "properties": {
+                 "label": {"type": "string"}, "description": {"type": "string"}}, "required": ["label"]}}},
+             "required": ["question", "header", "options"]}},
+         "feature": {"type": ["string", "null"]}, "intro": {"type": "string", "default": ""},
+         "purpose": {"type": "string", "enum": ["ask", "interview", "concern", "a_vs_b"], "default": "ask"}},
+         "required": ["questions"]}},
+    {"name": "withdraw_question",
+     "description": "Withdraw a question card you posted that the Master hasn't answered yet.",
+     "inputSchema": {"type": "object", "properties": {"id": {"type": "integer"}}, "required": ["id"]}},
     {"name": "request_approval",
      "description": "Ask the Master for a decision that is theirs (scope lock, scope change, Done, risky change). "
                     "It lands in their Inbox; end your turn afterwards. `feature` may be null.",
@@ -222,6 +241,19 @@ def tool_set_feature(a):
     return http("PATCH", "/internal/features/" + urllib.request.quote(str(a.get("feature") or "")), body)["header"]
 
 
+def tool_ask_master(a):
+    res = http("POST", "/internal/questions", {"questions": a.get("questions") or [], "feature": _feat(a),
+                                               "intro": str(a.get("intro") or ""),
+                                               "purpose": str(a.get("purpose") or "ask")})
+    return "card #%s posted in %s; end your turn, the Master's answer will wake you" % (res["id"],
+                                                                                      res["conversation_id"])
+
+
+def tool_withdraw_question(a):
+    res = http("POST", "/internal/questions/%d/withdraw" % int(a.get("id") or 0))
+    return "card #%s withdrawn" % res["id"]
+
+
 def tool_request_approval(a):
     res = http("POST", "/internal/approvals", {"feature": _feat(a), "title": str(a.get("title") or ""),
                                                "summary": str(a.get("summary") or "")})
@@ -296,7 +328,8 @@ HANDLERS = {"post_message": tool_post_message, "get_messages": tool_get_messages
             "list_conversations": tool_list_conversations, "permission": tool_permission,
             "list_features": tool_list_features, "get_feature": tool_get_feature,
             "create_feature": tool_create_feature, "set_feature": tool_set_feature,
-            "request_approval": tool_request_approval, "request_commit": tool_request_commit,
+            "request_approval": tool_request_approval, "ask_master": tool_ask_master,
+            "withdraw_question": tool_withdraw_question, "request_commit": tool_request_commit,
             "review_commit": tool_review_commit, "lock_file": tool_lock_file,
             "unlock_file": tool_unlock_file, "list_locks": tool_list_locks}
 

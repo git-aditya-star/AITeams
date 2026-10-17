@@ -1,6 +1,8 @@
 """Pydantic request bodies for the HTTP API."""
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -78,6 +80,13 @@ class InternalFeaturePatchBody(BaseModel):
     phase: str | None = None
     owner: str | None = None
     title: str | None = None
+
+
+class AskMasterBody(BaseModel):
+    questions: Any = None  # shape validated in workflow.validate_card (400 with a sentence)
+    feature: str | None = None
+    intro: str = ""
+    purpose: str = "ask"
 
 
 class InternalApprovalBody(BaseModel):
