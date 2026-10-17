@@ -82,6 +82,28 @@ def test_pytest_refuses_a_tree_that_imports_aiteams_from_elsewhere(rt, tmp_path)
     assert not ok and line.startswith("pytest: ABORTED")
 
 
+def test_daemon_errors_exit_with_a_sentence_not_a_traceback(rt, monkeypatch):
+    import io
+    import urllib.error
+    for k, v in (("AITEAMS_DAEMON_URL", "http://127.0.0.1:1"), ("AITEAMS_PROJECT", "p"), ("AITEAMS_TURN", "1"),
+                 ("AITEAMS_TURN_TOKEN", "t")):
+        monkeypatch.setenv(k, v)
+
+    def not_found(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, io.BytesIO(b'{"detail": "unknown commit"}'))
+    monkeypatch.setattr(rt.urllib.request, "urlopen", not_found)
+    with pytest.raises(SystemExit) as e:
+        rt.main(["999"])
+    assert str(e.value) == "review_tree: commit #999: daemon said 404: unknown commit"
+
+    def down(req, timeout):
+        raise urllib.error.URLError("connection refused")
+    monkeypatch.setattr(rt.urllib.request, "urlopen", down)
+    with pytest.raises(SystemExit) as e:
+        rt.main(["7"])
+    assert str(e.value).startswith("review_tree: daemon unreachable:")
+
+
 def test_commit_id_needs_a_role_turn(rt, monkeypatch):
     for k in ("AITEAMS_DAEMON_URL", "AITEAMS_PROJECT", "AITEAMS_TURN", "AITEAMS_TURN_TOKEN"):
         monkeypatch.delenv(k, raising=False)

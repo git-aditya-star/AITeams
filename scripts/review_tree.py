@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -33,8 +34,17 @@ def group_files(cid: int) -> tuple[list[int], list[str]]:
     req = urllib.request.Request(env["AITEAMS_DAEMON_URL"].rstrip("/") + f"/internal/commits/{cid}/files", headers={
         "X-AITeams-Project": env["AITEAMS_PROJECT"], "X-AITeams-Turn": env["AITEAMS_TURN"],
         "X-AITeams-Token": env["AITEAMS_TURN_TOKEN"]})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        res = json.loads(r.read().decode())
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            res = json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        try:
+            detail = json.loads(e.read().decode()).get("detail")
+        except (ValueError, AttributeError):
+            detail = e.reason
+        sys.exit(f"review_tree: commit #{cid}: daemon said {e.code}: {detail}")
+    except (urllib.error.URLError, OSError) as e:
+        sys.exit(f"review_tree: daemon unreachable: {e}")
     return res["ids"], res["files"]
 
 
