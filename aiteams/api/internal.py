@@ -220,7 +220,7 @@ async def review_commit(request: Request, cid: int, body: InternalReviewBody):
     st, proj, turn = _auth(request)
     if turn["role"] == "lead":  # F-16 guard: N's conversation and N's own commit events (e.g. "superseded")
         await workflow.guard(proj, turn, *workflow.commit_targets(proj.db, cid))
-    c = await workflow.review_commit(st, proj, turn["role"], cid, body.decision, body.note)
+    c = await workflow.review_commit(st, proj, turn["role"], cid, body.decision, body.note, turn["id"])
     return {"id": c["id"], "state": c["state"]}
 
 

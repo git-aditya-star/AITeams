@@ -491,7 +491,7 @@ async def request_commit(st, proj: Project, role: str, turn_id: int | None, feat
     for o in olds:
         o = db.update_commit(o["id"], state="rejected", note=f"superseded by #{c['id']}")
         await _post(st, proj, conv, "system", f"Commit #{o['id']} superseded by #{c['id']}.", "System", [],
-                    ref=f"{COMMIT_EVENT}{o['id']}")
+                    turn_id, ref=f"{COMMIT_EVENT}{o['id']}")
         await proj.hub.broadcast("commit", o)
     for d in db.linked_commits():  # dependents of a superseded request now require its successor
         if d["id"] != c["id"] and d["state"] in PENDING_COMMIT_STATES and old_ids & set(d["requires"]):
@@ -560,7 +560,8 @@ def group_files(db: ProjectDB, cid: int) -> dict:
     return {"ids": [m["id"] for m in g], "files": files}
 
 
-async def review_commit(st, proj: Project, role: str, cid: int, decision: str, note: str | None) -> dict:
+async def review_commit(st, proj: Project, role: str, cid: int, decision: str, note: str | None,
+                        turn_id: int | None = None) -> dict:
     if role != "lead":
         raise HTTPException(403, "only the Lead reviews commits")
     c = proj.db.commit(cid)
@@ -575,7 +576,7 @@ async def review_commit(st, proj: Project, role: str, cid: int, decision: str, n
     if decision == "approve":
         c = proj.db.update_commit(cid, state="master_review", note=note or None)
         await _post(st, proj, conv, "system", f"Lead approved commit #{cid}; waiting on the Master.", "System", [],
-                    ref=f"{COMMIT_EVENT}{cid}")
+                    turn_id, ref=f"{COMMIT_EVENT}{cid}")
     else:
         c = proj.db.update_commit(cid, state="rejected", note=note or None)
         await _post(st, proj, conv, "lead", f"@{c['role']} Commit #{cid} rejected: {note or '(no note)'}", "Decision", [c["role"]])
@@ -855,14 +856,15 @@ def _commit_ref(m: dict) -> int | None:
     return None
 
 
-def _news(db: ProjectDB, role: str, after: int) -> tuple[list[dict], list[dict], int]:
-    """(relevant, others, highest id seen) among messages newer than `after` that the role didn't write."""
+def _news(db: ProjectDB, role: str, after: int, turn_id: int) -> tuple[list[dict], list[dict], int]:
+    """(relevant, others, highest id seen) among messages newer than `after` that the role didn't write and that
+    its own turn's actions didn't post (a "superseded" or "Lead approved" System line carries the caller's turn)."""
     rows = db.q("SELECT id, conversation_id FROM messages WHERE id>? ORDER BY id", after)
     if not rows:
         return [], [], after
     top = rows[-1]["id"]
     msgs = [m for m in db.messages_by_ids([r["id"] for r in rows])
-            if m["author"] != role and m["id"] > db.reset_after(m["conversation_id"])
+            if m["author"] != role and m.get("turn_id") != turn_id and m["id"] > db.reset_after(m["conversation_id"])
             and (m["author"] != "system" or _commit_ref(m) is not None)]
     voiced: dict[str, bool] = {}
     relevant, others = [], []
@@ -910,7 +912,7 @@ async def new_messages(proj: Project, turn: dict, shown_conversation: str | None
     """F-16: the block of messages this turn hasn't been shown yet ("" if none); each is delivered once per turn.
     Messages in `shown_conversation` (a get_messages call just printed it) count as delivered without being listed."""
     from .orchestrator import receipts
-    relevant, others, top = _news(proj.db, turn["role"], _watermark(proj, turn))
+    relevant, others, top = _news(proj.db, turn["role"], _watermark(proj, turn), turn["id"])
     proj.delivered[turn["id"]] = top
     if shown_conversation:
         relevant = [m for m in relevant if m["conversation_id"] != shown_conversation]
@@ -925,7 +927,7 @@ async def new_messages(proj: Project, turn: dict, shown_conversation: str | None
 async def guard(proj: Project, turn: dict, conversations: set[str], commit_ids: set[int]) -> None:
     """F-16 refuse-once: if relevant messages the turn hasn't been shown touch the decision's conversation or
     requests, refuse with all new messages (409 {"guard": text}) and mark them delivered, so a retry passes."""
-    relevant, others, top = _news(proj.db, turn["role"], _watermark(proj, turn))
+    relevant, others, top = _news(proj.db, turn["role"], _watermark(proj, turn), turn["id"])
     if not any(m["conversation_id"] in conversations or _commit_ref(m) in commit_ids for m in relevant):
         return
     proj.delivered[turn["id"]] = top
