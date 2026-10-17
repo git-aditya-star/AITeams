@@ -478,10 +478,6 @@ export function fmtTokens(n: number): string {
   return String(n)
 }
 
-export function fmtCost(n: number): string {
-  return `$${(n || 0).toFixed(4)}`
-}
-
 export function fmtDuration(secs: number): string {
   if (secs < 60) return `${Math.round(secs)}s`
   const m = Math.floor(secs / 60)

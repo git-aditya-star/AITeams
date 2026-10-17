@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Turn, TurnEvent } from '../api'
-import { api, fmtCost, fmtDuration, fmtTokens } from '../api'
+import { api, fmtDuration, fmtTokens } from '../api'
 import type { WsFrame } from '../ws'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
@@ -153,7 +153,7 @@ function BlockView({ b }: { b: Block }) {
     case 'result':
       return (
         <div className="px-3 py-1.5 text-caption text-gray-600 border-t border-gray-100 mt-1">
-          <span className="font-medium">{b.subtype}</span> · {fmtCost(b.cost)} · {b.turns} turns · {fmtDuration(b.ms / 1000)}
+          <span className="font-medium">{b.subtype}</span> · {b.turns} turns · {fmtDuration(b.ms / 1000)}
           {b.error && <div className="text-red-600 mt-0.5 whitespace-pre-wrap">{b.error}</div>}
         </div>
       )
@@ -261,7 +261,7 @@ export default function LiveSession({
   }
 
   return (
-    <div className="flex-1 flex min-h-0">
+    <div className="flex-1 flex min-h-0" data-live-session>
       <div className="w-[240px] shrink-0 border-r border-gray-200 overflow-y-auto">
         {turns.length === 0 && <div className="p-3 text-caption text-gray-400">no turns yet</div>}
         {turns.map((t) => (
@@ -277,7 +277,6 @@ export default function LiveSession({
               <span className="ml-auto text-gray-400">{duration(t)}</span>
             </div>
             <div className="mt-0.5 text-gray-500 flex gap-3">
-              <span>{fmtCost(t.cost_usd)}</span>
               <span>{fmtTokens(t.context_tokens || 0)}</span>
               <span className="text-gray-400 truncate">{t.origin}</span>
             </div>

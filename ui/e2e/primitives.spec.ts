@@ -146,7 +146,9 @@ test('tabs switch feature Chat/Docs and DM Chat/Live session', async ({ page, qa
   await page.goto('/p/demo?c=dm-frontend')
   await page.getByRole('tab', { name: 'Live session' }).click()
   await expect(page.getByRole('tab', { name: 'Live session' })).toHaveAttribute('aria-selected', 'true')
-  await expect(page.getByText('success · $0.2100 · 3 turns · 18s')).toBeVisible()
+  await expect(page.getByText('success · 3 turns · 18s')).toBeVisible()
+  // F-8: no cost anywhere in the live session view (turn list and transcript).
+  await expect(page.locator('[data-live-session]')).not.toContainText('$')
 })
 
 test('tooltips on the team strip and an avatar', async ({ page, qa }) => {
