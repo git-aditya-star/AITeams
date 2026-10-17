@@ -146,7 +146,7 @@ export default function App() {
       .then((p) => {
         setProject(p)
         setPaused(p.paused)
-        setRateLimit(p.rate_limited && p.rate_limited.status !== 'allowed' ? p.rate_limited : null)
+        setRateLimit(p.rate_limited && !p.rate_limited.status.startsWith('allowed') ? p.rate_limited : null)
       })
       .catch((e) => setError(e.message))
     refreshConversations()
@@ -274,7 +274,7 @@ export default function App() {
         break
       case 'rate_limit': {
         const info = f.data?.info as RateLimitInfo | undefined
-        setRateLimit(info && info.status !== 'allowed' ? info : null)
+        setRateLimit(info && !info.status.startsWith('allowed') ? info : null)
         break
       }
       case 'paused':

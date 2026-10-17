@@ -44,3 +44,15 @@ def test_tick_marks_wake_started_before_a_concurrent_merge(db, home, monkeypatch
     assert w2["id"] != w1["id"] and w2["message_ids"] == [2] and w2["state"] == "queued"
     assert db.wake(w1["id"])["state"] == "started"
     assert db.wake(w1["id"])["message_ids"] == [1]
+
+
+def test_allowed_warning_does_not_hold_turns(home, db):
+    async def go():
+        st = AppState(7799)
+        await st.set_rate_limit({"status": "allowed_warning", "resetsAt": 4102444800, "utilization": 0.91})
+        assert st.rate_limit_active() is False and st.rate_limited is None
+        await st.set_rate_limit({"status": "rejected", "resetsAt": 4102444800})
+        assert st.rate_limit_active() is True
+        await st.set_rate_limit({"status": "allowed"})
+        assert st.rate_limit_active() is False
+    asyncio.run(go())

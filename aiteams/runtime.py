@@ -105,7 +105,8 @@ class AppState:
 
     async def set_rate_limit(self, info: dict) -> None:
         was = self.rate_limit_active()
-        now_limited = info.get("status") != "allowed"
+        # Claude Code reports allowed | allowed_warning (window nearly used) | rejected; only rejected holds turns.
+        now_limited = str(info.get("status") or "").split("_")[0] != "allowed"
         self.rate_limited = info if now_limited else None
         if was != now_limited:
             for p in self.projects.values():
