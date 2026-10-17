@@ -75,8 +75,8 @@ export default function DashboardView({
 
       <section>
         <Heading>Features</Heading>
-        <div className="flex gap-3 text-caption text-gray-500 mb-2">
-          {PHASES.map((p) => (
+        <div className="flex gap-3 text-caption text-gray-500 mb-2" data-phase-counts>
+          {PHASES.filter((p) => p !== 'done').map((p) => (
             <span key={p}>
               <span className="font-semibold text-gray-700">{dash.phase_counts[p] ?? 0}</span> {p}
             </span>

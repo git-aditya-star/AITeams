@@ -12,6 +12,9 @@ test('Shipped shows the counters and the done features, newest first; a row open
   const panel = page.locator('[data-shipped]')
   await expect(panel.locator('[data-shipped-week]')).toHaveText(String(dash.shipped.week))
   await expect(panel.locator('[data-shipped-total]')).toHaveText(String(dash.shipped.total))
+  // Done features live in Shipped; the active-features phase line has no "done" count to contradict it.
+  await expect(page.locator('[data-phase-counts]')).toContainText('build')
+  await expect(page.locator('[data-phase-counts]')).not.toContainText('done')
 
   // Rows follow the API's newest-first order.
   await expect(panel.locator('[data-shipped-row]')).toHaveCount(recent.length)
