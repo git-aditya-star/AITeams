@@ -9,10 +9,20 @@ from pathlib import Path
 
 ROLES = ["manager", "lead", "product", "frontend", "backend", "qa"]
 # F-9: what the role settings dialog offers. `claude --help` lists fable as a model alias (2026-10-17).
-MODELS = ("opus", "sonnet", "haiku", "fable")
+# Part 2: (id, label) pairs, aliases first. Only IDs the probe accepted AND that answer as themselves
+# (claude-opus-4-1 is accepted but runs Opus 5.5, so it is left out). See .aiteams/features/F-9/design.md.
+MODELS: tuple[tuple[str, str], ...] = (
+    ("opus", "Opus (latest)"), ("sonnet", "Sonnet (latest)"), ("haiku", "Haiku (latest)"), ("fable", "Fable (latest)"),
+    ("claude-opus-5-5", "Opus 5.5"), ("claude-opus-5", "Opus 5"), ("claude-opus-4-5", "Opus 4.5"),
+    ("claude-sonnet-5-5", "Sonnet 5.5"), ("claude-sonnet-5", "Sonnet 5"), ("claude-sonnet-4-5", "Sonnet 4.5"),
+    ("claude-fable-5-1", "Fable 5.1"), ("claude-fable-5", "Fable 5"),
+    ("claude-haiku-4-5-20251001", "Haiku 4.5"),
+)
+MODEL_IDS = tuple(i for i, _ in MODELS)
+MODEL_LABELS = dict(MODELS)
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 # Levels each model accepts (F-9 probe, see .aiteams/features/F-9/design.md). A model missing here accepts all.
-EFFORT_SUPPORT: dict[str, tuple[str, ...]] = {m: EFFORTS for m in MODELS}
+EFFORT_SUPPORT: dict[str, tuple[str, ...]] = {m: EFFORTS for m in MODEL_IDS}
 
 DEFAULT_SETTINGS = {
     "port": 7700,
@@ -166,18 +176,27 @@ def effort_for(settings: dict, role: str) -> str | None:
     return level if level in EFFORT_SUPPORT.get(model_for(settings, role), EFFORTS) else None
 
 
-def validate_role_settings(body: dict) -> dict:
+def model_label(model: str) -> str:
+    """Friendly label for an offered ID, else the raw ID (a saved ID that is no longer offered)."""
+    return MODEL_LABELS.get(model, model)
+
+
+def validate_role_settings(body: dict, current: dict | None = None) -> dict:
     """Check the F-9 keys of a settings PUT; returns the body with inherit values ("" / None) removed from
-    models/efforts. Raises ValueError with a message for the 400."""
-    out = dict(body)
-    if "default_model" in out and out["default_model"] not in MODELS:
-        raise ValueError(f"default_model must be one of {', '.join(MODELS)}")
+    models/efforts. Raises ValueError with a message for the 400. Only keys in the body are checked, and a model
+    equal to what `current` already stores for that key is accepted even if no longer offered (the dialog
+    re-sends the whole map)."""
+    out, current = dict(body), current or {}
+    stored_models = current.get("models") if isinstance(current.get("models"), dict) else {}
+    if "default_model" in out and out["default_model"] not in MODEL_IDS \
+            and not (isinstance(out["default_model"], str) and out["default_model"] == current.get("default_model")):
+        raise ValueError(f"default_model must be one of {', '.join(MODEL_IDS)}")
     if "default_effort" in out:
         if out["default_effort"] in ("", None):
             out["default_effort"] = None
         elif out["default_effort"] not in EFFORTS:
             raise ValueError(f"default_effort must be null or one of {', '.join(EFFORTS)}")
-    for key, allowed in (("models", MODELS), ("efforts", EFFORTS)):
+    for key, allowed in (("models", MODEL_IDS), ("efforts", EFFORTS)):
         if key not in out:
             continue
         if not isinstance(out[key], dict):
@@ -188,6 +207,9 @@ def validate_role_settings(body: dict) -> dict:
                 raise ValueError(f"{key}: unknown role {role!r}")
             if v in ("", None):
                 continue  # inherit
+            if key == "models" and isinstance(v, str) and v == stored_models.get(role):
+                clean[role] = v  # unchanged, possibly no longer offered: keep it
+                continue
             if v not in allowed:
                 raise ValueError(f"{key}.{role} must be one of {', '.join(allowed)}")
             clean[role] = v
