@@ -21,7 +21,6 @@ export default function TeamStrip({ onSelect }: { onSelect: (role: string) => vo
                 <>
                   {t.state !== 'idle' && <span className="text-gray-500">{stateWord(t)}</span>}
                   <span>{Math.round((t.context_pct || 0) * 100)}%</span>
-                  <span className="text-gray-400">${(t.cost_today || 0).toFixed(2)}</span>
                 </>
               )}
             </button>
