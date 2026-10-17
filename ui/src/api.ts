@@ -221,6 +221,7 @@ export interface TeamRole {
   context_pct: number
   cost_today: number
   model: string
+  effort?: string | null // F-9: effective effort, null = no --effort
   session_seq?: number | null
   fresh_starts?: number
   rotation?: string | null
@@ -370,11 +371,32 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
 
 const post = <T,>(url: string, body: unknown) =>
   req<T>(url, { method: 'POST', body: JSON.stringify(body) })
+const put = <T,>(url: string, body: unknown) =>
+  req<T>(url, { method: 'PUT', body: JSON.stringify(body) })
 const patch = <T,>(url: string, body: unknown) =>
   req<T>(url, { method: 'PATCH', body: JSON.stringify(body) })
 const del = <T,>(url: string) => req<T>(url, { method: 'DELETE' })
 
+// F-9: global role settings (~/.aiteams/settings.json). Missing role keys inherit the defaults.
+export interface RoleSettings {
+  default_model: string
+  default_effort: string | null
+  models: Record<string, string>
+  efforts: Record<string, string>
+  [k: string]: unknown
+}
+
+export interface SettingsOptions {
+  roles: string[]
+  models: string[]
+  efforts: string[]
+  effort_support: Record<string, string[]>
+}
+
 export const api = {
+  settings: () => req<RoleSettings>('/api/settings'),
+  saveSettings: (body: Partial<RoleSettings>) => put<RoleSettings>('/api/settings', body),
+  settingsOptions: () => req<SettingsOptions>('/api/settings/options'),
   health: () => req<Health>('/api/health'),
   projects: () => req<ProjectSummary[]>('/api/projects'),
   project: (pid: string) => req<Project>(`/api/p/${pid}`),

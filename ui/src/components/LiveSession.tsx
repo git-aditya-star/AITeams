@@ -12,6 +12,7 @@ type Block =
   | { kind: 'tool_use'; id: number; name: string; input: unknown }
   | { kind: 'tool_result'; id: number; text: string; denied: boolean }
   | { kind: 'line'; id: number; text: string; denied?: boolean }
+  | { kind: 'cmd'; id: number; text: string }
   | { kind: 'result'; id: number; subtype: string; cost: number; turns: number; ms: number; error: string | null }
 
 let nextId = 1
@@ -67,6 +68,9 @@ function apply(blocks: Block[], ev: TurnEvent): Block[] {
       else out.push({ kind: 'line', id: nextId++, text: d.subtype || 'system' })
       return out
     }
+    case 'aiteams_cmd': // F-9: the command the daemon spawned (long JSON args shown as <json>)
+      out.push({ kind: 'cmd', id: nextId++, text: Array.isArray(d.argv) ? d.argv.join(' ') : String(d.argv ?? '') })
+      return out
     case 'hook_event':
     case 'hook_response': {
       const s = JSON.stringify(d)
@@ -146,6 +150,12 @@ function BlockView({ b }: { b: Block }) {
         <div className={`mx-3 my-1 ${b.denied ? 'border-l-2 border-red-500 pl-2' : ''}`}>
           {b.denied && <span className="text-caption font-medium text-red-600">hook denied</span>}
           <Expandable text={b.text} limit={300} className="text-gray-500" />
+        </div>
+      )
+    case 'cmd':
+      return (
+        <div className="px-3 py-1 font-mono text-code text-gray-600 break-all" data-aiteams-cmd>
+          {b.text}
         </div>
       )
     case 'line':
