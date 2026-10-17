@@ -527,6 +527,15 @@ class ProjectDB:
         rows = self.q("SELECT * FROM questions WHERE state=? ORDER BY id DESC LIMIT ?", state, limit)
         return [self._q_dict(r) for r in rows]
 
+    def expire_orphaned_blocking_questions(self) -> list[int]:
+        """F-12: at project open no held AskUserQuestion call survives (its future lived in the old daemon), so
+        pending blocking questions can never be answered: mark them expired. Cards never expire."""
+        ids = [r["id"] for r in self.q("SELECT id FROM questions WHERE state='pending' AND kind='blocking'")]
+        if ids:
+            self.x(f"UPDATE questions SET state='expired', answered_at=? WHERE id IN ({','.join('?' * len(ids))})",
+                   time.time(), *ids)
+        return ids
+
     def answer_question(self, qid: int, answers: dict | None, state: str) -> dict | None:
         self.x("UPDATE questions SET state=?, answers=?, answered_at=? WHERE id=? AND state='pending'",
                state, json.dumps(answers) if answers is not None else None, time.time(), qid)

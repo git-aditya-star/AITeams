@@ -23,6 +23,10 @@ class Project:
         self.schema_ahead = self.db.schema_ahead  # DB written by a newer AITeams: read-only, never scheduled
         if self.schema_ahead:
             print(f"project {self.id} ({self.path}): database is from a newer AITeams; loaded read-only")
+        else:
+            # F-12: no held AskUserQuestion survives a restart. Nothing to broadcast: the hub is new, and clients
+            # load questions and the inbox when they connect.
+            self.db.expire_orphaned_blocking_questions()
         self.hub = Hub()
         self.pending_questions: dict[int, asyncio.Future] = {}
 

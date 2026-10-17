@@ -181,6 +181,32 @@ def test_other_text_with_mentions_wakes_only_the_asker(client, pid):
     assert "(Other) ask @backend and @qa\nthen decide" in dec["text"]
 
 
+def test_restart_expires_orphaned_blocking_questions_not_cards(home, repo):
+    """F-12: a blocking AskUserQuestion pending across a restart has no held call left -> expired at project open;
+    a pending card stays pending; answered/expired rows are untouched."""
+    app = create_app(7799, write_daemon_json=False)
+    with TestClient(app, headers=AUTH) as c:
+        pid = c.post("/api/projects/register", json={"path": str(repo)}).json()["id"]
+        c.post(f"/api/p/{pid}/features", json={"text": "Export", "starter": "product"})
+        db = c.app.state.app.projects[pid].db
+        t = running_turn(db, "qa", pid=pid)[0]
+        orphan = db.create_question(t["id"], "qa", "tu1", {"questions": CARD})
+        done = db.answer_question(db.create_question(t["id"], "qa", "tu2", {"questions": CARD})["id"], {"x": "A"},
+                                  "answered")
+        hdr = running_turn(db, "product", pid=pid)[1]
+        card = c.post("/internal/questions", json={"questions": CARD, "feature": "F-1"}, headers=hdr).json()["id"]
+        assert {q["id"] for q in c.get(f"/api/p/{pid}/inbox").json()["questions"]} == {orphan["id"], card}
+    app = create_app(7799, write_daemon_json=False)
+    with TestClient(app, headers=AUTH) as c:
+        db = c.app.state.app.projects[pid].db
+        assert db.question(orphan["id"])["state"] == "expired" and db.question(orphan["id"])["answered_at"]
+        assert db.question(card)["state"] == "pending"
+        assert db.question(done["id"])["state"] == "answered" and db.question(done["id"])["answers"] == {"x": "A"}
+        assert [q["id"] for q in c.get(f"/api/p/{pid}/inbox").json()["questions"]] == [card]
+        r = c.post(f"/api/p/{pid}/questions/{orphan['id']}/answer", json={"answers": {"x": "A"}})
+        assert r.status_code == 409  # no silent no-op answer any more
+
+
 def test_pending_card_survives_a_restart(home, repo):
     """QA B2/B3: cards have no timer and nothing expires them when the daemon starts again."""
     app = create_app(7799, write_daemon_json=False)

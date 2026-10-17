@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -306,7 +307,7 @@ def build_app(port: int, workdir: Path, seed_kind: str):
         target = st or AppState(port)
         proj = Project(config.load_projects()[0])
         target.projects[DEMO_ID] = proj
-        if seed_kind == "demo":
+        if seed_kind == "demo" and st is not None:
             await seed(target, proj)  # on the new, client-less hub: open pages get no toasts for seed rows
         if old is not None:
             proj.hub = old.hub
@@ -316,9 +317,20 @@ def build_app(port: int, workdir: Path, seed_kind: str):
     if seed_kind == "empty":
         config.save_projects([])
     else:
-        asyncio.run(reseed(None))
+        asyncio.run(reseed(None))  # repo + projects.json only
 
     app = create_app(port, write_daemon_json=False)
+    if seed_kind == "demo":
+        # Seed after the daemon opened the project: opening expires pending blocking questions (F-12), and the
+        # demo's blocking question must stay pending.
+        inner = app.router.lifespan_context
+
+        @asynccontextmanager
+        async def lifespan(a):
+            async with inner(a):
+                await reseed(a.state.app)
+                yield
+        app.router.lifespan_context = lifespan
 
     @app.post("/qa/fire", dependencies=[Depends(master_auth)])
     async def qa_fire(request: Request):
