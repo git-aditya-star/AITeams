@@ -23,8 +23,9 @@ class UpgradeError(Exception):
 
 
 def half_committed_groups(src: str | Path) -> list[str]:
-    """F-11: warnings for commit groups with a committed member whose partners are still pending (rejected ones don't
-    count). Reads <src>/.aiteams/state.db read-only; a missing DB or one without commit groups gives no warnings."""
+    """F-11: warnings for a committed request that `requires` one that isn't committed (a superseded requirement doesn't
+    count). A committed base with a pending dependent is the safe order and gives none.
+    Reads <src>/.aiteams/state.db read-only; a missing DB or one without commit groups gives no warnings."""
     db = Path(src) / ".aiteams" / "state.db"
     if not db.is_file():
         return []
@@ -41,20 +42,16 @@ def half_committed_groups(src: str | Path) -> list[str]:
             conn.close()
     except (sqlite3.Error, ValueError):
         return []
-    linked = [c for c in rows.values() if c["requires"]]
-    in_groups = {d["id"] for d in linked} | {n for d in linked for n in d["requires"]}
-    out, seen = [], set()
+    out = []
     for c in sorted(rows.values(), key=lambda c: c["id"]):
-        if c["state"] != "committed" or c["id"] in seen or c["id"] not in in_groups:
+        if c["state"] != "committed":
             continue
-        g = commit_graph.component(c, linked, rows.get)
-        seen.update(m["id"] for m in g)
-        pending = [m for m in g if m["state"] not in ("committed", "rejected")]
-        if len(g) > 1 and pending:
-            label = "+".join(f"#{m['id']}" for m in g)
-            out += [f"warning: commit group {label} is half committed: #{m['id']} "
-                    f"({'F-' + str(m['feature_id']) + ', ' if m['feature_id'] else ''}{m['role']}) is {m['state']}"
-                    for m in pending]
+        for n in c["requires"]:
+            r = rows.get(n)
+            if r is None or r["state"] == "committed" or commit_graph.superseded(r):
+                continue
+            out.append(f"warning: #{c['id']} ({'F-' + str(c['feature_id']) + ', ' if c['feature_id'] else ''}"
+                       f"{c['role']}) is committed but needs #{n}, which is {r['state']}")
     return out
 
 

@@ -242,20 +242,23 @@ def _group_db(path: Path, rows: list[tuple]) -> None:
 
 
 def test_upgrade_warns_about_half_committed_groups(tmp_path):
-    """F-11: a committed member whose partners are still pending is warned about; rejected/superseded partners and
-    singles are not; a missing DB or a DB from before commit groups gives nothing."""
+    """F-11: only a committed request whose `requires` isn't committed is warned about. A committed base with a pending
+    dependent is the safe order and gives nothing, as do rejected dependents, superseded requirements and singles;
+    a missing DB or a DB from before commit groups gives nothing."""
     assert upgrade.half_committed_groups(tmp_path) == []
     _group_db(tmp_path, [
-        (1, "backend", 9, "committed", None, None), (2, "frontend", 9, "master_review", None, [1]),  # half: warn
+        (1, "backend", 9, "committed", None, None), (2, "frontend", 9, "master_review", None, [1]),  # base first: no
         (3, "backend", 9, "committed", None, None), (4, "frontend", 9, "rejected", "no", [3]),     # rejected: no
         (5, "backend", None, "committed", None, None), (6, "qa", None, "lead_review", None, None),  # singles: no
         (7, "backend", 2, "committed", None, None), (8, "frontend", 2, "committed", None, [7]),     # whole: no
         (10, "backend", 3, "rejected", "superseded by #11", None), (11, "backend", 3, "committed", None, None),
-        (12, "frontend", 3, "lead_review", None, [11]),                                              # repointed: warn
+        (12, "frontend", 3, "committed", None, [10]),                                                # superseded: no
+        (13, "backend", 4, "master_review", None, None), (14, "frontend", 4, "committed", None, [13]),  # warn
+        (15, "backend", None, "rejected", "no", None), (16, "frontend", None, "committed", None, [15, 7]),  # warn
     ])
     assert upgrade.half_committed_groups(tmp_path) == [
-        "warning: commit group #1+#2 is half committed: #2 (F-9, frontend) is master_review",
-        "warning: commit group #11+#12 is half committed: #12 (F-3, frontend) is lead_review"]
+        "warning: #14 (F-4, frontend) is committed but needs #13, which is master_review",
+        "warning: #16 (frontend) is committed but needs #15, which is rejected"]
     import sqlite3
     conn = sqlite3.connect(tmp_path / ".aiteams" / "state.db")
     conn.execute("ALTER TABLE commits DROP COLUMN requires")
@@ -266,12 +269,12 @@ def test_upgrade_warns_about_half_committed_groups(tmp_path):
 
 def test_cmd_upgrade_prints_the_group_warning(m2c_src, home, monkeypatch, capsys):
     r, _ = m2c_src
-    _group_db(r, [(1, "backend", 9, "committed", None, None), (2, "frontend", 9, "master_review", None, [1])])
+    _group_db(r, [(1, "backend", 9, "master_review", None, None), (2, "frontend", 9, "committed", None, [1])])
     cli, order = _fake_cli(monkeypatch, FakeRun())
     monkeypatch.chdir(r)
     cli.main(["upgrade"])
     out = capsys.readouterr().out
-    assert "warning: commit group #1+#2 is half committed: #2 (F-9, frontend) is master_review" in out
+    assert "warning: #2 (F-9, frontend) is committed but needs #1, which is master_review" in out
     assert order[-1][0] == "start"  # a warning, never a block
 
 
