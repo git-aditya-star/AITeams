@@ -6,7 +6,7 @@ import sys
 import pytest
 
 from aiteams.orchestrator import turn as turn_mod
-from aiteams.orchestrator.claude_proc import HOOK, ClaudeProc, aiteams_env, build_cmd, child_env
+from aiteams.orchestrator.claude_proc import HOOK, HOOK_TOOLS, PLUGINS, ClaudeProc, aiteams_env, build_cmd, child_env
 from aiteams.orchestrator.turn import classify, context_window_from, usage_tokens
 
 INIT = {"type": "system", "subtype": "init", "session_id": "s1", "model": "claude-opus-5-5", "tools": ["Bash"],
@@ -169,6 +169,11 @@ def test_build_cmd_enables_project_notes_plugin_with_local_settings_only():
     cmd = build_cmd({"max_turns": 40}, "backend", env, "/tmp/sys.md", "s1", False, "opus")
     assert cmd[cmd.index("--setting-sources") + 1] == "local"  # never "user": no Master CLAUDE.md or hooks
     settings = json.loads(cmd[cmd.index("--settings") + 1])
-    assert settings["enabledPlugins"] == {"project-notes@project-notes": True}
+    assert settings["enabledPlugins"] == PLUGINS  # F-5: the Master's keep/drop list
+    assert {k for k, v in PLUGINS.items() if v} == {"project-notes@project-notes", "team-skills@example"}
+    assert {k for k, v in PLUGINS.items() if not v} == {
+        "cc-plugin-sec-default@builtin", "cc-plugin-agents-md@builtin", "cc-plugin-telemetry@builtin",
+        "cc-plugin-plugin-authoring@builtin"}
+    assert "Skill" in HOOK_TOOLS.split("|")
     [pre] = settings["hooks"]["PreToolUse"]
     assert HOOK in pre["hooks"][0]["command"]

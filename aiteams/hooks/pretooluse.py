@@ -6,6 +6,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 PROJECT = os.path.realpath(os.environ.get("AITEAMS_PROJECT_PATH") or os.getcwd())
@@ -139,6 +140,34 @@ def check_lock(rel):
              % (rel, res.get("holder"), since))
 
 
+TEAM_SKILLS = "team-skills:"
+
+
+def check_skill(inp):
+    """team-skills need the Master's approval (F-5): ask the daemon; fail closed on any error during a turn."""
+    skill = str(inp.get("skill") or "").strip()
+    if not skill.lower().startswith(TEAM_SKILLS):
+        return
+    url, project, turn = (os.environ.get("AITEAMS_DAEMON_URL"), os.environ.get("AITEAMS_PROJECT"),
+                          os.environ.get("AITEAMS_TURN"))
+    if not (url and project and turn):
+        return  # not a role turn (tests, the Master's own session)
+    name = skill[len(TEAM_SKILLS):].strip()
+    reason = ("team-skills need the Master's approval first: request_approval(feature, 'Use team-skill: %s', why), "
+              "end your turn, and use it after the approving Decision." % name)
+    req = urllib.request.Request(url.rstrip("/") + "/internal/skill-approval?skill=" + urllib.parse.quote(name, safe=""),
+                                 headers={"X-AITeams-Project": project, "X-AITeams-Turn": turn,
+                                          "X-AITeams-Token": os.environ.get("AITEAMS_TURN_TOKEN", "")})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            res = json.loads(r.read().decode() or "{}")
+    except Exception as e:  # anything (incl. http.client.BadStatusLine/IncompleteRead) must deny, not crash open
+        log_input("skill check failed closed: %r" % e)
+        deny(reason + " (approval check failed: the daemon did not answer)")
+    if not (isinstance(res, dict) and res.get("ok") is True):
+        deny(reason)
+
+
 def check_read(inp):
     """Read/Grep/Glob: the token and runtime files are off limits (Bash has the same rule)."""
     for key in ("file_path", "path", "pattern"):
@@ -168,6 +197,8 @@ def main():
         check_write(data, inp)
     elif tool in ("Read", "Grep", "Glob"):
         check_read(inp)
+    elif tool == "Skill":
+        check_skill(inp)
 
 
 if __name__ == "__main__":

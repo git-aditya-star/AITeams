@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from . import config
 from .api.features import feat_api
 from .api.internal import internal
+from .api.skills import skills
 from .api.public import COOKIE, api, master_auth, open_api, signin_page, token_ok, wsr
 from .orchestrator.scheduler import Scheduler
 from .runtime import AppState
@@ -48,6 +49,7 @@ def create_app(port: int, write_daemon_json: bool = True) -> FastAPI:
     app.include_router(api, dependencies=[Depends(master_auth)])
     app.include_router(feat_api, dependencies=[Depends(master_auth)])
     app.include_router(internal)
+    app.include_router(skills)
     app.include_router(wsr)
 
     index = STATIC / "index.html"

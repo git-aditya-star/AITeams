@@ -11,7 +11,12 @@ from pathlib import Path
 PKG = Path(__file__).resolve().parent.parent
 HOOK = str(PKG / "hooks" / "pretooluse.py")
 MCP_SERVER = str(PKG / "mcp_server.py")
-HOOK_TOOLS = "Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob"
+HOOK_TOOLS = "Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|Skill"
+# Plugins a role turn loads: the Master's keep/drop list (F-5 PRD). team-skills is gated by the hook (Master approval).
+# cc-plugin-sec-default is managed and stays loaded despite false (reported, F-5); the entry is harmless.
+PLUGINS = {"project-notes@project-notes": True, "team-skills@example": True,
+           "cc-plugin-sec-default@builtin": False, "cc-plugin-agents-md@builtin": False,
+           "cc-plugin-telemetry@builtin": False, "cc-plugin-plugin-authoring@builtin": False}
 
 
 def child_env(daemon_url: str, project_id: str, project_path: str, role: str, turn_id: int,
@@ -51,8 +56,8 @@ def build_cmd(settings: dict, role: str, env: dict, system_prompt_file: str, ses
     py = python_cmd()
     hook_settings = {"hooks": {"PreToolUse": [{"matcher": HOOK_TOOLS, "hooks": [
         {"type": "command", "command": f"{py} -B {HOOK}"}]}]},
-        # the Master's user-scope project-notes plugin; it loads under --setting-sources local (probed for F-4)
-        "enabledPlugins": {"project-notes@project-notes": True}}
+        # user-scope plugins still resolve under --setting-sources local (probed for F-4 and F-5)
+        "enabledPlugins": dict(PLUGINS)}
     mcp = {"mcpServers": {"aiteams": {"command": py, "args": ["-B", MCP_SERVER], "env": aiteams_env(env)}}}
     cmd = ["claude", "-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose",
            "--include-partial-messages", "--include-hook-events",

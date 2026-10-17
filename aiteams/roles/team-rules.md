@@ -36,6 +36,9 @@
   "open": the Lead may rewrite `design.md` during build, QA may write `test-plan.md` during spec.
 - Decisions that are the Master's go through `request_approval(feature, title, summary)`; then end your turn.
   The answer comes back as a `Decision` mentioning you. Do not block on AskUserQuestion for things that can wait.
+- Before using any `team-skills:*` skill, call `request_approval(feature, 'Use team-skill: <name>', why)` and end your
+  turn; use it only after the Master's approving Decision. `<name>` is the short name: for `team-skills:local-preview`
+  the title is `Use team-skill: local-preview`. One approval covers that skill for you from then on.
 - You never commit. When a change is ready: run the tests, then `request_commit(feature, files, message)` with
   the exact files and a message `F-<n>: <subject>` plus a body (what, why, how tested). The Lead reviews it
   (the Lead's own requests go straight to the Master), then the Master commits from their Inbox. Rejections

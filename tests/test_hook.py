@@ -92,12 +92,22 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 class _Stub(BaseHTTPRequestHandler):
     calls = []
     response = {"ok": True}
+    get_reply = None  # (status, raw body) for GET, else `response` as JSON
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
         _Stub.calls.append((self.path, {k.lower(): v for k, v in self.headers.items()}, body))
         data = json.dumps(_Stub.response).encode()
         self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        _Stub.calls.append((self.path, {k.lower(): v for k, v in self.headers.items()}, None))
+        status, data = _Stub.get_reply if _Stub.get_reply else (200, json.dumps(_Stub.response).encode())
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
@@ -114,6 +124,7 @@ def stub():
     th.start()
     _Stub.calls.clear()
     _Stub.response = {"ok": True}
+    _Stub.get_reply = None
     yield "http://127.0.0.1:%d" % srv.server_port
     srv.shutdown()
 
@@ -142,6 +153,63 @@ def test_lock_allow_and_deny(repo, home, stub):
     assert run_hook_env(repo, home, "Bash", {"command": "sed -i '' s/a/b/ src/app.py"}, env) is None
     assert denied(run_hook_env(repo, home, "Write", {"file_path": "/tmp/x"}, env))
     assert len(_Stub.calls) == n
+
+
+def test_team_skills_gate(repo, home, stub):
+    """F-5: team-skills:* asks the daemon (short name, URL-encoded); other skills pass with no call."""
+    env = {"AITEAMS_DAEMON_URL": stub, "AITEAMS_PROJECT": "p1", "AITEAMS_TURN": "7", "AITEAMS_TURN_TOKEN": "tok"}
+    assert run_hook_env(repo, home, "Skill", {"skill": "code-review"}, env) is None
+    assert run_hook_env(repo, home, "Skill", {"skill": "update-config", "args": "team-skills:x"}, env) is None
+    assert _Stub.calls == []
+    _Stub.response = {"ok": False}
+    for skill in ("team-skills:local-preview", "Team-Skills:local-preview", "  team-skills: local-preview "):
+        res = run_hook_env(repo, home, "Skill", {"skill": skill}, env)
+        assert denied(res) and "'Use team-skill: local-preview'" in res["permissionDecisionReason"], skill
+    assert [c[0] for c in _Stub.calls] == ["/internal/skill-approval?skill=local-preview"] * 3
+    assert _Stub.calls[0][1]["x-aiteams-turn"] == "7" and _Stub.calls[0][1]["x-aiteams-token"] == "tok"
+    _Stub.response = {"ok": True}
+    assert run_hook_env(repo, home, "Skill", {"skill": "team-skills:local-preview"}, env) is None
+    run_hook_env(repo, home, "Skill", {"skill": "team-skills:a b/c&d"}, env)
+    assert _Stub.calls[-1][0] == "/internal/skill-approval?skill=a%20b%2Fc%26d"
+
+
+@pytest.mark.parametrize("reply", [(500, b'{"ok": true}'), (200, b"not json"), (200, b"{}"), (200, b'{"ok": "yes"}'),
+                                   (200, b"[true]")])
+def test_team_skills_gate_fails_closed_on_bad_answers(repo, home, stub, reply):
+    _Stub.get_reply = reply
+    env = {"AITEAMS_DAEMON_URL": stub, "AITEAMS_PROJECT": "p1", "AITEAMS_TURN": "7", "AITEAMS_TURN_TOKEN": "tok"}
+    assert denied(run_hook_env(repo, home, "Skill", {"skill": "team-skills:local-preview"}, env))
+
+
+@pytest.mark.parametrize("raw", [b"NOT-HTTP garbage\r\n\r\n",  # BadStatusLine
+                                 b"HTTP/1.1 200 OK\r\nContent-Length: 50\r\n\r\n{\"ok\": true}"])  # IncompleteRead
+def test_team_skills_gate_fails_closed_on_broken_http(repo, home, raw):
+    """QA finding on #20: http.client errors are not OSError; the hook must deny, not crash (a crash runs the tool)."""
+    import socket
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+
+    def serve():
+        conn, _ = srv.accept()
+        conn.recv(65536)
+        conn.sendall(raw)
+        conn.close()
+    threading.Thread(target=serve, daemon=True).start()
+    env = {"AITEAMS_DAEMON_URL": "http://127.0.0.1:%d" % srv.getsockname()[1], "AITEAMS_PROJECT": "p1",
+           "AITEAMS_TURN": "7", "AITEAMS_TURN_TOKEN": "tok"}
+    try:
+        res = run_hook_env(repo, home, "Skill", {"skill": "team-skills:local-preview"}, env)  # asserts exit 0
+    finally:
+        srv.close()
+    assert denied(res) and "did not answer" in res["permissionDecisionReason"]
+
+
+def test_team_skills_gate_fails_closed_without_daemon_but_not_outside_a_turn(repo, home):
+    env = {"AITEAMS_DAEMON_URL": "http://127.0.0.1:1", "AITEAMS_PROJECT": "p1", "AITEAMS_TURN": "7"}
+    res = run_hook_env(repo, home, "Skill", {"skill": "team-skills:local-preview"}, env)
+    assert denied(res) and "did not answer" in res["permissionDecisionReason"]
+    assert run_hook(repo, home, "Skill", {"skill": "team-skills:local-preview"}) is None  # no turn env: not a role turn
 
 
 def test_lock_check_fails_open_without_daemon(repo, home):
