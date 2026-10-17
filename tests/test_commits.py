@@ -71,9 +71,9 @@ def test_full_flow_backend_lead_master(client, pid, repo):
     assert git(repo, "diff", "--cached", "--name-only") == "" and git(repo, "diff", "--name-only") == "README.md"  # unlisted dirty file untouched
     assert "README.md" not in git(repo, "show", "--name-only", "--format=", "HEAD")
     last = client.get(f"/api/p/{pid}/messages", params={"conversation": "feature-1"}).json()[-1]
-    assert last["author"] == "master" and last["type"] == "Decision" and last["mentions"] == ["backend"]
-    assert f"Committed `{r['sha']}`: F-1: add export (edited)" in last["text"]
-    assert "backend" in [w["role"] for w in proj.db.queued_wakes()]
+    assert last["author"] == "master" and last["type"] == "Decision" and last["mentions"] == ["backend", "lead"]
+    assert last["text"] == f"@backend @lead Committed `{r['sha']}`: F-1: add export (edited)"
+    assert {"backend", "lead"} <= {w["role"] for w in proj.db.queued_wakes()}  # F-14: the Lead sequences the next step
     assert client.get(f"/api/p/{pid}/inbox").json()["count"] == 0
     # prefix check respects the F-<n> boundary
     c12 = client.post("/internal/commits", json={"feature": "F-1", "files": ["api_export.py"], "message": "F-12: other"}, headers=backend).json()
@@ -101,7 +101,7 @@ def test_stale_then_force_and_lead_direct_and_reject(client, pid, repo):
     r = client.post(f"/api/p/{pid}/commits/{c2['id']}/decide", json={"decision": "reject", "note": "not now"}).json()
     assert r["state"] == "rejected" and r["note"] == "not now"
     last = client.get(f"/api/p/{pid}/messages", params={"conversation": "dm-lead"}).json()[-1]
-    assert last["author"] == "master" and "Commit #2 rejected: not now" in last["text"] and last["mentions"] == ["lead"]
+    assert last["author"] == "master" and last["text"] == "@lead Commit #2 rejected: not now" and last["mentions"] == ["lead"]
     # reject by the Lead
     backend = turn(client, pid, "backend")
     (repo / "c.py").write_text("x\n")
@@ -153,6 +153,26 @@ def test_commit_failure_is_reported(client, pid, repo):
     assert r["state"] == "failed" and r["note"]
     last = client.get(f"/api/p/{pid}/messages", params={"conversation": "dm-lead"}).json()[-1]
     assert "Commit #1 failed" in last["text"]
+
+
+@pytest.mark.parametrize("outcome", ["rejected", "failed"])
+def test_master_decision_on_a_role_request_wakes_the_lead_too(client, pid, repo, outcome):
+    """F-14: rejected and failed decisions on a non-Lead request mention (and wake) the requester and the Lead."""
+    proj = client.app.state.app.projects[pid]
+    (repo / "q.py").write_text("x\n")
+    c = client.post("/internal/commits", json={"files": ["q.py"], "message": "q"}, headers=turn(client, pid, "qa")).json()
+    client.post(f"/internal/commits/{c['id']}/review", json={"decision": "approve"}, headers=turn(client, pid, "lead"))
+    proj.db.x("DELETE FROM wake_queue")
+    if outcome == "failed":
+        (repo / "q.py").unlink()  # git add of a vanished, untracked path fails (the sandbox's commit_failed path)
+        r = client.post(f"/api/p/{pid}/commits/{c['id']}/decide", json={"decision": "approve", "force": True}).json()
+    else:
+        r = client.post(f"/api/p/{pid}/commits/{c['id']}/decide", json={"decision": "reject", "note": "later"}).json()
+    assert r["state"] == outcome
+    last = client.get(f"/api/p/{pid}/messages", params={"conversation": "dm-qa"}).json()[-1]
+    assert last["author"] == "master" and last["mentions"] == ["qa", "lead"]
+    assert last["text"].startswith(f"@qa @lead Commit #{c['id']} {outcome}")
+    assert sorted(w["role"] for w in proj.db.queued_wakes()) == ["lead", "qa"]
 
 
 def test_diff_per_file_status_counts_and_totals(client, pid, repo):

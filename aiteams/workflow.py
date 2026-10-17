@@ -584,6 +584,11 @@ def _commit_sync(project_path: str, files: list[str], message: str) -> tuple[boo
     return True, sha
 
 
+def _decision_mentions(requester: str) -> list[str]:
+    """F-14: the Master's commit decisions wake the requester and the Lead, who sequences the next step."""
+    return [requester] if requester == "lead" else [requester, "lead"]
+
+
 async def decide_commit(st, proj: Project, cid: int, decision: str, message: str | None, note: str | None,
                         force: bool) -> dict:
     c = proj.db.commit(cid)
@@ -595,9 +600,11 @@ async def decide_commit(st, proj: Project, cid: int, decision: str, message: str
         raise HTTPException(400, "decision must be approve|reject")
     feat = proj.db.feature(c["feature_id"]) if c["feature_id"] else None
     conv = feat["conversation_id"] if feat else f"dm-{c['role']}"
+    who = _decision_mentions(c["role"])
+    at = " ".join("@" + r for r in who)
     if decision == "reject":
         c = proj.db.update_commit(cid, state="rejected", note=note or None)
-        await _post(st, proj, conv, "master", f"@{c['role']} Commit #{cid} rejected: {note or '(no note)'}", "Decision", [c["role"]])
+        await _post(st, proj, conv, "master", f"{at} Commit #{cid} rejected: {note or '(no note)'}", "Decision", who)
         await _activity(proj, "commit", f"Commit #{cid} rejected by the Master", c["role"], c["feature_id"], conv, f"commit:{cid}")
     else:
         stale = [f for f in c["files"] if _sha(proj.path, f) != c["hashes"].get(f)]
@@ -608,11 +615,11 @@ async def decide_commit(st, proj: Project, cid: int, decision: str, message: str
         if ok:
             c = proj.db.update_commit(cid, state="committed", sha=out, message=msg_text, note=note or None)
             subject = msg_text.splitlines()[0]
-            await _post(st, proj, conv, "master", f"@{c['role']} Committed `{out}`: {subject}", "Decision", [c["role"]])
+            await _post(st, proj, conv, "master", f"{at} Committed `{out}`: {subject}", "Decision", who)
             await _activity(proj, "commit", f"Committed {out}: {subject}", c["role"], c["feature_id"], conv, f"commit:{cid}")
         else:
             c = proj.db.update_commit(cid, state="failed", note=out, message=msg_text)
-            await _post(st, proj, conv, "master", f"@{c['role']} Commit #{cid} failed:\n```\n{out}\n```", "Decision", [c["role"]])
+            await _post(st, proj, conv, "master", f"{at} Commit #{cid} failed:\n```\n{out}\n```", "Decision", who)
     await proj.hub.broadcast("commit", c)
     await broadcast_inbox(proj)
     return c
