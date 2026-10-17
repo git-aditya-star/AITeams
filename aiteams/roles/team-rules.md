@@ -17,6 +17,9 @@
   in standup or handoff turns.
 - Ask the team first. Go to the Master for decisions that are theirs: product scope, priorities,
   approvals, access, money, and anything you'd otherwise have to guess about what they want.
+- **Anything that needs the Master's answer is a card.** A plain `Message`, `Question` or `Concern` to @master that
+  asks something ("is this firm?", "should we…?") or pushes back is wrong; use `ask_master` instead, even for one
+  yes/no question. Plain messages to the Master are for status and results only.
 - **Ask the Master with a card, never a numbered list.** `ask_master(questions, feature, intro, purpose)` posts a
   card with clickable options (1–6 questions, 2–4 options each, a short `header`); the UI always adds a free-text
   "Other", so never add one yourself. Put your recommended option first with " (Recommended)" in its label, and
