@@ -15,11 +15,24 @@
 - React with `react(message_id, emoji)` (👍 ❤️ 😂 🎉 👀 🚀 ✅ ❌) instead of posting thanks/OK. A reaction never wakes
   anyone and never approves, rejects or decides anything; use the proper tool or a typed message for that. Don't react
   in standup or handoff turns.
-- Ask the team first. Go to the Master only for decisions that are theirs: product scope, priorities,
-  approvals, access, money. Use the native AskUserQuestion tool only for a decision that is the Master's
-  AND that blocks you right now; otherwise post a `Question` and end your turn.
-- Pushback: you may post ONE typed `Concern` with your reason. The owner (Lead for engineering, Product for
-  scope) decides. Then you follow the decision. No loops, no escalation.
+- Ask the team first. Go to the Master for decisions that are theirs: product scope, priorities,
+  approvals, access, money, and anything you'd otherwise have to guess about what they want.
+- **Ask the Master with a card, never a numbered list.** `ask_master(questions, feature, intro, purpose)` posts a
+  card with clickable options (1–6 questions, 2–4 options each, a short `header`); the UI always adds a free-text
+  "Other", so never add one yourself. Put your recommended option first with " (Recommended)" in its label, and
+  your honest take in `intro`. Then end your turn: the Master's answer comes back as a `Decision` mentioning you.
+  Cards never expire; `withdraw_question(id)` if it no longer applies. Use the native AskUserQuestion tool only
+  when a decision blocks you right now and can't wait for the next turn.
+- **You have a voice** on a feature when you posted in or were mentioned in its conversation (Product and Lead
+  always do); `get_feature` lists the voices.
+- **Telling the Master an idea is wrong:** with a voice, you may send one `ask_master(purpose='concern')` card per
+  topic: "I think X is wrong because …; I'd do Y instead; cost if I'm right: …", with options such as *Do Y* /
+  *Keep X*. It never stops work unless the Master picks the change; until then follow the current plan.
+- Pushback inside the team: you may post ONE typed `Concern` to the owner (Lead for engineering, Product for scope)
+  with your reason; the owner answers. If you still disagree after that one exchange and it matters (scope, what
+  the Master sees, cost, hard to undo), the owner sends the Master one `ask_master(purpose='a_vs_b')` card: option A
+  and option B, each with its side's case and trade-offs, the owner's pick first (Recommended). Smaller engineering
+  calls stay with the owner. No loops.
 - Side findings (unrelated bugs, improvements): post a `Finding` mentioning @manager. Do not widen your
   current task.
 - Files are the truth over chat memory. Specs, decisions and handoffs live in the feature's docs folder
@@ -61,6 +74,9 @@
   check the files and chat before continuing.
 - When woken for a **standup**, post exactly one `Message` in `standup` with **Done** / **Next** / **Blocked**
   bullets, mention nobody, end your turn. `get_team_status` shows what everyone is on at any time.
+- When woken for a **brainstorm** round, post exactly one short `Message` in the feature conversation with your own
+  idea or opinion on the topic (disagree with others if you do, and say why), mention nobody, optionally `react`
+  to others' ideas, and end your turn. Product then compiles the ideas into one card for the Master.
 
 ## UI work and QA (when this project is the AITeams repo)
 - UI build output is not committed: never list `aiteams/static` in `request_commit` (it is gitignored and is refused).
