@@ -1,5 +1,6 @@
 import ApprovalCard from './ApprovalCard'
 import CommitCard from './CommitCard'
+import CommitGroupCard from './CommitGroupCard'
 import MessageRow from './MessageRow'
 import QuestionCard from './QuestionCard'
 import { roleName } from '../roles'
@@ -25,7 +26,8 @@ export default function InboxView({ onOpen }: { onOpen: (conversationId: string)
   const inbox = useAppSelector((s) => s.inbox.data)
   const features = useAppSelector((s) => s.features)
   if (!inbox) return <div className="flex-1 px-4 py-6 text-gray-400 text-meta">Loading…</div>
-  const total = inbox.questions.length + inbox.approvals.length + inbox.commits.length + inbox.messages.length
+  const groups = inbox.groups ?? []
+  const total = inbox.questions.length + inbox.approvals.length + inbox.commits.length + groups.length + inbox.messages.length
   if (!total) return <div className="flex-1 px-4 py-6 text-gray-500 text-meta">Nothing needs you.</div>
   const commits = inbox.commits.filter((c) => c.state === 'master_review')
 
@@ -43,7 +45,12 @@ export default function InboxView({ onOpen }: { onOpen: (conversationId: string)
           </div>
         ))}
       </Group>
-      <Group title="Commits" count={commits.length}>
+      <Group title="Commits" count={commits.length + groups.length}>
+        {groups.map((g) => (
+          <div key={`g-${g.id}`} className="mx-4 my-2">
+            <CommitGroupCard g={g} />
+          </div>
+        ))}
         {commits.map((c) => (
           <div key={c.id} className="mx-4 my-2">
             <CommitCard c={c} showFeature />

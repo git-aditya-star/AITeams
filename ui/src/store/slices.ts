@@ -2,7 +2,7 @@ import { createSlice, type PayloadAction } from '@reduxjs/toolkit'
 import type { Conversation, Dashboard, Feature, Health, Inbox, Lock, Message, Project, ProjectSummary, Question, RateLimitInfo, Reaction, ReceiptState, Standup, TeamRole } from '../api'
 import * as ev from './actions'
 
-const inboxTotal = (i: Inbox) => i.questions.length + i.approvals.length + i.commits.length + i.messages.length
+const inboxTotal = (i: Inbox) => i.questions.length + i.approvals.length + i.commits.length + (i.groups?.length ?? 0) + i.messages.length
 const standupActive = (s: Standup | null | undefined) => !!s && (s.state === 'collecting' || s.state === 'compiling')
 // Claude Code reports allowed | allowed_warning | rejected; only a non-allowed status holds turns.
 const limited = (info: RateLimitInfo | null | undefined) => (info && !info.status.startsWith('allowed') ? info : null)
@@ -222,6 +222,13 @@ export const inbox = createSlice({
       })
       .addCase(ev.commitUpdated, (s, a) => {
         if (!s.data) return
+        // F-11: a group member updates in place (it never joins the flat list); the inbox frame's refetch then
+        // drops a group that landed.
+        const member = s.data.groups?.flatMap((g) => g.members).find((m) => m.id === a.payload.id)
+        if (member) {
+          Object.assign(member, a.payload)
+          return
+        }
         const rest = s.data.commits.filter((x) => x.id !== a.payload.id)
         s.data.commits = a.payload.state === 'master_review' ? [...rest, a.payload].sort((x, y) => x.created_at - y.created_at) : rest
         s.data.count = inboxTotal(s.data)

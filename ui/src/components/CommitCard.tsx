@@ -29,8 +29,9 @@ export function CommitMessage({ c, d }: { c: Commit; d: Decision }) {
 }
 
 // State lines, stale warning, note field and Approve / Commit anyway / Reject.
-export function CommitActions({ c, d, showStale = true }: { c: Commit; d: Decision; showStale?: boolean }) {
+export function CommitActions({ c, d, showStale = true, groupWith = [] }: { c: Commit; d: Decision; showStale?: boolean; groupWith?: number[] }) {
   const reviewable = c.state === 'master_review'
+  const grouped = groupWith.length > 0
   return (
     <>
       {showStale && d.stale.length > 0 && reviewable && (
@@ -49,11 +50,17 @@ export function CommitActions({ c, d, showStale = true }: { c: Commit; d: Decisi
         </div>
       )}
 
+      {grouped && reviewable && (
+        <div data-group-note className="mt-2 text-caption text-gray-600">
+          Part of a commit group with {groupWith.map((n) => `#${n}`).join(', ')}: commit it from the Inbox.
+        </div>
+      )}
+
       {reviewable && d.canDecide && (
         <div className="mt-2 flex flex-col gap-1.5">
           <Input value={d.note} onChange={(e) => d.setNote(e.target.value)} placeholder="Note (optional; shown to the requester on reject)" />
           <div className="flex items-center gap-2 flex-wrap">
-            {d.stale.length > 0 ? (
+            {grouped ? null : d.stale.length > 0 ? (
               <Button size="sm" disabled={d.busy} onClick={() => d.decide('approve', true)} className="bg-amber-600 hover:bg-amber-700">
                 Commit anyway
               </Button>
@@ -73,12 +80,23 @@ export function CommitActions({ c, d, showStale = true }: { c: Commit; d: Decisi
   )
 }
 
+// F-11: the open requests this one is linked to (it requires them, or they require it), from the commits embedded in
+// the loaded messages. A partner that isn't loaded counts as open; committed and rejected ones don't hold it back.
+export function useGroupPartners(c: Commit): number[] {
+  return useAppSelector((s) => {
+    const known = new Map(s.messages.items.flatMap((m) => (m.commit ? [[m.commit.id, m.commit] as const] : [])))
+    const ids = new Set([...(c.requires ?? []), ...[...known.values()].filter((x) => x.requires?.includes(c.id)).map((x) => x.id)])
+    return [...ids].filter((id) => !['committed', 'rejected', 'superseded'].includes(String(known.get(id)?.state ?? ''))).sort((a, b) => a - b)
+  }, (a, b) => a.length === b.length && a.every((x, i) => x === b[i]))
+}
+
 export default function CommitCard({ c, showFeature = false }: { c: Commit; showFeature?: boolean }) {
   const ctx = useCards()
   const d = useCommitDecision(c)
   const feature = useAppSelector((s) => selectFeatureLabel(s, c.feature_id))
   const files = Array.isArray(c.files) ? c.files : []
   const lead = leadReview(c)
+  const groupWith = useGroupPartners(c)
 
   return (
     <div data-card={`commit-${c.id}`} className="mt-1.5 rounded-md border border-gray-200 bg-white px-3 py-2.5 text-meta">
@@ -120,7 +138,7 @@ export default function CommitCard({ c, showFeature = false }: { c: Commit; show
         </div>
       )}
 
-      <CommitActions c={c} d={d} />
+      <CommitActions c={c} d={d} groupWith={groupWith} />
     </div>
   )
 }

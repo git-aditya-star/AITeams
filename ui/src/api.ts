@@ -126,6 +126,17 @@ export interface Commit {
   message_id: number | null
   created_at: number
   updated_at: number
+  requires?: number[] // F-11: ids this request must land after (a commit group)
+}
+
+// F-11: linked requests the Inbox shows as one item and commits together, all or nothing.
+export interface CommitGroup {
+  id: number // the lowest member id; any member id works for the group commit
+  feature: string | null
+  members: (Commit & { feature: string | null })[] // dependency order
+  files: number // distinct files across the members still pending
+  ready: boolean // every pending member is in master_review and none requires a rejected request
+  blocked?: string | null // why it can't land, when a member requires a rejected request
 }
 
 // F-3: per-file structure returned by the commit diff endpoint.
@@ -204,6 +215,7 @@ export interface Inbox {
   questions: Question[]
   approvals: Approval[]
   commits: Commit[]
+  groups?: CommitGroup[] // F-11: members are left out of `commits`; a group counts as one
   messages: InboxMessage[]
   count: number
 }
@@ -474,8 +486,8 @@ export const api = {
   decideCommit: (
     pid: string,
     id: number,
-    body: { decision: 'approve' | 'reject'; message?: string; note?: string; force?: boolean },
-  ) => post<Commit>(`/api/p/${pid}/commits/${id}/decide`, body),
+    body: { decision: 'approve' | 'reject'; message?: string; note?: string; force?: boolean; group?: boolean },
+  ) => post<Commit & { group?: Commit[] }>(`/api/p/${pid}/commits/${id}/decide`, body),
   locks: (pid: string) => req<Lock[]>(`/api/p/${pid}/locks`),
   releaseLock: (pid: string, path: string) =>
     del<unknown>(`/api/p/${pid}/locks?path=${encodeURIComponent(path)}`),
@@ -505,6 +517,12 @@ export const api = {
 export function staleFrom(e: unknown): string[] | null {
   if (e instanceof ApiError && e.status === 409 && Array.isArray(e.detail?.stale)) return e.detail.stale as string[]
   return null
+}
+
+// F-11: a group commit's 409 names stale files per member ({"<id>": [files]}); null for any other error.
+export function groupStaleFrom(e: unknown): Record<string, string[]> | null {
+  const s = e instanceof ApiError && e.status === 409 ? e.detail?.stale : null
+  return s && typeof s === 'object' && !Array.isArray(s) ? (s as Record<string, string[]>) : null
 }
 
 export function fmtTime(ts: number): string {
