@@ -65,3 +65,24 @@ export const X = (p: P) => (
     <path d="M6 6l12 12M18 6L6 18" />
   </Svg>
 )
+
+export const Bell = (p: P) => (
+  <Svg {...p}>
+    <path d="M6 9a6 6 0 1 1 12 0c0 5 2 6.5 2 6.5H4S6 14 6 9z" />
+    <path d="M10 19a2 2 0 0 0 4 0" />
+  </Svg>
+)
+
+export const AlertTriangle = (p: P) => (
+  <Svg {...p}>
+    <path d="M10.3 4.2L2.6 17.5A2 2 0 0 0 4.3 20.5h15.4a2 2 0 0 0 1.7-3L13.7 4.2a2 2 0 0 0-3.4 0z" />
+    <path d="M12 9.5v4M12 17h.01" />
+  </Svg>
+)
+
+export const MessageQuestion = (p: P) => (
+  <Svg {...p}>
+    <path d="M20 12.5a7.5 7.5 0 0 1-11 6.6L4 20.5l1.4-4.6A7.5 7.5 0 1 1 20 12.5z" />
+    <path d="M10.2 10a2 2 0 1 1 2.8 1.8c-.6.3-1 .8-1 1.5v.2M12 16.3h.01" />
+  </Svg>
+)
