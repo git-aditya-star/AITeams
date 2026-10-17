@@ -5,6 +5,7 @@ import ApprovalCard from './ApprovalCard'
 import Avatar from './Avatar'
 import CommitCard from './CommitCard'
 import Markdown from './Markdown'
+import Reactions from './Reactions'
 import Receipts from './Receipts'
 import { Badge } from './ui/badge'
 
@@ -23,6 +24,7 @@ export default function MessageRow({ m, highlight = false }: { m: Message; highl
         </div>
         <Markdown text={m.text} />
         {card}
+        <Reactions reactions={m.reactions} />
         <Receipts receipts={m.receipts} />
       </div>
     </div>

@@ -67,7 +67,14 @@ export const openConversation =
 export const loadMessages =
   (conversation: string): AppThunk<Promise<void>> =>
   async (dispatch, getState) => {
-    const items = await api.messages(getState().session.pid, conversation, undefined, PAGE)
+    dispatch(messages.actions.loadStarted(conversation))
+    let items
+    try {
+      items = await api.messages(getState().session.pid, conversation, undefined, PAGE)
+    } catch (e) {
+      dispatch(messages.actions.loadFailed(conversation))
+      throw e
+    }
     dispatch(messages.actions.loaded({ conversation, items, hasMore: items.length >= PAGE }))
   }
 
@@ -96,6 +103,9 @@ export const frameReceived =
         break
       case 'receipt':
         dispatch(ev.receiptReceived(f.data))
+        break
+      case 'reaction':
+        dispatch(ev.reactionsReceived({ message_id: f.data?.message_id, reactions: Array.isArray(f.data?.reactions) ? f.data.reactions : [] }))
         break
       case 'turn_state':
         dispatch(ev.turnStateReceived(f.data))

@@ -1,5 +1,5 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit'
-import type { Conversation, Dashboard, Feature, Health, Inbox, Lock, Message, Project, ProjectSummary, Question, RateLimitInfo, Standup, TeamRole } from '../api'
+import type { Conversation, Dashboard, Feature, Health, Inbox, Lock, Message, Project, ProjectSummary, Question, RateLimitInfo, Reaction, ReceiptState, Standup, TeamRole } from '../api'
 import * as ev from './actions'
 
 const inboxTotal = (i: Inbox) => i.questions.length + i.approvals.length + i.commits.length + i.messages.length
@@ -101,20 +101,63 @@ export const features = createSlice({
 
 type Page = { conversation: string; items: Message[]; hasMore: boolean }
 
+// Per-message updates that arrive while a page request is in flight; replayed on top of the page, which was read
+// before them (otherwise `loaded` would write the old receipts/reactions back).
+type PendingOp =
+  | { kind: 'receipt'; message_id: number; role: string; state: ReceiptState }
+  | { kind: 'reactions'; message_id: number; reactions: Reaction[] }
+
+type MessagesState = { conversation: string | null; items: Message[]; hasMore: boolean; loading: boolean; pending: PendingOp[] }
+const emptyMessages: MessagesState = { conversation: null, items: [], hasMore: false, loading: false, pending: [] }
+
+const applyOp = (items: Message[], op: PendingOp) => {
+  const m = items.find((x) => x.id === op.message_id)
+  if (!m) return
+  if (op.kind === 'receipt') m.receipts = [...(m.receipts || []).filter((r) => r.role !== op.role), { role: op.role, state: op.state }]
+  else m.reactions = op.reactions
+}
+
+const track = (s: MessagesState, op: PendingOp) => {
+  applyOp(s.items, op)
+  if (s.loading) s.pending.push(op)
+}
+
 // The open conversation's messages; `conversation` guards against a late response for one the Master already left.
 export const messages = createSlice({
   name: 'messages',
-  initialState: { conversation: null as string | null, items: [] as Message[], hasMore: false },
+  initialState: emptyMessages,
   reducers: {
     cleared(s, a: PayloadAction<string>) {
       s.conversation = a.payload
       s.items = []
       s.hasMore = false
+      s.loading = false
+      s.pending = []
     },
+    // The latest page is being fetched: from here on, per-message updates are kept for replay.
+    loadStarted(s, a: PayloadAction<string>) {
+      if (a.payload !== s.conversation) return
+      s.loading = true
+      s.pending = []
+    },
+    // The page wins for what it contains; messages that arrived over WS after it was read (ids above its newest)
+    // are kept, and updates received meanwhile are replayed on top.
     loaded(s, a: PayloadAction<Page>) {
       if (a.payload.conversation !== s.conversation) return
-      s.items = a.payload.items
+      const page = a.payload.items
+      const top = page.reduce((n, m) => Math.max(n, m.id), 0)
+      const ids = new Set(page.map((m) => m.id))
+      const live = s.items.filter((m) => m.id > top && !ids.has(m.id))
+      s.items = [...page, ...live].sort((x, y) => x.id - y.id)
+      for (const op of s.pending) applyOp(s.items, op)
       s.hasMore = a.payload.hasMore
+      s.loading = false
+      s.pending = []
+    },
+    loadFailed(s, a: PayloadAction<string>) {
+      if (a.payload !== s.conversation) return
+      s.loading = false
+      s.pending = []
     },
     olderLoaded(s, a: PayloadAction<Page>) {
       if (a.payload.conversation !== s.conversation) return
@@ -124,14 +167,12 @@ export const messages = createSlice({
   },
   extraReducers: (b) =>
     b
-      .addCase(ev.projectOpened, () => ({ conversation: null, items: [], hasMore: false }))
+      .addCase(ev.projectOpened, () => emptyMessages)
       .addCase(ev.messageReceived, (s, a) => {
         if (a.payload.conversation_id === s.conversation) upsert(s.items, a.payload)
       })
-      .addCase(ev.receiptReceived, (s, a) => {
-        const m = s.items.find((x) => x.id === a.payload.message_id)
-        if (m) m.receipts = [...(m.receipts || []).filter((r) => r.role !== a.payload.role), { role: a.payload.role, state: a.payload.state }]
-      })
+      .addCase(ev.receiptReceived, (s, a) => track(s, { kind: 'receipt', ...a.payload }))
+      .addCase(ev.reactionsReceived, (s, a) => track(s, { kind: 'reactions', ...a.payload }))
       .addCase(ev.approvalUpdated, (s, a) => {
         for (const m of s.items)
           if (m.ref === `approval:${a.payload.id}` || m.approval?.id === a.payload.id) {

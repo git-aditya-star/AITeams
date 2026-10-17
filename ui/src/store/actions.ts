@@ -1,10 +1,11 @@
 import { createAction } from '@reduxjs/toolkit'
-import type { Activity, Approval, Commit, Conversation, Feature, Lock, Message, Question, RateLimitInfo, ReceiptState, Standup, TeamRole, Turn } from '../api'
+import type { Activity, Approval, Commit, Conversation, Feature, Lock, Message, Question, RateLimitInfo, Reaction, ReceiptState, Standup, TeamRole, Turn } from '../api'
 
 // Domain events, dispatched both for WS frames and for API responses; every slice that cares handles them.
 export const projectOpened = createAction<string>('project/opened')
 export const messageReceived = createAction<Message>('message/received')
 export const receiptReceived = createAction<{ message_id: number; role: string; state: ReceiptState }>('receipt/received')
+export const reactionsReceived = createAction<{ message_id: number; reactions: Reaction[] }>('reactions/received')
 export const approvalUpdated = createAction<Approval>('approval/updated')
 export const commitUpdated = createAction<Commit>('commit/updated')
 export const featureUpserted = createAction<Feature>('feature/upserted')

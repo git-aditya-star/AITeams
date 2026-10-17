@@ -66,6 +66,12 @@ export interface Conversation {
   reset_after?: number
 }
 
+// F-6: one entry per emoji, roles in the order they reacted.
+export interface Reaction {
+  emoji: string
+  roles: string[]
+}
+
 export interface Receipt {
   role: string
   state: ReceiptState
@@ -168,6 +174,7 @@ export interface Message {
   turn_id: number | null
   created_at: number
   receipts: Receipt[]
+  reactions?: Reaction[]
   ref?: string | null
   approval?: Approval | null
   commit?: Commit | null
