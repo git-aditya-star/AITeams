@@ -54,7 +54,7 @@ def test_done_sets_done_at_and_reopen_clears_it(db):
 
 def test_dashboard_shipped_counts_order_and_cap(client, pid):
     proj = client.app.state.app.projects[pid]
-    assert shipped(client, pid) == {"week": 0, "total": 0, "recent": []}
+    assert shipped(client, pid) == {"week": 0, "total": 0, "recent": [], "timeline": []}
     ids = [new(client, pid, f"feature {i}")["id"] for i in range(12)]
     for fid in ids:
         patch(client, pid, fid, phase="done")

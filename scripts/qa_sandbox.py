@@ -120,7 +120,7 @@ def make_repo(repo: Path) -> None:
 
 
 async def seed(st, proj) -> None:
-    """Deterministic demo data: features F-1 (docs, chat with mentions, approval, question, commit request), F-2 (done) and F-3 (done, with a prd.md Summary)."""
+    """Deterministic demo data: features F-1 (docs, chat with mentions, approval, question, commit request), F-2 (done) and F-3 (done, with a prd.md Summary and a request committed 3h ago); the early chat is backdated."""
     from aiteams import workflow
     from aiteams.api.public import post_message
 
@@ -138,8 +138,8 @@ async def seed(st, proj) -> None:
               ["backend", "frontend"], "Decision")
     await say(conv, "backend", "Endpoint is done and streams rows; commit request below. @lead please review.", ["lead"])
     await say("general", "master", "@manager what is everyone working on?", ["manager"])
-    await say("general", "manager", "F-1 (CSV export) is in build: Backend has a commit in review, Frontend is on the button. "
-              "Product's PRD is waiting on your approval.", [])
+    last_chat = await say("general", "manager", "F-1 (CSV export) is in build: Backend has a commit in review, Frontend is "
+                          "on the button. Product's PRD is waiting on your approval.", [])
     await workflow.request_approval(st, proj, "product", None, "F-1", "PRD ready: CSV export scope",
                                     "Button in the orders header, streamed CSV endpoint, current filter respected. "
                                     "Excel and scheduled exports are out of scope.")
@@ -168,6 +168,15 @@ async def seed(st, proj) -> None:
     f3 = await workflow.new_feature(st, proj, "Order notes", "done", "backend", text="Let support add a note to an order.")
     (Path(workflow.docs_dir(proj.path, f3)) / "prd.md").write_text(
         "# F-3 Order notes\n\n**Summary:** Support can add a short note to any order.\n")
+    # F-18: give the Dashboard's 24h sparkline some shape. The chat up to the manager's reply moves back in three
+    # chunks (9h, 5h and 2h ago), keeping id order = time order, and F-3 gets a request committed 3h ago.
+    now = time.time()
+    ids = [r["id"] for r in db.q("SELECT id FROM messages WHERE id<=? ORDER BY id", last_chat["id"])]
+    for i, mid in enumerate(ids):
+        db.x("UPDATE messages SET created_at=? WHERE id=?", now - (9, 5, 2)[i * 3 // len(ids)] * 3600 + i, mid)
+    c3 = db.create_commit(f3["id"], "backend", None, ["src/notes.py"], "add order notes", {}, "committed")
+    db.x("UPDATE commits SET sha=?, created_at=?, updated_at=? WHERE id=?", "0a1b2c3", now - 3 * 3600 - 60,
+         now - 3 * 3600, c3["id"])
 
 
 LIVE_EVENTS = [

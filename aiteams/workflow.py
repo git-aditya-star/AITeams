@@ -1071,11 +1071,42 @@ def week_start(now: float | None = None) -> float:
     return time.mktime((t.tm_year, t.tm_mon, t.tm_mday - t.tm_wday, 0, 0, 0, 0, 0, -1))
 
 
-def shipped(proj: Project) -> dict:
-    s = proj.db.shipped(week_start())
-    s["recent"] = [{"id": f["id"], "key": f["key"], "title": f["title"], "summary": feature_summary(proj.path, f["key"]),
-                    "conversation_id": f["conversation_id"], "done_at": f["done_at"]} for f in s["recent"]]
+SHIP_DAYS, SHIP_TIMELINE_CAP = 14, 100
+
+
+def shipped(proj: Project, now: float | None = None) -> dict:
+    now = now if now is not None else time.time()
+    s = proj.db.shipped(week_start(now))
+    summaries: dict[str, str | None] = {}
+
+    def item(f: dict) -> dict:
+        if f["key"] not in summaries:
+            summaries[f["key"]] = feature_summary(proj.path, f["key"])
+        return {"id": f["id"], "key": f["key"], "title": f["title"], "summary": summaries[f["key"]],
+                "conversation_id": f["conversation_id"], "done_at": f["done_at"]}
+    s["recent"] = [item(f) for f in s["recent"]]
+    # F-18: everything done in the last 14 days, for the Dashboard's timeline
+    s["timeline"] = [item(f) for f in proj.db.done_since(now - SHIP_DAYS * 86400, SHIP_TIMELINE_CAP)]
     return s
+
+
+def hour_start(t: float) -> float:
+    """The start of the local hour containing `t`."""
+    lt = time.localtime(t)
+    return time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, lt.tm_hour, 0, 0, 0, 0, -1))
+
+
+def activity_hourly(proj: Project, now: float | None = None) -> list[dict]:
+    """F-18: 24 hourly buckets {start, messages, commits}, oldest first, the last one the current local hour.
+    Messages exclude System lines; commits are committed requests, by their commit time (updated_at)."""
+    first = hour_start(now if now is not None else time.time()) - 23 * 3600
+    out = [{"start": first + i * 3600, "messages": 0, "commits": 0} for i in range(24)]
+    for kind, times in proj.db.activity_times(first).items():
+        for t in times:
+            i = int((t - first) // 3600)
+            if 0 <= i < 24:
+                out[i][kind] += 1
+    return out
 
 
 def dashboard(st, proj: Project) -> dict:
@@ -1087,7 +1118,8 @@ def dashboard(st, proj: Project) -> dict:
         counts[f["phase"]] = counts.get(f["phase"], 0) + 1
     return {"needs_you": {"questions": len(ib["questions"]), "approvals": len(ib["approvals"]),
                           "commits": len(ib["commits"]), "messages": len(ib["messages"]), "total": ib["count"]},
-            "phase_counts": counts, "features": feats, "shipped": shipped(proj), "team": team_status(st, proj),
+            "phase_counts": counts, "features": feats, "shipped": shipped(proj), "activity_hourly": activity_hourly(proj),
+            "team": team_status(st, proj),
             "activity": db.activity(30), "standup": db.current_standup(), "last_standup": db.last_standup()}
 
 

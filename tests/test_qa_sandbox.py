@@ -131,3 +131,17 @@ def test_fire_brainstorm(sandbox):
         assert [b["id"] for b in rounds] == [r["brainstorm"]]
         again = c.post(f"/api/p/demo/features/{fid}/brainstorm", json={"topic": "x"}, headers=auth)
         assert again.status_code == 409
+
+
+def test_seed_gives_the_dashboard_pictures_data(sandbox):
+    """F-18: the backdated chat spreads over several hours, F-3's committed request is counted, and the shipped
+    timeline holds the two done features (F-3 newest, with its summary)."""
+    mod, work, _ = sandbox
+    app = mod.build_app(8790, work, "demo")
+    with TestClient(app) as c:
+        d = c.get("/api/p/demo/dashboard", headers={"Authorization": "Bearer sb-token"}).json()
+        busy = [i for i, b in enumerate(d["activity_hourly"]) if b["messages"]]
+        assert len(busy) >= 4 and busy[-1] == 23  # 9h, 5h, 2h ago and now
+        assert sum(b["commits"] for b in d["activity_hourly"]) == 1
+        tl = d["shipped"]["timeline"]
+        assert [f["key"] for f in tl] == ["F-3", "F-2"] and tl[0]["summary"]

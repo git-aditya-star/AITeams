@@ -593,6 +593,18 @@ class ProjectDB:
                   self.q("SELECT * FROM features WHERE done_at IS NOT NULL ORDER BY done_at DESC, id DESC LIMIT ?", limit)]
         return {"week": r["week"], "total": r["total"], "recent": recent}
 
+    def done_since(self, since: float, limit: int = 100) -> list[dict]:
+        """F-18: features with done_at >= since, newest first."""
+        return [self._feat_dict(f) for f in self.q("SELECT * FROM features WHERE done_at>=?"
+                                                   " ORDER BY done_at DESC, id DESC LIMIT ?", since, limit)]
+
+    def activity_times(self, since: float) -> dict:
+        """F-18: {messages: created_at of non-System messages, commits: updated_at of committed requests} since `since`."""
+        return {"messages": [r["created_at"] for r in self.q(
+                    "SELECT created_at FROM messages WHERE created_at>=? AND author!='system'", since)],
+                "commits": [r["updated_at"] for r in self.q(
+                    "SELECT updated_at FROM commits WHERE state='committed' AND updated_at>=?", since)]}
+
     def features_history(self) -> list[dict]:
         rows = [f for f in self.features(include_history=True) if f["phase"] == "done" or f["archived"]]
         return sorted(rows, key=lambda f: f["updated_at"] or 0, reverse=True)
