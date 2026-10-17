@@ -1052,6 +1052,32 @@ def dashboard_features(st, proj: Project) -> list[dict]:
     return out
 
 
+def feature_summary(project_path: str, key: str) -> str | None:
+    """F-17: the text after `**Summary:**` on the first such line in the first 40 lines of the feature's prd.md."""
+    try:
+        with open(os.path.join(project_path, ".aiteams", "features", key, "prd.md"), encoding="utf-8",
+                  errors="replace") as fh:
+            for _, line in zip(range(40), fh):
+                if line.startswith("**Summary:**"):
+                    return line[len("**Summary:**"):].strip()[:200] or None
+    except OSError:
+        pass
+    return None
+
+
+def week_start(now: float | None = None) -> float:
+    """Monday 00:00 local time of the week containing `now`."""
+    t = time.localtime(now if now is not None else time.time())
+    return time.mktime((t.tm_year, t.tm_mon, t.tm_mday - t.tm_wday, 0, 0, 0, 0, 0, -1))
+
+
+def shipped(proj: Project) -> dict:
+    s = proj.db.shipped(week_start())
+    s["recent"] = [{"id": f["id"], "key": f["key"], "title": f["title"], "summary": feature_summary(proj.path, f["key"]),
+                    "conversation_id": f["conversation_id"], "done_at": f["done_at"]} for f in s["recent"]]
+    return s
+
+
 def dashboard(st, proj: Project) -> dict:
     db = proj.db
     ib = inbox(proj)
@@ -1061,7 +1087,7 @@ def dashboard(st, proj: Project) -> dict:
         counts[f["phase"]] = counts.get(f["phase"], 0) + 1
     return {"needs_you": {"questions": len(ib["questions"]), "approvals": len(ib["approvals"]),
                           "commits": len(ib["commits"]), "messages": len(ib["messages"]), "total": ib["count"]},
-            "phase_counts": counts, "features": feats, "team": team_status(st, proj),
+            "phase_counts": counts, "features": feats, "shipped": shipped(proj), "team": team_status(st, proj),
             "activity": db.activity(30), "standup": db.current_standup(), "last_standup": db.last_standup()}
 
 

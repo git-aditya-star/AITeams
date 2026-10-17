@@ -585,6 +585,14 @@ class ProjectDB:
                 out.append(d)
         return out
 
+    def shipped(self, since: float, limit: int = 10) -> dict:
+        """F-17: features with done_at set: {week: count since `since`, total, recent: the newest `limit`}."""
+        r = self.one("SELECT COUNT(*) AS total, COALESCE(SUM(done_at>=?), 0) AS week FROM features"
+                     " WHERE done_at IS NOT NULL", since)
+        recent = [self._feat_dict(f) for f in
+                  self.q("SELECT * FROM features WHERE done_at IS NOT NULL ORDER BY done_at DESC, id DESC LIMIT ?", limit)]
+        return {"week": r["week"], "total": r["total"], "recent": recent}
+
     def features_history(self) -> list[dict]:
         rows = [f for f in self.features(include_history=True) if f["phase"] == "done" or f["archived"]]
         return sorted(rows, key=lambda f: f["updated_at"] or 0, reverse=True)
@@ -592,8 +600,9 @@ class ProjectDB:
     def create_feature(self, title: str, phase: str = "intake", owner: str | None = None) -> dict:
         now = time.time()
         with self.lock:
-            fid = self.x("INSERT INTO features(title, phase, owner, conversation_id, archived, created_at, updated_at)"
-                         " VALUES(?,?,?,?,?,?,?)", title, phase, owner, None, 0, now, now)
+            fid = self.x("INSERT INTO features(title, phase, owner, conversation_id, archived, created_at, updated_at,"
+                         " done_at) VALUES(?,?,?,?,?,?,?,?)", title, phase, owner, None, 0, now, now,
+                         now if phase == "done" else None)
             cid = f"feature-{fid}"
             self.x("INSERT INTO conversations(id, kind, title, role, created_at) VALUES(?,?,?,?,?)",
                    cid, "feature", f"F-{fid} {title}", None, now)
@@ -605,6 +614,13 @@ class ProjectDB:
         if fields:
             if "archived" in fields:
                 fields["archived"] = 1 if fields["archived"] else 0
+            cur = self.one("SELECT phase, archived, done_at FROM features WHERE id=?", fid)
+            if cur is not None:  # F-17: done_at = when it last reached done/archived; reopening clears it
+                done = fields.get("phase", cur["phase"]) == "done" or bool(fields.get("archived", cur["archived"]))
+                if done and cur["done_at"] is None:
+                    fields["done_at"] = time.time()
+                elif not done and cur["done_at"] is not None:
+                    fields["done_at"] = None
             cols = ", ".join(f"{k}=?" for k in fields)
             self.x(f"UPDATE features SET {cols}, updated_at=? WHERE id=?", *fields.values(), time.time(), fid)
             if "title" in fields:
@@ -795,6 +811,17 @@ def _migration_4(conn: sqlite3.Connection) -> None:
         conn.execute(f"ALTER TABLE questions ADD COLUMN {col}")
 
 
+def _migration_7(conn: sqlite3.Connection) -> None:
+    """F-17: features.done_at, backfilled for done/archived features from the newest "set phase done" or
+    "archived F-" System line in their conversation, else updated_at."""
+    conn.execute("ALTER TABLE features ADD COLUMN done_at REAL NULL")
+    for f in conn.execute("SELECT id, conversation_id, updated_at FROM features WHERE phase='done' OR archived=1").fetchall():
+        m = conn.execute("SELECT MAX(created_at) AS at FROM messages WHERE conversation_id=? AND author='system'"
+                         " AND (text LIKE '%set phase done%' OR (text LIKE '%archived F-%'"
+                         " AND text NOT LIKE '%unarchived F-%'))", (f["conversation_id"],)).fetchone()
+        conn.execute("UPDATE features SET done_at=? WHERE id=?", (m["at"] or f["updated_at"], f["id"]))
+
+
 MIGRATIONS: list = [
     _migration_1,
     "ALTER TABLE turns ADD COLUMN token TEXT",
@@ -807,4 +834,5 @@ MIGRATIONS: list = [
     " question_id INTEGER NULL, created_at REAL NOT NULL, ended_at REAL NULL)",
     # F-11: commit groups (commits.requires = a JSON list of the request ids a request can't land without)
     "ALTER TABLE commits ADD COLUMN requires TEXT NULL",
+    _migration_7,
 ]

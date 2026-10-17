@@ -120,7 +120,7 @@ def make_repo(repo: Path) -> None:
 
 
 async def seed(st, proj) -> None:
-    """Deterministic demo data: features F-1 (docs, chat with mentions, approval, question, commit request) and F-2 (done)."""
+    """Deterministic demo data: features F-1 (docs, chat with mentions, approval, question, commit request), F-2 (done) and F-3 (done, with a prd.md Summary)."""
     from aiteams import workflow
     from aiteams.api.public import post_message
 
@@ -164,6 +164,10 @@ async def seed(st, proj) -> None:
     db.update_turn(live["id"], state="done", started_at=time.time() - 30, ended_at=time.time() - 12, cost_usd=0.21,
                    context_tokens=41000)
     await workflow.new_feature(st, proj, "Order search by customer", "done", "frontend", text="Search orders by customer name.")
+    # F-17: a second done feature, with a prd.md Summary line (F-2 has none), for the Dashboard's Shipped panel
+    f3 = await workflow.new_feature(st, proj, "Order notes", "done", "backend", text="Let support add a note to an order.")
+    (Path(workflow.docs_dir(proj.path, f3)) / "prd.md").write_text(
+        "# F-3 Order notes\n\n**Summary:** Support can add a short note to any order.\n")
 
 
 LIVE_EVENTS = [
