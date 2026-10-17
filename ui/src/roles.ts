@@ -1,0 +1,37 @@
+import type { Role } from './api'
+
+export const ROLES: Role[] = ['manager', 'lead', 'product', 'frontend', 'backend', 'qa']
+
+export const roleName = (r: string) => (r === 'master' ? 'Master' : r.charAt(0).toUpperCase() + r.slice(1))
+
+// Fixed pastel avatar colours per role; Master is dark blue.
+const AVATAR: Record<string, string> = {
+  master: 'bg-blue-800 text-white',
+  manager: 'bg-rose-200 text-rose-900',
+  lead: 'bg-violet-200 text-violet-900',
+  product: 'bg-amber-200 text-amber-900',
+  frontend: 'bg-sky-200 text-sky-900',
+  backend: 'bg-emerald-200 text-emerald-900',
+  qa: 'bg-orange-200 text-orange-900',
+}
+export const avatarClass = (author: string) => AVATAR[author] || 'bg-gray-200 text-gray-800'
+export const avatarInitial = (author: string) => (author === 'master' ? 'M' : author.charAt(0).toUpperCase())
+
+export const TYPE_CHIP: Record<string, string> = {
+  Question: 'bg-blue-50 text-blue-700',
+  Decision: 'bg-emerald-50 text-emerald-700',
+  Concern: 'bg-red-50 text-red-700',
+  Finding: 'bg-violet-50 text-violet-700',
+  Handoff: 'bg-amber-50 text-amber-800',
+  System: 'bg-gray-100 text-gray-600',
+}
+
+export const dotClass = (state: string) =>
+  state === 'running'
+    ? 'bg-green-500 animate-pulse'
+    : state === 'queued'
+      ? 'bg-amber-400'
+      : 'bg-gray-300'
+
+export const meterClass = (pct: number) =>
+  pct >= 0.6 ? 'bg-red-500' : pct >= 0.4 ? 'bg-amber-400' : 'bg-green-500'

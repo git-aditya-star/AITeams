@@ -1,0 +1,36 @@
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import { ROLES } from '../roles'
+
+const MENTION_RE = new RegExp(`(^|[^\\w\\[])@(${[...ROLES, 'master', 'all'].join('|')})\\b`, 'g')
+// Split out code fences/spans so mentions inside code are left untouched.
+const CODE_SPLIT = /(```[\s\S]*?```|`[^`\n]*`)/g
+
+function linkifyMentions(text: string): string {
+  return text
+    .split(CODE_SPLIT)
+    .map((seg, i) => (i % 2 === 1 ? seg : seg.replace(MENTION_RE, (_m, pre, role) => `${pre}[@${role}](#mention-${role})`)))
+    .join('')
+}
+
+export default function Markdown({ text }: { text: string }) {
+  return (
+    <div className="md break-words">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a: ({ href, children, ...rest }) =>
+            href?.startsWith('#mention-') ? (
+              <span className="mention">{children}</span>
+            ) : (
+              <a href={href} target="_blank" rel="noreferrer" {...rest}>
+                {children}
+              </a>
+            ),
+        }}
+      >
+        {linkifyMentions(text)}
+      </ReactMarkdown>
+    </div>
+  )
+}
