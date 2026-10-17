@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from aiteams import workflow
 from aiteams.daemon import create_app
+from tests.conftest import AUTH, running_turn
 from aiteams.orchestrator import lifecycle
 from tests.test_lifecycle import FinishedRunner
 
@@ -14,7 +15,7 @@ from tests.test_lifecycle import FinishedRunner
 @pytest.fixture
 def client(home):
     app = create_app(7799, write_daemon_json=False)
-    with TestClient(app) as c:
+    with TestClient(app, headers=AUTH) as c:
         yield c
 
 
@@ -25,9 +26,7 @@ def pid(client, repo):
 
 def turn(client, pid, role, kind="normal", wake=None):
     proj = client.app.state.app.projects[pid]
-    t = proj.db.create_turn(role, "sess", "master", "general", kind)
-    proj.db.update_turn(t["id"], state="running", wake_id=wake["id"] if wake else None)
-    return t, {"X-AITeams-Project": pid, "X-AITeams-Turn": str(t["id"])}
+    return running_turn(proj.db, role, "general", kind, wake["id"] if wake else None, pid=pid)
 
 
 def ended(db, role, state="done"):

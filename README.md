@@ -70,9 +70,16 @@ The full decision log is in [`BRAINSTORM.md`](BRAINSTORM.md); the milestone spec
 
 ```bash
 git clone <this repo> ~/AITeams && cd ~/AITeams
-(cd ui && npm install && npm run build)   # builds the UI into aiteams/static/
-uv tool install -e .                      # installs the `aiteams` command
+uv tool install .      # bootstrap: puts a first `aiteams` on PATH
+aiteams upgrade        # snapshots HEAD into ~/.aiteams/runtime/<sha>/ and runs the daemon from it
 ```
+
+The daemon never runs from the checkout: `aiteams upgrade [ref]` takes a `git archive` of the source
+repo (HEAD by default, any ref works and an older ref is the rollback), installs it as a non-editable
+tool and restarts the daemon. Edits in the checkout, by you or by the team, take effect only on the
+next `aiteams upgrade`. The UI is committed pre-built in `aiteams/static/`; after changing `ui/src`
+run `cd ui && npm install && npm run build` and commit the result before upgrading (`upgrade` warns
+when `ui/src` is newer than the build).
 
 ## Use
 
@@ -90,12 +97,21 @@ Watch the Inbox, answer when asked, approve the scope and the commits. The
 Useful commands:
 
 ```bash
-aiteams status   # daemon pid, port, running turns
-aiteams stop     # stop the daemon (running turns are interrupted and re-queued)
+aiteams status           # daemon pid, port, running turns, running version and whether an upgrade is available
+aiteams stop             # stop the daemon (running turns are interrupted and re-queued)
+aiteams upgrade [ref]    # snapshot + reinstall + restart on <ref> (default HEAD); `aiteams upgrade HEAD~1` rolls back
+aiteams token            # print the Master token; --link prints a sign-in URL; --rotate replaces it (open tabs sign out)
 ```
 
-Settings live in `~/.aiteams/settings.json` (`default_model`, per-role `models`, `max_concurrent`,
-`rotate_pct`, `stale_hours`, timeouts) and can be changed with `PUT /api/settings`.
+Every `/api` route and the websocket need the Master token from `~/.aiteams/token` (`GET /api/health`
+is open). `aiteams` opens the browser through a single-use sign-in link that sets a cookie; from a
+terminal send it as a bearer header. Settings live in `~/.aiteams/settings.json` (`default_model`,
+per-role `models`, `max_concurrent`, `rotate_pct`, `stale_hours`, timeouts):
+
+```bash
+curl -X PUT 127.0.0.1:7700/api/settings -H "Authorization: Bearer $(cat ~/.aiteams/token)" \
+  -H 'content-type: application/json' -d '{"default_model": "opus", "max_concurrent": 3}'
+```
 
 ## Project layout
 
@@ -115,8 +131,10 @@ docs/               this guide, screenshots, walkthrough GIF
   view, features with living docs, approvals, commit flow with Lead review, file locks, Inbox,
   dashboard, session rotation with handoffs, Stop/interrupt/checkpoint, on-demand standup, feature
   fresh start, History.
-- **M2 (next):** the AITeams team builds AITeams on this repo (dogfooding): toast notifications, a
-  runtime snapshot so the team's edits never touch the running daemon, settings UI, digests.
+- **M2a (done):** `aiteams upgrade` runtime snapshot, Master token on `/api` and `/ws`, per-turn secret on
+  `/internal`, schema migrations, so the team can safely edit this repo while the daemon runs it.
+- **M2 (next):** the AITeams team builds AITeams on this repo (dogfooding): toast notifications,
+  settings UI, digests.
 
 Personal project. Issues and ideas welcome; expect rough edges.
 

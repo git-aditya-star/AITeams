@@ -6,7 +6,7 @@ import sys
 import pytest
 
 from aiteams.orchestrator import turn as turn_mod
-from aiteams.orchestrator.claude_proc import ClaudeProc
+from aiteams.orchestrator.claude_proc import ClaudeProc, aiteams_env, child_env
 from aiteams.orchestrator.turn import classify, context_window_from, usage_tokens
 
 INIT = {"type": "system", "subtype": "init", "session_id": "s1", "model": "claude-opus-5-5", "tools": ["Bash"],
@@ -152,3 +152,13 @@ def test_turn_timeout_still_captures_sigint_result(db, home, monkeypatch):
     assert t["state"] == "interrupted" and t["cost_usd"] == 0.001
     assert [e["type"] for e in proj.db.turn_events(t["id"])][-1] == "result"
     proj.db.close()
+
+
+def test_child_env_carries_turn_token_not_master_token(monkeypatch):
+    monkeypatch.setenv("AITEAMS_TOKEN", "master-secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-no")
+    env = child_env("http://127.0.0.1:7700", "p1", "/tmp/p", "backend", 7, 600, "turn-secret")
+    assert env["AITEAMS_TURN_TOKEN"] == "turn-secret" and env["AITEAMS_TURN"] == "7"
+    assert "AITEAMS_TOKEN" not in env and "ANTHROPIC_API_KEY" not in env
+    fwd = aiteams_env(env)
+    assert fwd["AITEAMS_TURN_TOKEN"] == "turn-secret" and "AITEAMS_TOKEN" not in fwd

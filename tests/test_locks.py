@@ -8,13 +8,13 @@ from aiteams.daemon import create_app
 from aiteams.orchestrator import scheduler as sched_mod
 from aiteams.orchestrator.router import route
 from aiteams.runtime import AppState, Project
-from tests.conftest import FakeHub
+from tests.conftest import AUTH, FakeHub, running_turn
 
 
 @pytest.fixture
 def client(home):
     app = create_app(7799, write_daemon_json=False)
-    with TestClient(app) as c:
+    with TestClient(app, headers=AUTH) as c:
         yield c
 
 
@@ -23,16 +23,14 @@ def pid(client, repo):
     return client.post("/api/projects/register", json={"path": str(repo)}).json()["id"]
 
 
-def running_turn(client, pid, role):
+def turn(client, pid, role):
     proj = client.app.state.app.projects[pid]
-    t = proj.db.create_turn(role, "sess", "master", "general")
-    proj.db.update_turn(t["id"], state="running")
-    return proj, {"X-AITeams-Project": pid, "X-AITeams-Turn": str(t["id"])}
+    return proj, running_turn(proj.db, role, pid=pid)[1]
 
 
 def test_acquire_and_deny(client, pid):
-    proj, backend = running_turn(client, pid, "backend")
-    _, frontend = running_turn(client, pid, "frontend")
+    proj, backend = turn(client, pid, "backend")
+    _, frontend = turn(client, pid, "frontend")
     r = client.post("/internal/locks/acquire", json={"path": "api/reports.py"}, headers=backend).json()
     assert r == {"ok": True, "path": "api/reports.py"}
     r = client.post("/internal/locks/acquire", json={"path": "./api/reports.py"}, headers=frontend).json()
@@ -46,9 +44,9 @@ def test_acquire_and_deny(client, pid):
 
 
 def test_release_rules(client, pid):
-    proj, backend = running_turn(client, pid, "backend")
-    _, frontend = running_turn(client, pid, "frontend")
-    _, lead = running_turn(client, pid, "lead")
+    proj, backend = turn(client, pid, "backend")
+    _, frontend = turn(client, pid, "frontend")
+    _, lead = turn(client, pid, "lead")
     client.post("/internal/locks/acquire", json={"path": "a.py"}, headers=backend)
     # another role cannot release, even with force
     assert client.post("/internal/locks/release", json={"path": "a.py", "force": True}, headers=frontend).status_code == 403

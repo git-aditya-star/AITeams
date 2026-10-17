@@ -7,15 +7,26 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
+TOKEN = "test-master-token"
+AUTH = {"Authorization": "Bearer " + TOKEN}  # every TestClient sends it; /api needs the Master token since M2a
+
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
-    """Isolated ~/.aiteams with the scheduler disabled (max_concurrent=0)."""
+    """Isolated ~/.aiteams with the scheduler disabled (max_concurrent=0) and a fixed Master token."""
     h = tmp_path / "home"
     h.mkdir()
     (h / "settings.json").write_text(json.dumps({"max_concurrent": 0, "ask_timeout_s": 2}))
     monkeypatch.setenv("AITEAMS_HOME", str(h))
+    monkeypatch.setenv("AITEAMS_TOKEN", TOKEN)
     return h
+
+
+def running_turn(db, role, conv="general", kind="normal", wake_id=None, pid=None):
+    """Create a running turn with a turn token; returns (turn, headers for /internal)."""
+    t = db.create_turn(role, "sess", "master", conv, kind, token=f"tok-{role}-{db.q('SELECT COUNT(*) c FROM turns')[0]['c']}")
+    t = db.update_turn(t["id"], state="running", wake_id=wake_id)
+    return t, {"X-AITeams-Project": pid or "", "X-AITeams-Turn": str(t["id"]), "X-AITeams-Token": t["token"]}
 
 
 @pytest.fixture

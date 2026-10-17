@@ -6,14 +6,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from aiteams.daemon import create_app
-from aiteams.db import ProjectDB
+from tests.conftest import AUTH, running_turn
+from aiteams.db import MIGRATIONS, ProjectDB
 from aiteams.orchestrator.prompt import build_wake_prompt
 
 
 @pytest.fixture
 def client(home):
     app = create_app(7799, write_daemon_json=False)
-    with TestClient(app) as c:
+    with TestClient(app, headers=AUTH) as c:
         yield c
 
 
@@ -40,7 +41,7 @@ def test_v1_db_migrates_threads_to_features(repo):
     conn.close()
     db = ProjectDB(str(repo))
     try:
-        assert db.get_kv("schema_version") == 3
+        assert db.get_kv("schema_version") is None and db.one("PRAGMA user_version")[0] == len(MIGRATIONS)
         conv = db.conversation("login-feature")
         assert conv["kind"] == "feature"
         feats = db.features()

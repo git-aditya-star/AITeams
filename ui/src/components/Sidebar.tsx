@@ -1,4 +1,4 @@
-import type { Feature, Project, ProjectSummary, TeamRole } from '../api'
+import type { Feature, Health, Project, ProjectSummary, TeamRole } from '../api'
 import { ROLES, dotClass, meterClass, phaseChip, roleName } from '../roles'
 import NewTaskForm from './NewTaskForm'
 
@@ -10,6 +10,7 @@ export default function Sidebar({
   current,
   paused,
   inboxCount,
+  health,
   onPickProject,
   onSelect,
   onNewTask,
@@ -22,6 +23,7 @@ export default function Sidebar({
   current: string
   paused: boolean
   inboxCount: number
+  health: Health | null
   onPickProject: (id: string) => void
   onSelect: (id: string) => void
   onNewTask: (body: { text: string; starter: string }) => Promise<void>
@@ -126,6 +128,11 @@ export default function Sidebar({
         <input type="checkbox" checked={paused} onChange={(e) => onPause(e.target.checked)} />
         Pause project
       </label>
+      {health && (
+        <div className="px-4 pb-2 text-[11px] text-gray-400 font-mono" title={health.ref ? `${health.ref} from ${health.source}` : 'editable dev install'}>
+          v{health.version ?? '?'}{health.sha ? ` · ${health.sha.slice(0, 7)}` : ' · dev'}
+        </div>
+      )}
     </aside>
   )
 }

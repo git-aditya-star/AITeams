@@ -1,7 +1,8 @@
-"""Internal API for the MCP server (loopback only, must carry a running turn)."""
+"""Internal API for the MCP server (loopback only, must carry a running turn and its turn token)."""
 from __future__ import annotations
 
 import asyncio
+import hmac
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -36,6 +37,10 @@ def _auth(request: Request):
     turn = proj.db.turn(int(tid))
     if turn is None or turn["state"] != "running":
         raise HTTPException(403, "turn is not running")
+    tok = turn.get("token") or ""
+    hdr = request.headers.get("X-AITeams-Token") or ""
+    if not (tok and hmac.compare_digest(tok.encode(), hdr.encode("utf-8", "replace"))):
+        raise HTTPException(403, "bad turn token")
     return st, proj, turn
 
 

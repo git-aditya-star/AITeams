@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import type { Activity, Approval, Commit, Conversation, Dashboard, Feature, Inbox, InboxMessage, Lock, Message, Project, ProjectSummary, Question, RateLimitInfo, Standup, TeamRole, Turn } from './api'
+import type { Activity, Approval, Commit, Conversation, Dashboard, Feature, Health, Inbox, InboxMessage, Lock, Message, Project, ProjectSummary, Question, RateLimitInfo, Standup, TeamRole, Turn } from './api'
 import { api } from './api'
 import { roleName } from './roles'
 import { useProjectWs, type WsFrame } from './ws'
@@ -59,6 +59,7 @@ export default function App() {
   const [questions, setQuestions] = useState<Question[]>([])
   const [paused, setPaused] = useState(false)
   const [rateLimit, setRateLimit] = useState<RateLimitInfo | null>(null)
+  const [health, setHealth] = useState<Health | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   // Fan-out for components (LiveSession) that want raw WS frames.
@@ -80,6 +81,8 @@ export default function App() {
   )
 
   const refreshTeam = useCallback(() => api.team(pid).then((t) => setTeam(t.roles)).catch(() => {}), [pid])
+  // Version/upgrade banner: read once per page load and on WS reconnect only (no timer).
+  const refreshHealth = useCallback(() => api.health().then(setHealth).catch(() => {}), [])
   const refreshDashboard = useCallback(() => api.dashboard(pid).then(setDash).catch(() => {}), [pid])
   const refreshConversations = useCallback(() => api.conversations(pid).then(setConversations).catch(() => {}), [pid])
   const refreshFeatures = useCallback(() => api.features(pid, true).then(setFeatures).catch(() => {}), [pid])
@@ -137,6 +140,7 @@ export default function App() {
     setError(null)
     setDash(null)
     api.projects().then(setProjects).catch(() => {})
+    refreshHealth()
     api
       .project(pid)
       .then((p) => {
@@ -152,7 +156,7 @@ export default function App() {
     refreshInbox()
     refreshDashboard()
     api.questions(pid, 'pending').then(setQuestions).catch(() => {})
-  }, [pid, refreshConversations, refreshTeam, refreshFeatures, refreshLocks, refreshInbox, refreshDashboard])
+  }, [pid, refreshConversations, refreshTeam, refreshFeatures, refreshLocks, refreshInbox, refreshDashboard, refreshHealth])
 
   useEffect(() => {
     if (!pid) return
@@ -280,6 +284,7 @@ export default function App() {
   }
   const onReconnect = () => {
     if (!VIEWS.includes(current)) loadMessages(current).catch(() => {})
+    refreshHealth()
     refreshTeam()
     refreshConversations()
     refreshFeatures()
@@ -408,6 +413,7 @@ export default function App() {
           current={current}
           paused={paused}
           inboxCount={badgeCount}
+          health={health}
           onPickProject={(id) => nav(`/p/${id}`)}
           onSelect={(id) => select(id)}
           onNewTask={newTask}
@@ -417,7 +423,14 @@ export default function App() {
           }}
         />
         <main className="flex-1 flex flex-col min-w-0 h-full">
-          <Banners rateLimit={rateLimit} paused={paused} pending={pending} onAnswer={(q) => select(`dm-${q.role}`)} />
+          <Banners
+            rateLimit={rateLimit}
+            paused={paused}
+            pending={pending}
+            upgradeAvailable={!!health?.source_head && !!health?.sha && health.source_head !== health.sha}
+            schemaAhead={!!project?.schema_ahead}
+            onAnswer={(q) => select(`dm-${q.role}`)}
+          />
           <TeamStrip team={team} onSelect={(r) => select(`dm-${r}`)} />
           {feature ? (
             <FeatureHeader

@@ -1,9 +1,11 @@
-"""In-memory daemon state: settings, open projects, scheduler, rate-limit pause."""
+"""In-memory daemon state: settings, token, open projects, scheduler, rate-limit pause, runtime info."""
 from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 import time
+from importlib.metadata import PackageNotFoundError, version as pkg_version
 
 from . import config
 from .db import ProjectDB, ensure_git_exclude
@@ -18,6 +20,9 @@ class Project:
         self.registered_at: float = meta.get("registered_at") or 0.0
         self.is_git = ensure_git_exclude(self.path)
         self.db = ProjectDB(self.path)
+        self.schema_ahead = self.db.schema_ahead  # DB written by a newer AITeams: read-only, never scheduled
+        if self.schema_ahead:
+            print(f"project {self.id} ({self.path}): database is from a newer AITeams; loaded read-only")
         self.hub = Hub()
         self.pending_questions: dict[int, asyncio.Future] = {}
 
@@ -27,7 +32,7 @@ class Project:
 
     def to_dict(self, state: "AppState | None" = None) -> dict:
         d = {"id": self.id, "name": self.name, "path": self.path, "is_git": self.is_git,
-             "registered_at": self.registered_at}
+             "registered_at": self.registered_at, "schema_ahead": self.schema_ahead}
         if state is not None:
             d["paused"] = self.paused
             d["rate_limited"] = state.rate_limited
@@ -38,11 +43,35 @@ class AppState:
     def __init__(self, port: int):
         self.port = port
         self.settings = config.load_settings()
+        self.token = config.master_token()
+        self.auth_codes: dict[str, float] = {}  # single-use sign-in codes -> expiry
         self.projects: dict[str, Project] = {}
         self.rate_limited: dict | None = None
         self.started_at = time.time()
         self.scheduler = None  # set by daemon
         self.request_shutdown = None  # callable set by cli/daemon
+        self._head_cache: tuple[float, str | None] = (0.0, None)
+
+    def runtime(self) -> dict:
+        """Version surface for /api/health: installed version, snapshot sha/ref/source, source HEAD (cached 30 s)."""
+        try:
+            ver = pkg_version("aiteams")
+        except PackageNotFoundError:
+            ver = None
+        info = config.runtime_info()
+        out = {"version": ver, "sha": info.get("sha"), "ref": info.get("ref"), "installed_at": info.get("installed_at"),
+               "source": info.get("source"), "source_head": None}
+        if info.get("source"):
+            ts, head = self._head_cache
+            if time.time() - ts > 30:
+                try:
+                    r = subprocess.run(["git", "-C", info["source"], "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5)
+                    head = r.stdout.strip() if r.returncode == 0 else None
+                except (OSError, subprocess.SubprocessError):
+                    head = None
+                self._head_cache = (time.time(), head)
+            out["source_head"] = head
+        return out
 
     @property
     def daemon_url(self) -> str:

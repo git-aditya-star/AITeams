@@ -1,6 +1,7 @@
 # M1a end-to-end verification
 
 Runs against the real `claude` CLI on the configured model (default Opus). Costs real Team-plan quota.
+Since M2a, install via `aiteams upgrade` (see README) and give every curl `-H "Authorization: Bearer $(cat ~/.aiteams/token)"`.
 
 ## 0. Build and install (ask the Master before installing)
 ```

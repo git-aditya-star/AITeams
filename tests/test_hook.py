@@ -128,11 +128,12 @@ def run_hook_env(repo, home, tool, tool_input, extra_env):
 
 
 def test_lock_allow_and_deny(repo, home, stub):
-    env = {"AITEAMS_DAEMON_URL": stub, "AITEAMS_PROJECT": "p1", "AITEAMS_TURN": "7"}
+    env = {"AITEAMS_DAEMON_URL": stub, "AITEAMS_PROJECT": "p1", "AITEAMS_TURN": "7", "AITEAMS_TURN_TOKEN": "turn-secret"}
     assert run_hook_env(repo, home, "Edit", {"file_path": str(repo / "src" / "app.py")}, env) is None
     path, headers, body = _Stub.calls[-1]
     assert path == "/internal/locks/acquire" and body == {"path": "src/app.py"}
     assert headers["x-aiteams-project"] == "p1" and headers["x-aiteams-turn"] == "7"
+    assert headers["x-aiteams-token"] == "turn-secret"
     _Stub.response = {"ok": False, "holder": "backend", "since": 1_700_000_000}
     res = run_hook_env(repo, home, "Write", {"file_path": "src/app.py"}, env)
     assert denied(res) and "src/app.py is locked by backend since" in res["permissionDecisionReason"]
@@ -152,3 +153,64 @@ def test_lock_check_fails_open_without_daemon(repo, home):
 def test_write_under_features_allowed(repo, home):
     assert run_hook(repo, home, "Write", {"file_path": ".aiteams/features/F-1/prd.md"}) is None
     assert denied(run_hook(repo, home, "Write", {"file_path": ".aiteams/prompts/x.md"}))
+
+
+# ---- M2a: the install, the daemon's HTTP port and the token/runtime files are the Master's -----------------
+@pytest.mark.parametrize("cmd,reason", [
+    ("aiteams upgrade", "the Master runs aiteams upgrade"),
+    ("cd /x && aiteams stop", "the Master runs aiteams upgrade"),
+    ("aiteams token --link", "the Master runs aiteams upgrade"),
+    ("echo $(aiteams token)", "the Master runs aiteams upgrade"),
+    ("uv tool install .", "the Master runs aiteams upgrade"),
+    ("ls; uv tool list", "the Master runs aiteams upgrade"),
+    ("curl -s 127.0.0.1:7700/api/health", "MCP tools, not HTTP"),
+    ("curl http://localhost:7700/api/projects", "MCP tools, not HTTP"),
+    ('curl "$AITEAMS_DAEMON_URL/api/health"', "MCP tools, not HTTP"),
+    ("curl ${AITEAMS_DAEMON_URL}/internal/messages", "MCP tools, not HTTP"),
+    ("cat ~/.aiteams/token", "runtime and token are off limits"),
+    ("cat $HOME/.aiteams/token", "runtime and token are off limits"),
+    ("cat /Users/aditya/.aiteams/runtime.json", "runtime and token are off limits"),
+    ("ls ~/.aiteams/runtime/", "runtime and token are off limits"),
+])
+def test_bash_m2a_denied(repo, home, cmd, reason):
+    (home / "daemon.json").write_text(json.dumps({"pid": 4242, "port": 7700}))
+    res = run_hook(repo, home, "Bash", {"command": cmd})
+    assert denied(res) and reason in res["permissionDecisionReason"], (cmd, res)
+
+
+@pytest.mark.parametrize("cmd", [
+    'grep "aiteams upgrade" README.md', "rg 'uv tool' docs/", "curl https://example.com", "cat ~/.aiteams/settings.json",
+    "grep -r AITEAMS_DAEMON README.md", "ls .aiteams/features",
+])
+def test_bash_m2a_allowed(repo, home, cmd):
+    (home / "daemon.json").write_text(json.dumps({"pid": 4242, "port": 7700}))
+    assert run_hook(repo, home, "Bash", {"command": cmd}) is None, cmd
+
+
+def test_bash_port_from_daemon_json_or_default(repo, home):
+    (home / "daemon.json").write_text(json.dumps({"pid": 4242, "port": 7811}))
+    assert denied(run_hook(repo, home, "Bash", {"command": "curl 127.0.0.1:7811/api/health"}))
+    assert run_hook(repo, home, "Bash", {"command": "curl 127.0.0.1:7700/api/health"}) is None
+    (home / "daemon.json").unlink()
+    assert denied(run_hook(repo, home, "Bash", {"command": "curl 127.0.0.1:7700/api/health"}))  # default port
+
+
+@pytest.mark.parametrize("tool,inp", [
+    ("Read", {"file_path": "~/.aiteams/token"}),
+    ("Read", {"file_path": "$HOME/.aiteams/runtime.json"}),
+    ("Grep", {"pattern": "sha", "path": "~/.aiteams/runtime"}),
+    ("Glob", {"pattern": "~/.aiteams/runtime/**/*.py"}),
+])
+def test_read_tools_cannot_see_token_or_runtime(repo, home, tool, inp):
+    # the hook resolves ~ against AITEAMS_HOME's real location too
+    if "~/" in json.dumps(inp) or "$HOME" in json.dumps(inp):
+        inp = {k: v.replace("~/.aiteams", str(home)).replace("$HOME/.aiteams", str(home)) for k, v in inp.items()}
+    res = run_hook(repo, home, tool, inp)
+    assert denied(res) and "runtime and token are off limits" in res["permissionDecisionReason"], (tool, inp)
+
+
+def test_read_tools_normal_paths_allowed(repo, home):
+    assert run_hook(repo, home, "Read", {"file_path": str(repo / "README.md")}) is None
+    assert run_hook(repo, home, "Read", {"file_path": str(home / "settings.json")}) is None
+    assert run_hook(repo, home, "Grep", {"pattern": "aiteams upgrade", "path": str(repo)}) is None
+    assert run_hook(repo, home, "Glob", {"pattern": "**/*.md"}) is None

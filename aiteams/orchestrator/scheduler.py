@@ -42,7 +42,7 @@ class Scheduler:
         cap = int(self.state.settings.get("max_concurrent", 3))
         candidates = []
         for proj in self.state.projects.values():
-            if proj.paused:
+            if proj.paused or proj.schema_ahead:
                 continue
             per_role: dict[str, dict] = {}
             for w in proj.db.queued_wakes():  # master-first, then FIFO
@@ -126,6 +126,8 @@ class Scheduler:
     async def recover(self) -> None:
         """On daemon start: running turns -> failed, orphan pids killed, wakes re-queued once."""
         for proj in self.state.projects.values():
+            if proj.schema_ahead:
+                continue
             db = proj.db
             for t in [t for t in db.turns(limit=500) if t["state"] in ("running", "queued")]:
                 if t.get("pid"):

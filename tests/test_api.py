@@ -7,12 +7,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from aiteams.daemon import create_app
+from tests.conftest import AUTH, running_turn
 
 
 @pytest.fixture
 def client(home):
     app = create_app(7799, write_daemon_json=False)
-    with TestClient(app) as c:
+    with TestClient(app, headers=AUTH) as c:
         yield c
 
 
@@ -66,10 +67,15 @@ def test_internal_requires_running_turn(client, repo):
     pid = client.post("/api/projects/register", json={"path": str(repo)}).json()["id"]
     proj = client.app.state.app.projects[pid]
     assert client.post("/internal/messages", json={"conversation": "general", "text": "x"}).status_code == 403
-    t = proj.db.create_turn("backend", "sess", "master", "general")
-    h = {"X-AITeams-Project": pid, "X-AITeams-Turn": str(t["id"])}
+    t = proj.db.create_turn("backend", "sess", "master", "general", token="tok-1")
+    h = {"X-AITeams-Project": pid, "X-AITeams-Turn": str(t["id"]), "X-AITeams-Token": "tok-1"}
     assert client.post("/internal/messages", json={"conversation": "general", "text": "x"}, headers=h).status_code == 403
     proj.db.update_turn(t["id"], state="running")
+    # right turn id, wrong/missing token -> 403 "bad turn token"; right token -> 200
+    bad = client.post("/internal/messages", json={"conversation": "general", "text": "x"}, headers={**h, "X-AITeams-Token": "nope"})
+    assert bad.status_code == 403 and bad.json()["detail"] == "bad turn token"
+    assert client.post("/internal/messages", json={"conversation": "general", "text": "x"},
+                       headers={k: v for k, v in h.items() if k != "X-AITeams-Token"}).status_code == 403
     r = client.post("/internal/messages", json={"conversation": "general", "text": "files: a, b @lead", "type": "Finding"}, headers=h)
     assert r.status_code == 200
     m = client.get(f"/api/p/{pid}/messages", params={"conversation": "general"}).json()[-1]
@@ -84,9 +90,7 @@ def test_role_post_acks_digest_messages(client, repo):
     proj = client.app.state.app.projects[pid]
     m = client.post(f"/api/p/{pid}/messages", json={"conversation": "dm-backend", "text": "hi"}).json()
     wake = proj.db.queued_wake("backend")
-    t = proj.db.create_turn("backend", "sess", "master", "dm-backend")
-    proj.db.update_turn(t["id"], state="running", wake_id=wake["id"])
-    h = {"X-AITeams-Project": pid, "X-AITeams-Turn": str(t["id"])}
+    t, h = running_turn(proj.db, "backend", "dm-backend", wake_id=wake["id"], pid=pid)
     client.post("/internal/messages", json={"conversation": "general", "text": "elsewhere"}, headers=h)
     assert proj.db.receipts_for([m["id"]])[m["id"]] == [{"role": "backend", "state": "queued"}]
     client.post("/internal/messages", json={"conversation": "dm-backend", "text": "hello back"}, headers=h)
@@ -96,9 +100,7 @@ def test_role_post_acks_digest_messages(client, repo):
 def test_permission_passthrough_and_question_long_poll(client, repo):
     pid = client.post("/api/projects/register", json={"path": str(repo)}).json()["id"]
     proj = client.app.state.app.projects[pid]
-    t = proj.db.create_turn("product", "sess", "master", "dm-product")
-    proj.db.update_turn(t["id"], state="running")
-    h = {"X-AITeams-Project": pid, "X-AITeams-Turn": str(t["id"])}
+    t, h = running_turn(proj.db, "product", "dm-product", pid=pid)
     r = client.post("/internal/permission", json={"tool_name": "Write", "input": {"file_path": "a"}}, headers=h).json()
     assert r == {"behavior": "allow", "updatedInput": {"file_path": "a"}}
 
@@ -128,9 +130,7 @@ def test_permission_passthrough_and_question_long_poll(client, repo):
 def test_question_timeout_expires(client, repo):
     pid = client.post("/api/projects/register", json={"path": str(repo)}).json()["id"]
     proj = client.app.state.app.projects[pid]
-    t = proj.db.create_turn("product", "sess", "master", "dm-product")
-    proj.db.update_turn(t["id"], state="running")
-    h = {"X-AITeams-Project": pid, "X-AITeams-Turn": str(t["id"])}
+    t, h = running_turn(proj.db, "product", "dm-product", pid=pid)
     q = {"questions": [{"question": "Q?", "header": "H", "multiSelect": False, "options": [{"label": "A", "description": ""}]}]}
     r = client.post("/internal/permission", json={"tool_name": "AskUserQuestion", "input": q}, headers=h).json()  # ask_timeout_s=2
     assert r["behavior"] == "deny" and "did not answer" in r["message"]

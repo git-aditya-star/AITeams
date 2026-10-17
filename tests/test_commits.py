@@ -5,12 +5,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from aiteams.daemon import create_app
+from tests.conftest import AUTH, running_turn
 
 
 @pytest.fixture
 def client(home):
     app = create_app(7799, write_daemon_json=False)
-    with TestClient(app) as c:
+    with TestClient(app, headers=AUTH) as c:
         yield c
 
 
@@ -25,9 +26,7 @@ def pid(client, repo):
 
 def turn(client, pid, role):
     proj = client.app.state.app.projects[pid]
-    t = proj.db.create_turn(role, "sess", "master", "general")
-    proj.db.update_turn(t["id"], state="running")
-    return {"X-AITeams-Project": pid, "X-AITeams-Turn": str(t["id"])}
+    return running_turn(proj.db, role, pid=pid)[1]
 
 
 def git(repo, *args):

@@ -3,6 +3,7 @@
 Real `claude` on the configured model (default Opus). ~10 role turns ≈ $3–5 of Team-plan quota.
 Prelude as in `verify_m1a.md`: `cd ui && npm run build`, `uv sync`, `aiteams` already installed
 editable; `aiteams stop` first so the daemon restarts on the new code.
+Since M2a, install via `aiteams upgrade` (see README) and give every curl `-H "Authorization: Bearer $(cat ~/.aiteams/token)"`.
 
 ```
 export TMPREPO=$(mktemp -d)/demo && mkdir -p $TMPREPO && cd $TMPREPO && git init -q && echo "# demo" > README.md && git add -A && git commit -qm init

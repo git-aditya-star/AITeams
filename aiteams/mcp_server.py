@@ -14,6 +14,7 @@ import urllib.request
 DAEMON = os.environ.get("AITEAMS_DAEMON_URL", "http://127.0.0.1:7700").rstrip("/")
 PROJECT = os.environ.get("AITEAMS_PROJECT", "")
 TURN = os.environ.get("AITEAMS_TURN", "")
+TURN_TOKEN = os.environ.get("AITEAMS_TURN_TOKEN", "")
 ROLE = os.environ.get("AITEAMS_ROLE", "unknown")
 ASK_TIMEOUT = float(os.environ.get("AITEAMS_ASK_TIMEOUT_S", "600"))
 
@@ -120,7 +121,8 @@ def http(method, path, body=None, timeout=30.0):
     url = DAEMON + path
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method, headers={
-        "Content-Type": "application/json", "X-AITeams-Project": PROJECT, "X-AITeams-Turn": TURN})
+        "Content-Type": "application/json", "X-AITeams-Project": PROJECT, "X-AITeams-Turn": TURN,
+        "X-AITeams-Token": TURN_TOKEN})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode() or "null")

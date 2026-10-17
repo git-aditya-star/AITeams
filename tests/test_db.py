@@ -2,7 +2,7 @@
 import sqlite3
 import time
 
-from aiteams.db import ProjectDB
+from aiteams.db import MIGRATIONS, ProjectDB
 
 V2_DDL = """
 CREATE TABLE conversations(id TEXT PRIMARY KEY, kind TEXT, title TEXT, role TEXT NULL, created_at REAL);
@@ -32,7 +32,7 @@ def test_v2_db_migrates_to_v3(repo):
     conn.close()
     db = ProjectDB(str(repo))
     try:
-        assert db.get_kv("schema_version") == 3
+        assert db.get_kv("schema_version") is None and db.one("PRAGMA user_version")[0] == len(MIGRATIONS)
         assert db.conversation("standup")["kind"] == "channel"  # seeded on an existing db
         assert db.session_info("backend") == {"session_id": "s-new", "seq": 2, "fresh_starts": 1, "reason": "resume failed"}
         w = db.queued_wake("qa")

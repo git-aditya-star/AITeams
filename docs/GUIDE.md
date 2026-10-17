@@ -11,9 +11,16 @@ aiteams
 ```
 
 The first run starts the daemon in the background (`127.0.0.1:7700`), registers the folder as a
-project and opens the browser on that project's **Dashboard**. Running `aiteams` in another repo adds
+project and opens the browser on that project's **Dashboard** through a single-use sign-in link
+(`/auth?t=...`, valid 60 s) that sets the session cookie. Running `aiteams` in another repo adds
 a second project; the project picker is at the top of the sidebar. `aiteams status` and `aiteams stop`
-manage the daemon.
+manage the daemon. A tab without the cookie (a private window, another browser) shows a plain sign-in
+page: run `aiteams` again, or paste the URL from `aiteams token --link`.
+
+The daemon runs from a **snapshot** of the AITeams repo, not from the checkout (`README` → Install).
+The sidebar footer shows `v<version> · <sha>`; when the source repo has newer commits a line under
+the top bar says so, and `aiteams upgrade` installs them (`aiteams upgrade <older ref>` goes back).
+Upgrading stops the daemon: running turns end `interrupted` and are re-queued on the new daemon.
 
 What the first run creates inside the repo:
 
@@ -146,9 +153,14 @@ The landing page per project:
 `~/.aiteams/settings.json`, read on start and changeable live:
 
 ```bash
-curl -X PUT localhost:7700/api/settings -H 'content-type: application/json' \
+curl -X PUT 127.0.0.1:7700/api/settings -H "Authorization: Bearer $(cat ~/.aiteams/token)" \
+  -H 'content-type: application/json' \
   -d '{"default_model": "opus", "models": {"qa": "sonnet"}, "max_concurrent": 3, "rotate_pct": 0.6, "stale_hours": 4}'
 ```
+
+Every `/api` call needs that bearer header (the browser uses the cookie instead); `GET /api/health`
+is the only open route. `aiteams token` prints the token, `aiteams token --rotate` replaces it and
+signs every open tab out.
 
 Roles use your Claude plan. A typical turn on Opus costs about $0.15–0.5 of plan usage; the team strip
 shows each role's spend today. When the plan's usage window is exhausted the daemon pauses all
@@ -157,16 +169,27 @@ turns for one project without losing queued work.
 
 ## 13. Customising the team
 
-Each role's prompt is a Markdown file in `aiteams/roles/`; drop a file with the same name into
-`<repo>/.aiteams/roles/` to override it for one project (`team-rules.md` too). The repo's own
-`CLAUDE.md`, if any, is appended to every role's system prompt.
+Each role's prompt is a Markdown file in `aiteams/roles/` **of the installed snapshot**, so an edit in
+the checkout reaches the team only after `aiteams upgrade`. Drop a file with the same name into
+`<repo>/.aiteams/roles/` to override it for one project (`team-rules.md` too); project overrides win
+over the snapshot and apply at once. The repo's own `CLAUDE.md`, if any, is appended to every role's
+system prompt.
+
+Working on the UI: `cd ui && npm run dev` serves `localhost:5173` and proxies `/api`, `/ws` and `/auth`
+to the daemon. Sign the dev origin in by taking the `aiteams token --link` URL and swapping the host
+for `localhost:5173`. Commit the result of `npm run build` (`aiteams/static/`) with the source change.
 
 ## 14. When something looks wrong
 
 - A role did nothing after being mentioned: check its Live session for the turn and its `result`.
   `num_turns: 0` means the CLI flushed a stale notification; the daemon retries once.
 - "could not resume session": the daemon starts a fresh session automatically and tells you in the DM.
-- Daemon crashed or was killed: on restart running turns are marked failed and re-queued once.
+- Daemon crashed or was killed: on restart running turns are marked failed and re-queued once. If the
+  install itself is broken (a bad upgrade), `aiteams upgrade <last good ref> --src ~/AITeams` from any
+  folder reinstalls that ref; `~/.aiteams/runtime.json` records what is installed and from where.
+- "This project's database is from a newer AITeams": you rolled back past a schema migration. The
+  project is shown read-only and no role is woken until you `aiteams upgrade` forward again.
 - Roles are told never to touch `~/.claude`, `.aiteams/state.db` or the daemon; the hook denies edits
-  outside the project folder.
+  outside the project folder, any HTTP call to the daemon's port, reading `~/.aiteams/token` or the
+  runtime, and `aiteams upgrade|stop|serve|token` / `uv tool` (best-effort: same macOS user).
 - Reset a project completely: stop the daemon and delete `<repo>/.aiteams/`.

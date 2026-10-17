@@ -1,8 +1,9 @@
-"""Global state under ~/.aiteams: daemon.json, settings.json, projects.json."""
+"""Global state under ~/.aiteams: daemon.json, settings.json, projects.json, token, runtime.json."""
 from __future__ import annotations
 
 import json
 import os
+import secrets
 import uuid
 from pathlib import Path
 
@@ -93,6 +94,49 @@ def register_project(path: str, registered_at: float) -> tuple[dict, bool]:
     projects.append(proj)
     save_projects(projects)
     return proj, True
+
+
+def token_path() -> Path:
+    return home() / "token"
+
+
+def master_token() -> str:
+    """The Master's secret for /api and /ws. Created on first use (mode 0600). AITEAMS_TOKEN overrides (tests)."""
+    env = os.environ.get("AITEAMS_TOKEN")
+    if env:
+        return env
+    try:
+        tok = token_path().read_text().strip()
+        if tok:
+            return tok
+    except OSError:
+        pass
+    return write_token(secrets.token_urlsafe(32))
+
+
+def write_token(tok: str) -> str:
+    path = token_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    with open(tmp, "w", opener=lambda p, f: os.open(p, f, 0o600)) as f:
+        f.write(tok + "\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    return tok
+
+
+def runtime_dir() -> Path:
+    return home() / "runtime"
+
+
+def runtime_info() -> dict:
+    """~/.aiteams/runtime.json written by `aiteams upgrade`; {} for a dev (editable) install."""
+    data = _read_json(home() / "runtime.json", {})
+    return data if isinstance(data, dict) else {}
+
+
+def write_runtime_info(info: dict) -> None:
+    _write_json(home() / "runtime.json", info)
 
 
 def model_for(settings: dict, role: str) -> str:

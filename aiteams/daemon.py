@@ -6,14 +6,14 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config
 from .api.features import feat_api
 from .api.internal import internal
-from .api.public import api, wsr
+from .api.public import COOKIE, api, master_auth, open_api, signin_page, token_ok, wsr
 from .orchestrator.scheduler import Scheduler
 from .runtime import AppState
 
@@ -42,21 +42,24 @@ def create_app(port: int, write_daemon_json: bool = True) -> FastAPI:
 
     app = FastAPI(title="AITeams", lifespan=lifespan)
     app.state.app = state
-    app.include_router(api)
-    app.include_router(feat_api)
+    app.include_router(open_api)
+    app.include_router(api, dependencies=[Depends(master_auth)])
+    app.include_router(feat_api, dependencies=[Depends(master_auth)])
     app.include_router(internal)
     app.include_router(wsr)
 
     index = STATIC / "index.html"
-    if (STATIC / "assets").is_dir():
+    if (STATIC / "assets").is_dir():  # hashed static files, nothing secret: public
         app.mount("/assets", StaticFiles(directory=str(STATIC / "assets")), name="assets")
 
     @app.get("/")
     @app.get("/p/{pid}")
     @app.get("/p/{pid}/{rest:path}")
-    def spa(pid: str = "", rest: str = ""):
+    def spa(request: Request, pid: str = "", rest: str = ""):
+        if not token_ok(state, request.cookies.get(COOKIE)):
+            return signin_page()
         if index.exists():
             return FileResponse(str(index))
-        return JSONResponse({"error": "UI not built: run `cd ui && npm run build`"}, status_code=503)
+        return JSONResponse({"error": "UI not built: run `cd ui && npm run build`, then `aiteams upgrade`"}, status_code=503)
 
     return app

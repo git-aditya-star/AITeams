@@ -40,8 +40,14 @@ export function useProjectWs(
           /* ignore malformed frame */
         }
       }
-      ws.onclose = () => {
+      ws.onclose = (ev) => {
         if (closed) return
+        if (ev.code === 4401) {
+          // Token missing or rotated: stop reconnecting; the reload lands on the sign-in page.
+          closed = true
+          location.reload()
+          return
+        }
         timer = window.setTimeout(connect, backoff)
         backoff = Math.min(backoff * 2, 10000)
       }

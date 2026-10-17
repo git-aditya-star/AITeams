@@ -1,12 +1,15 @@
-"""Public HTTP API under /api and the per-project websocket."""
+"""Public HTTP API under /api (Master token), the open routes (/api/health, /auth) and the per-project websocket."""
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import os
+import secrets
 import time
 
-from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .. import config
 from ..config import ROLES
@@ -16,8 +19,38 @@ from ..orchestrator import router as routing
 from ..orchestrator import receipts
 from ..runtime import Project
 
-api = APIRouter(prefix="/api")
+api = APIRouter(prefix="/api")  # wired with the master_auth dependency in daemon.create_app
+open_api = APIRouter()  # no auth: health, sign-in link landing
 wsr = APIRouter()
+
+COOKIE = "aiteams_token"
+AUTH_CODE_TTL = 60.0
+
+SIGNIN_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>AITeams</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#1f2937;background:#fff}
+main{max-width:520px;margin:18vh auto 0;padding:0 24px}h1{font-size:18px;font-weight:600;margin:0 0 12px}
+p{margin:0 0 8px;color:#4b5563}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#f3f4f6;border-radius:4px;padding:1px 5px}
+.note{color:#b45309}</style></head><body><main><h1>AITeams</h1>%s
+<p>Run <code>aiteams</code> in your project folder to open a signed-in tab, or <code>aiteams token --link</code> for a sign-in link.</p>
+</main></body></html>"""
+
+
+def token_ok(st, tok: str | None) -> bool:
+    return bool(tok) and hmac.compare_digest(str(tok).encode(), st.token.encode())
+
+
+def master_auth(request: Request) -> None:
+    """Bearer header or cookie must match the Master token (~/.aiteams/token)."""
+    auth = request.headers.get("Authorization", "")
+    tok = auth[7:].strip() if auth.startswith("Bearer ") else request.cookies.get(COOKIE)
+    if not token_ok(_state(request), tok):
+        raise HTTPException(401, "master token required")
+
+
+def signin_page(note: str = "") -> HTMLResponse:
+    body = f'<p class="note">{note}</p>' if note else ""
+    return HTMLResponse(SIGNIN_HTML % body, status_code=200)
 
 
 def _state(request):
@@ -31,12 +64,53 @@ def _project(request, pid: str) -> Project:
     return proj
 
 
-# ---- daemon-level -------------------------------------------------------
-@api.get("/health")
+# ---- open routes (no token) ------------------------------------------------
+@open_api.get("/api/health")
 def health(request: Request):
     st = _state(request)
     return {"ok": True, "pid": os.getpid(), "port": st.port, "started_at": st.started_at,
-            "running_turns": len(st.scheduler.running) if st.scheduler else 0}
+            "running_turns": len(st.scheduler.running) if st.scheduler else 0, **st.runtime()}
+
+
+@open_api.get("/auth")
+def auth_landing(request: Request, t: str = "", next: str = "/"):
+    """Single-use sign-in link: sets the token cookie and redirects into the app."""
+    st = _state(request)
+    now = time.time()
+    for code, exp in list(st.auth_codes.items()):
+        if exp < now:
+            st.auth_codes.pop(code, None)
+    if not t or st.auth_codes.pop(t, None) is None:
+        return signin_page("link expired, run `aiteams` again")
+    target = next if next == "/" or next.startswith("/p/") else "/"
+    resp = RedirectResponse(target, status_code=303)
+    resp.set_cookie(COOKIE, st.token, httponly=True, samesite="strict", path="/")
+    return resp
+
+
+# ---- daemon-level -------------------------------------------------------
+@api.post("/auth/link")
+def auth_link(request: Request):
+    st = _state(request)
+    code = secrets.token_urlsafe(16)
+    st.auth_codes[code] = time.time() + AUTH_CODE_TTL
+    return {"code": code, "url": f"{st.daemon_url}/auth?t={code}"}
+
+
+@api.post("/token/reload")
+async def token_reload(request: Request):
+    """Re-read ~/.aiteams/token (after `aiteams token --rotate`); every open tab is closed with 4401."""
+    st = _state(request)
+    st.token = config.master_token()
+    st.auth_codes.clear()
+    for p in st.projects.values():
+        for ws in list(p.hub.clients):
+            try:
+                await ws.close(code=4401)
+            except Exception:
+                pass
+            p.hub.disconnect(ws)
+    return {"ok": True}
 
 
 @api.get("/projects")
@@ -243,8 +317,14 @@ async def pause(request: Request, pid: str, body: PauseBody):
 @wsr.websocket("/ws/p/{pid}")
 async def ws_project(ws: WebSocket, pid: str):
     st = ws.app.state.app
+    # Accept before closing: a close before accept is a 403 handshake, which the browser sees as 1006 ("daemon down").
+    if not token_ok(st, ws.cookies.get(COOKIE) or ws.query_params.get("token")):
+        await ws.accept()
+        await ws.close(code=4401)
+        return
     proj = st.projects.get(pid)
     if proj is None:
+        await ws.accept()
         await ws.close(code=4404)
         return
     await proj.hub.connect(ws)

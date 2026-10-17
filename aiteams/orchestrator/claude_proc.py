@@ -11,13 +11,14 @@ from pathlib import Path
 PKG = Path(__file__).resolve().parent.parent
 HOOK = str(PKG / "hooks" / "pretooluse.py")
 MCP_SERVER = str(PKG / "mcp_server.py")
-HOOK_TOOLS = "Bash|Edit|Write|MultiEdit|NotebookEdit"
+HOOK_TOOLS = "Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob"
 
 
 def child_env(daemon_url: str, project_id: str, project_path: str, role: str, turn_id: int,
-              ask_timeout_s: int = 600) -> dict:
+              ask_timeout_s: int = 600, turn_token: str = "") -> dict:
     env = dict(os.environ)
     env.pop("ANTHROPIC_API_KEY", None)
+    env.pop("AITEAMS_TOKEN", None)  # the Master token never reaches a role
     env.update({
         "ENABLE_CLAUDEAI_MCP_SERVERS": "false",
         "PYTHONDONTWRITEBYTECODE": "1",
@@ -27,6 +28,7 @@ def child_env(daemon_url: str, project_id: str, project_path: str, role: str, tu
         "AITEAMS_PROJECT": project_id,
         "AITEAMS_ROLE": role,
         "AITEAMS_TURN": str(turn_id),
+        "AITEAMS_TURN_TOKEN": turn_token,
         "AITEAMS_PROJECT_PATH": project_path,
         "AITEAMS_ASK_TIMEOUT_S": str(int(ask_timeout_s)),
     })
@@ -34,8 +36,8 @@ def child_env(daemon_url: str, project_id: str, project_path: str, role: str, tu
 
 
 def aiteams_env(env: dict) -> dict:
-    keys = ("AITEAMS_DAEMON_URL", "AITEAMS_PROJECT", "AITEAMS_ROLE", "AITEAMS_TURN", "AITEAMS_PROJECT_PATH",
-            "AITEAMS_ASK_TIMEOUT_S", "PYTHONDONTWRITEBYTECODE")
+    keys = ("AITEAMS_DAEMON_URL", "AITEAMS_PROJECT", "AITEAMS_ROLE", "AITEAMS_TURN", "AITEAMS_TURN_TOKEN",
+            "AITEAMS_PROJECT_PATH", "AITEAMS_ASK_TIMEOUT_S", "PYTHONDONTWRITEBYTECODE")
     return {k: env[k] for k in keys if k in env}
 
 

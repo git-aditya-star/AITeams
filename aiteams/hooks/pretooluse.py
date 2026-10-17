@@ -15,6 +15,10 @@ LOG_MAX = 200
 GIT_RE = re.compile(r"\bgit\b[^|;&\n]*\b(commit|push|reset\s+--hard|clean\s+-f\w*)\b")
 RM_RE = re.compile(r"\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*)\s+(\S+)")
 KILL_RE = re.compile(r"\b(kill|pkill)\b")
+# Command position only, so `grep "aiteams upgrade" README.md` still works.
+ADMIN_RE = re.compile(r"(^|[;&|(]\s*|\$\(\s*)(aiteams\s+(upgrade|stop|serve|token)|uv\s+tool)\b", re.M)
+DAEMON_URL_RE = re.compile(r"\$\{?AITEAMS_DAEMON_URL")
+RUNTIME_RE = re.compile(r"(~|\$\{?HOME\}?|/Users/[^/\s]+|/home/[^/\s]+)/\.aiteams/(token|runtime)\b")
 
 
 def log_input(raw):
@@ -38,12 +42,20 @@ def deny(reason):
     sys.exit(0)
 
 
-def daemon_pid():
+def daemon_info():
     try:
         with open(os.path.join(HOME_AITEAMS, "daemon.json")) as f:
-            return int(json.load(f).get("pid") or 0)
-    except (OSError, ValueError, TypeError):
-        return 0
+            d = json.load(f)
+        return int(d.get("pid") or 0), int(d.get("port") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 0, 0
+
+
+def daemon_port(port):
+    if port:
+        return port
+    m = re.search(r":(\d+)", os.environ.get("AITEAMS_DAEMON_URL") or "")
+    return int(m.group(1)) if m else 7700
 
 
 def inside_project(path):
@@ -65,9 +77,16 @@ def check_bash(cmd):
         deny("touching ~/.claude is not allowed.")
     if "state.db" in cmd:
         deny("the AITeams state database is off limits.")
-    pid = daemon_pid()
+    pid, port = daemon_info()
     if pid and KILL_RE.search(cmd) and (re.search(r"\b%d\b" % pid, cmd) or "aiteams" in cmd):
         deny("killing the AITeams daemon is not allowed.")
+    if ADMIN_RE.search(cmd):
+        deny("the Master runs aiteams upgrade/stop/serve/token and changes the install; roles do not.")
+    port = daemon_port(port)
+    if re.search(r"(127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1\]):%d\b" % port, cmd) or DAEMON_URL_RE.search(cmd):
+        deny("roles talk to AITeams through its MCP tools, not HTTP.")
+    if RUNTIME_RE.search(cmd):
+        deny("the AITeams runtime and token are off limits.")
 
 
 def check_write(data, inp):
@@ -95,7 +114,8 @@ def check_lock(rel):
         return
     req = urllib.request.Request(url.rstrip("/") + "/internal/locks/acquire", data=json.dumps({"path": rel}).encode(),
                                  method="POST", headers={"Content-Type": "application/json",
-                                                         "X-AITeams-Project": project, "X-AITeams-Turn": turn})
+                                                         "X-AITeams-Project": project, "X-AITeams-Turn": turn,
+                                                         "X-AITeams-Token": os.environ.get("AITEAMS_TURN_TOKEN", "")})
     try:
         with urllib.request.urlopen(req, timeout=5) as r:
             res = json.loads(r.read().decode() or "{}")
@@ -106,6 +126,18 @@ def check_lock(rel):
         since = time.strftime("%H:%M", time.localtime(float(res.get("since") or 0)))
         deny("%s is locked by %s since %s; ask them in chat, or ask @lead/@manager to unlock_file(path, force=true)."
              % (rel, res.get("holder"), since))
+
+
+def check_read(inp):
+    """Read/Grep/Glob: the token and runtime files are off limits (Bash has the same rule)."""
+    for key in ("file_path", "path", "pattern"):
+        v = inp.get(key)
+        if not isinstance(v, str) or not v:
+            continue
+        rp = os.path.realpath(os.path.expanduser(v))
+        base = os.path.realpath(HOME_AITEAMS)
+        if rp == os.path.join(base, "token") or rp.startswith(os.path.join(base, "runtime")) or RUNTIME_RE.search(v):
+            deny("the AITeams runtime and token are off limits.")
 
 
 def main():
@@ -123,6 +155,8 @@ def main():
         check_bash(str(inp.get("command") or ""))
     elif tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
         check_write(data, inp)
+    elif tool in ("Read", "Grep", "Glob"):
+        check_read(inp)
 
 
 if __name__ == "__main__":

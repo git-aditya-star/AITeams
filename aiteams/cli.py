@@ -1,11 +1,12 @@
-"""aiteams | serve | stop | status"""
+"""aiteams | serve | stop | status | upgrade | token"""
 from __future__ import annotations
 
 import argparse
 import atexit
 import json
-import shutil
 import os
+import secrets
+import shutil
 import signal
 import subprocess
 import sys
@@ -14,17 +15,22 @@ import urllib.error
 import urllib.request
 import webbrowser
 
-from . import config
+# `aiteams upgrade` replaces the venv this process imported from: import everything it needs up front.
+from . import config, upgrade
 
 
-def _get(url: str, timeout: float = 2.0):
-    with urllib.request.urlopen(url, timeout=timeout) as r:
+def _headers(token: str | None = None) -> dict:
+    return {"Content-Type": "application/json", "Authorization": "Bearer " + (token or config.master_token())}
+
+
+def _get(url: str, timeout: float = 2.0, auth: bool = True):
+    req = urllib.request.Request(url, headers=_headers() if auth else {})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
 
 
-def _post(url: str, body: dict, timeout: float = 10.0):
-    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"},
-                                 method="POST")
+def _post(url: str, body: dict, timeout: float = 10.0, token: str | None = None):
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=_headers(token), method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
 
@@ -50,19 +56,20 @@ def is_up(url: str | None) -> bool:
     if not url:
         return False
     try:
-        return bool(_get(url + "/api/health").get("ok"))
+        return bool(_get(url + "/api/health", auth=False).get("ok"))
     except (OSError, ValueError):
         return False
 
 
-def ensure_daemon() -> str:
-    url = daemon_url()
-    if is_up(url):
-        return url
-    port = int(config.load_settings().get("port", 7700))
+def _health(url: str) -> dict:
+    return _get(url + "/api/health", auth=False)
+
+
+def start_daemon(exe: list[str], port: int) -> str:
+    """Spawn `<exe> serve --daemon --port <port>` detached and wait for health."""
     config.home().mkdir(parents=True, exist_ok=True)
     log = open(config.home() / "daemon.log", "ab")
-    subprocess.Popen([sys.executable, "-m", "aiteams.cli", "serve", "--daemon", "--port", str(port)],
+    subprocess.Popen([*exe, "serve", "--daemon", "--port", str(port)],
                      stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True,
                      env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
     url = f"http://127.0.0.1:{port}"
@@ -74,6 +81,51 @@ def ensure_daemon() -> str:
     sys.exit(1)
 
 
+def ensure_daemon() -> str:
+    url = daemon_url()
+    if is_up(url):
+        return url
+    port = int(config.load_settings().get("port", 7700))
+    exe = [sys.executable, "-m", "aiteams.cli"]
+    if config.runtime_info().get("sha"):
+        # A snapshot is installed: start it, not the (possibly activated dev venv) interpreter running this CLI.
+        try:
+            exe = [str(upgrade.tool_bin() / "aiteams")]
+        except upgrade.UpgradeError:
+            pass
+    return start_daemon(exe, port)
+
+
+def stop_daemon() -> bool:
+    """POST /api/shutdown, wait for health and pid to go, SIGTERM fallback. True when it was running."""
+    url = daemon_url()
+    d = config.load_daemon()
+    if is_up(url):
+        try:
+            _post(url + "/api/shutdown", {})
+        except (OSError, ValueError):
+            pass
+        # The daemon stops answering at once but SIGINTs running turns first; wait for the pid to exit.
+        pid = int(d["pid"]) if d and d.get("pid") else 0
+        for _ in range(450):
+            time.sleep(0.1)
+            if not is_up(url) and not _alive(pid):
+                config.clear_daemon()
+                return True
+        print("daemon did not stop gracefully", file=sys.stderr)
+    if d and d.get("pid"):
+        try:
+            os.kill(int(d["pid"]), signal.SIGTERM)
+            print("sent SIGTERM to", d["pid"])
+        except ProcessLookupError:
+            config.clear_daemon()
+            return False
+        config.clear_daemon()
+        return True
+    return False
+
+
+# ---- commands ----------------------------------------------------------------------------------
 def cmd_default(_args) -> None:
     url = ensure_daemon()
     cwd = os.getcwd()
@@ -82,7 +134,8 @@ def cmd_default(_args) -> None:
     if not res.get("is_git"):
         print("warning: not a git repo:", cwd)
     print(("registered" if res.get("created") else "project") + f" {res['name']} -> {page}")
-    webbrowser.open(page)
+    link = _post(url + "/api/auth/link", {})
+    webbrowser.open(link["url"] + f"&next=/p/{res['id']}")
 
 
 def cmd_serve(args) -> None:
@@ -103,31 +156,7 @@ def cmd_serve(args) -> None:
 
 
 def cmd_stop(_args) -> None:
-    url = daemon_url()
-    d = config.load_daemon()
-    if is_up(url):
-        try:
-            _post(url + "/api/shutdown", {})
-        except (OSError, ValueError):
-            pass
-        # The daemon stops answering at once but SIGINTs running turns first; wait for the pid to exit.
-        pid = int(d["pid"]) if d and d.get("pid") else 0
-        for _ in range(450):
-            time.sleep(0.1)
-            if not is_up(url) and not _alive(pid):
-                print("daemon stopped")
-                config.clear_daemon()
-                return
-        print("daemon did not stop gracefully", file=sys.stderr)
-    if d and d.get("pid"):
-        try:
-            os.kill(int(d["pid"]), signal.SIGTERM)
-            print("sent SIGTERM to", d["pid"])
-        except ProcessLookupError:
-            print("daemon not running")
-        config.clear_daemon()
-    else:
-        print("daemon not running")
+    print("daemon stopped" if stop_daemon() else "daemon not running")
 
 
 def cmd_status(_args) -> None:
@@ -135,17 +164,85 @@ def cmd_status(_args) -> None:
     if not is_up(url):
         print("daemon: down")
         return
-    h = _get(url + "/api/health")
+    h = _health(url)
     print(f"daemon: up  pid={h['pid']} port={h['port']} running_turns={h.get('running_turns', 0)}")
+    if h.get("sha"):
+        head = h.get("source_head")
+        print(f"runtime: v{h.get('version')} {h['sha'][:7]} ({h.get('ref')}) from {h.get('source')}, "
+              f"HEAD {head[:7] if head else '?'}" + ("  upgrade available" if head and head != h["sha"] else ""))
+    else:
+        print(f"runtime: v{h.get('version')} (editable dev install, no snapshot)")
     for p in _get(url + "/api/projects"):
         team = _get(f"{url}/api/p/{p['id']}/team")
         running = [r["role"] for r in team["roles"] if r["state"] == "running"]
         queued = [r["role"] for r in team["roles"] if r["state"] == "queued"]
-        print(f"  {p['id']}  {p['name']}  {p['path']}  running={running} queued={queued}")
+        flag = "  schema_ahead" if p.get("schema_ahead") else ""
+        print(f"  {p['id']}  {p['name']}  {p['path']}  running={running} queued={queued}{flag}")
+
+
+def cmd_token(args) -> None:
+    if args.rotate:
+        old = config.master_token()
+        new = config.write_token(secrets.token_urlsafe(32))
+        url = daemon_url()
+        if is_up(url):
+            try:
+                _post(url + "/api/token/reload", {}, token=old)
+            except (OSError, ValueError) as e:
+                print("warning: daemon did not reload the token:", e, file=sys.stderr)
+        print(new)
+        return
+    if args.link:
+        url = ensure_daemon()
+        print(_post(url + "/api/auth/link", {})["url"] + "&next=/")
+        return
+    print(config.master_token())
+
+
+def _source_repo(arg: str | None) -> str:
+    if arg:
+        src = os.path.realpath(os.path.expanduser(arg))
+    elif config.runtime_info().get("source"):
+        src = config.runtime_info()["source"]
+    else:
+        src = os.getcwd()
+    if not upgrade.is_source_repo(src):
+        print(f"{src} is not an AITeams checkout; run `aiteams upgrade` inside one or pass --src PATH", file=sys.stderr)
+        sys.exit(2)
+    return src
+
+
+def cmd_upgrade(args) -> None:
+    src = _source_repo(args.src)
+    ref = args.ref or "HEAD"
+    try:
+        sha = upgrade.resolve_ref(src, ref)
+        print(f"resolve   {ref} -> {sha[:7]} in {src}")
+        if ref == "HEAD" and upgrade.dirty(src):
+            print("warning: working tree has uncommitted changes; the snapshot is HEAD, not the tree")
+        if upgrade.ui_stale(src, sha):
+            print(f"ui/src is newer than aiteams/static at {sha[:7]}; run `cd ui && npm run build` and commit before upgrading")
+            if not args.yes and input("Continue? [y/N] ").strip().lower() not in ("y", "yes"):
+                sys.exit(1)
+        snap = upgrade.snapshot(src, sha, config.runtime_dir())
+        version = upgrade.snapshot_version(snap)
+        print(f"snapshot  {snap}")
+        print("stop      " + ("daemon stopped" if stop_daemon() else "daemon was not running"))
+        print(f"install   uv tool install --reinstall --force {snap}")
+        upgrade.install(snap)
+        config.write_runtime_info(upgrade.runtime_record(sha, ref, src, version))
+        print(f"record    {config.home() / 'runtime.json'}")
+        exe = upgrade.tool_bin() / "aiteams"
+    except upgrade.UpgradeError as e:
+        print("upgrade aborted:", e, file=sys.stderr)
+        sys.exit(1)
+    port = int(config.load_settings().get("port", 7700))
+    url = start_daemon([str(exe)], port)
+    print(f"upgraded to {sha[:7]} ({version}), daemon pid {_health(url)['pid']}")
 
 
 def _clean_pycache() -> None:
-    # __init__ is compiled before it can set dont_write_bytecode; remove what slipped through.
+    # The tool shim runs without -B; drop the __pycache__ that slips in so the venv stays clean.
     shutil.rmtree(os.path.join(os.path.dirname(os.path.abspath(__file__)), "__pycache__"), ignore_errors=True)
 
 
@@ -158,8 +255,16 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--daemon", action="store_true")
     sub.add_parser("stop")
     sub.add_parser("status")
+    u = sub.add_parser("upgrade", help="snapshot the source repo at REF (default HEAD) and run the daemon from it")
+    u.add_argument("ref", nargs="?")
+    u.add_argument("--src", help="AITeams checkout to snapshot (default: the one remembered in runtime.json, else cwd)")
+    u.add_argument("--yes", action="store_true", help="do not ask when ui/src is newer than aiteams/static")
+    t = sub.add_parser("token", help="print the Master token")
+    t.add_argument("--link", action="store_true", help="print a fresh single-use sign-in URL")
+    t.add_argument("--rotate", action="store_true", help="write a new token and tell the daemon; open tabs sign out")
     args = ap.parse_args(argv)
-    {"serve": cmd_serve, "stop": cmd_stop, "status": cmd_status, None: cmd_default}[args.cmd](args)
+    {"serve": cmd_serve, "stop": cmd_stop, "status": cmd_status, "upgrade": cmd_upgrade, "token": cmd_token,
+     None: cmd_default}[args.cmd](args)
 
 
 if __name__ == "__main__":

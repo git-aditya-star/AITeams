@@ -7,13 +7,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from aiteams.daemon import create_app
+from tests.conftest import AUTH, running_turn
 from aiteams.orchestrator.prompt import build_wake_prompt, live_message_ids
 
 
 @pytest.fixture
 def client(home):
     app = create_app(7799, write_daemon_json=False)
-    with TestClient(app) as c:
+    with TestClient(app, headers=AUTH) as c:
         yield c
 
 
@@ -24,9 +25,7 @@ def pid(client, repo):
 
 def turn(client, pid, role, conv="general"):
     proj = client.app.state.app.projects[pid]
-    t = proj.db.create_turn(role, "sess", "master", conv)
-    proj.db.update_turn(t["id"], state="running")
-    return t, {"X-AITeams-Project": pid, "X-AITeams-Turn": str(t["id"])}
+    return running_turn(proj.db, role, conv, pid=pid)
 
 
 def test_keep_docs(client, pid, repo):

@@ -57,6 +57,10 @@
 ## Hard limits (enforced by hooks, do not try to work around them)
 - NEVER `git commit`, `git push`, `git reset --hard` or `git clean -f`. Use `request_commit`; the Master commits.
 - Edit only inside this project folder. Never touch `~/.claude`, `.aiteams/state.db` or the AITeams daemon.
+- The daemon's `/api` needs the Master token, which roles do not have; talk to AITeams only through its MCP tools.
+- The AITeams install is a snapshot: when this project IS the AITeams repo, your edits take effect after the Master
+  runs `aiteams upgrade`; do not expect them live. Schema changes are appended to `MIGRATIONS` in `aiteams/db.py`,
+  never edits of earlier entries and never edits of `SCHEMA` (migration 1 runs it on fresh databases).
 - Do not start servers or long-running processes that outlive your turn unless asked.
 
 ## Ending a turn

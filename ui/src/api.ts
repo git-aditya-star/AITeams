@@ -40,6 +40,20 @@ export interface RateLimitInfo {
 export interface Project extends ProjectSummary {
   paused: boolean
   rate_limited: RateLimitInfo | null
+  schema_ahead?: boolean
+}
+
+export interface Health {
+  ok: boolean
+  pid: number
+  port: number
+  running_turns: number
+  version: string | null
+  sha: string | null
+  ref: string | null
+  installed_at: number | null
+  source: string | null
+  source_head: string | null
 }
 
 export interface Conversation {
@@ -287,6 +301,24 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
   })
+  if (res.status === 401) {
+    // Cookie missing or rotated: the SPA route now serves the sign-in page. Reload once per tab, so the Vite
+    // dev origin (which serves index.html regardless) does not loop.
+    let again = false
+    try {
+      again = sessionStorage.getItem('aiteams401') === '1'
+      sessionStorage.setItem('aiteams401', '1')
+    } catch {
+      /* storage unavailable */
+    }
+    if (!again) location.reload()
+    throw new ApiError(`${init?.method || 'GET'} ${url} -> 401 (sign in: aiteams token --link)`, 401, null)
+  }
+  try {
+    sessionStorage.removeItem('aiteams401')
+  } catch {
+    /* storage unavailable */
+  }
   if (!res.ok) {
     const body = await res.text().catch(() => '')
     let detail: any = null
@@ -307,6 +339,7 @@ const patch = <T,>(url: string, body: unknown) =>
 const del = <T,>(url: string) => req<T>(url, { method: 'DELETE' })
 
 export const api = {
+  health: () => req<Health>('/api/health'),
   projects: () => req<ProjectSummary[]>('/api/projects'),
   project: (pid: string) => req<Project>(`/api/p/${pid}`),
   conversations: (pid: string) => req<Conversation[]>(`/api/p/${pid}/conversations`),

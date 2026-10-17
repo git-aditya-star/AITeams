@@ -5,15 +5,29 @@ export default function Banners({
   rateLimit,
   paused,
   pending,
+  upgradeAvailable,
+  schemaAhead,
   onAnswer,
 }: {
   rateLimit: RateLimitInfo | null
   paused: boolean
   pending: Question[]
+  upgradeAvailable: boolean
+  schemaAhead: boolean
   onAnswer: (q: Question) => void
 }) {
   return (
     <div className="shrink-0">
+      {upgradeAvailable && (
+        <div className="bg-gray-50 border-b border-gray-200 text-gray-700 px-4 py-1.5 text-[13px]">
+          New commits since the running version, run <code className="font-mono bg-gray-100 rounded px-1">aiteams upgrade</code>
+        </div>
+      )}
+      {schemaAhead && (
+        <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-1.5 text-[13px]">
+          This project's database is from a newer AITeams; upgrade again
+        </div>
+      )}
       {rateLimit && (
         <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-1.5 text-[13px]">
           Rate limited ({rateLimit.status}{rateLimit.rateLimitType ? `, ${rateLimit.rateLimitType}` : ''})

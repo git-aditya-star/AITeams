@@ -50,7 +50,7 @@ class Mock(BaseHTTPRequestHandler):
 
 def run_rpc(url, requests):
     env = {**os.environ, "AITEAMS_DAEMON_URL": url, "AITEAMS_PROJECT": "p1", "AITEAMS_TURN": "7",
-           "AITEAMS_ROLE": "backend", "PYTHONDONTWRITEBYTECODE": "1"}
+           "AITEAMS_TURN_TOKEN": "turn-secret", "AITEAMS_ROLE": "backend", "PYTHONDONTWRITEBYTECODE": "1"}
     inp = "".join(json.dumps(r) + "\n" for r in requests)
     out = subprocess.run([sys.executable, "-B", SERVER], input=inp, capture_output=True, text=True, env=env, timeout=30)
     return [json.loads(l) for l in out.stdout.splitlines() if l.strip()]
@@ -103,6 +103,8 @@ def test_post_message_and_reads_hit_daemon_with_headers():
     assert res[1]["result"]["content"][0]["text"] == "posted #42"
     post = [c for c in Mock.calls if c[0] == "POST"][0]
     assert post[2]["x-aiteams-project"] == "p1" and post[2]["x-aiteams-turn"] == "7"
+    assert post[2]["x-aiteams-token"] == "turn-secret"
+    assert all(c[2]["x-aiteams-token"] == "turn-secret" for c in Mock.calls)
     assert post[3] == {"conversation": "general", "text": "hello @lead", "type": "Finding", "mentions": ["lead"]}
     assert json.loads(res[2]["result"]["content"][0]["text"])[0]["text"] == "hi"
     assert json.loads(res[3]["result"]["content"][0]["text"])[0]["id"] == "general"

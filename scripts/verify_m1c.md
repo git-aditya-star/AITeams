@@ -4,6 +4,7 @@ Prelude: `cd ui && npm run build && cd ..`, `uv sync`, `aiteams stop`, make a th
 (`mkdir /tmp/m1c-demo && cd /tmp/m1c-demo && git init && echo hi > README.md && git add -A && git commit -qm init`),
 run `aiteams` there (registers + opens the UI). `P=<project id>`, `B=http://127.0.0.1:7700`.
 Quote URLs with `?` (zsh globs them). Pipe curl into `jq`.
+Since M2a, install via `aiteams upgrade` (see README) and give every curl `-H "Authorization: Bearer $(cat ~/.aiteams/token)"`.
 
 ## 1. Rotation at the threshold
 - `curl -s -X PUT $B/api/settings -H 'content-type: application/json' -d '{"rotate_pct": 0.02}'`

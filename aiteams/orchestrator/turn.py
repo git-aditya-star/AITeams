@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 import time
 import uuid
 
@@ -97,7 +98,8 @@ class TurnRunner:
                 seq = db.session_info(role)["seq"]
                 await self._system_message(f"Fresh session #{seq} ({reason})")
                 db.add_activity("fresh_session", f"{role} started session #{seq} ({reason})", role)
-        self.turn = db.create_turn(role, session_id, self.wake["origin"], self.wake["conversation_id"], kind)
+        turn_token = secrets.token_urlsafe(24)  # proves "turn N of role R" to /internal; only this child sees it
+        self.turn = db.create_turn(role, session_id, self.wake["origin"], self.wake["conversation_id"], kind, turn_token)
         tid = self.turn["id"]
         self.turn = db.update_turn(tid, state="running", started_at=time.time(), wake_id=self.wake["id"])
         await hub.broadcast("turn_state", self.turn)
@@ -113,7 +115,7 @@ class TurnRunner:
         result, rc = None, None
         for attempt in (1, 2):
             env = child_env(self.state.daemon_url, self.project.id, self.project.path, role, tid,
-                            int(self.state.settings.get("ask_timeout_s", 600)))
+                            int(self.state.settings.get("ask_timeout_s", 600)), turn_token)
             cmd = build_cmd(settings, role, env, sys_file, session_id, resume, self.model)
             self.proc = ClaudeProc(cmd, self.project.path, env)
             try:

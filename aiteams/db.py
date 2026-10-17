@@ -62,7 +62,6 @@ CREATE TABLE IF NOT EXISTS activity(id INTEGER PRIMARY KEY, ts REAL, kind TEXT, 
 """
 
 PHASES = ("intake", "spec", "design", "build", "qa", "done")
-SCHEMA_VERSION = 3
 WAKE_KINDS = ("normal", "handoff", "standup", "standup_compile")
 
 
@@ -77,9 +76,32 @@ class ProjectDB:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=5000")
-        self.conn.executescript(SCHEMA)
-        self.migrate()
-        self._seed()
+        self.schema_ahead = False
+        self.applied: list[int] = []
+        self._apply_migrations()
+        if not self.schema_ahead:
+            self._seed()
+
+    def _apply_migrations(self) -> None:
+        """Apply MIGRATIONS[user_version:] in order, each in its own transaction; never downgrade."""
+        with self.lock:
+            version = int(self.conn.execute("PRAGMA user_version").fetchone()[0])
+            if version > len(MIGRATIONS):
+                self.schema_ahead = True
+                return
+            for n, m in enumerate(MIGRATIONS[version:], start=version + 1):
+                self.conn.execute("BEGIN")
+                try:
+                    if callable(m):
+                        m(self.conn)
+                    else:
+                        self.conn.execute(m)
+                    self.conn.execute(f"PRAGMA user_version={n}")
+                    self.conn.execute("COMMIT")
+                except Exception:
+                    self.conn.execute("ROLLBACK")
+                    raise
+                self.applied.append(n)
 
     def close(self) -> None:
         with self.lock:
@@ -325,9 +347,10 @@ class ProjectDB:
         return [dict(r) for r in rows]
 
     def create_turn(self, role: str, session_id: str, origin: str, conversation_id: str,
-                    kind: str = "normal") -> dict:
-        tid = self.x("INSERT INTO turns(role, session_id, state, origin, conversation_id, created_at, kind)"
-                     " VALUES(?,?,?,?,?,?,?)", role, session_id, "queued", origin, conversation_id, time.time(), kind)
+                    kind: str = "normal", token: str | None = None) -> dict:
+        tid = self.x("INSERT INTO turns(role, session_id, state, origin, conversation_id, created_at, kind, token)"
+                     " VALUES(?,?,?,?,?,?,?,?)", role, session_id, "queued", origin, conversation_id, time.time(), kind,
+                     token)
         return self.turn(tid)
 
     def turns_since(self, role: str, since: float, kind: str = "normal", ended: bool = True) -> list[dict]:
@@ -430,56 +453,6 @@ class ProjectDB:
     # ---- rate limits -----------------------------------------------------
     def add_rate_limit(self, info: dict) -> None:
         self.x("INSERT INTO rate_limits(ts, json) VALUES(?,?)", time.time(), json.dumps(info))
-
-    # ---- migrations ------------------------------------------------------
-    def migrate(self) -> None:
-        """v1 -> v2: conversation kind CHECK dropped (thread -> feature), messages.ref, features rows.
-        v2 -> v3: wake/turn kinds, turn prompt, session seq, conversation reset marker (M1c tables come from SCHEMA)."""
-        version = self.get_kv("schema_version", 1)
-        if version >= SCHEMA_VERSION:
-            return
-        if version < 2:
-            self._migrate_v2()
-        if version < 3:
-            self._migrate_v3()
-        self.set_kv("schema_version", SCHEMA_VERSION)
-
-    def _migrate_v3(self) -> None:
-        adds = {"wake_queue": [("kind", "TEXT NOT NULL DEFAULT 'normal'"), ("ref", "INTEGER")],
-                "turns": [("kind", "TEXT NOT NULL DEFAULT 'normal'"), ("prompt", "TEXT")],
-                "sessions": [("seq", "INTEGER")],
-                "conversations": [("reset_after", "INTEGER NOT NULL DEFAULT 0")]}
-        with self.lock:
-            self.conn.execute("BEGIN")
-            for table, cols in adds.items():
-                have = [r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")]
-                for name, ddl in cols:
-                    if name not in have:
-                        self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
-            for r in self.conn.execute("SELECT DISTINCT role FROM sessions").fetchall():
-                rows = self.conn.execute("SELECT rowid FROM sessions WHERE role=? ORDER BY created_at, rowid", (r["role"],)).fetchall()
-                for i, row in enumerate(rows, 1):
-                    self.conn.execute("UPDATE sessions SET seq=? WHERE rowid=?", (i, row["rowid"]))
-            self.conn.execute("COMMIT")
-
-    def _migrate_v2(self) -> None:
-        with self.lock:
-            cols = [r["name"] for r in self.conn.execute("PRAGMA table_info(messages)")]
-            if "ref" not in cols:
-                self.conn.execute("ALTER TABLE messages ADD COLUMN ref TEXT NULL")
-            sql = self.conn.execute("SELECT sql FROM sqlite_master WHERE name='conversations'").fetchone()["sql"]
-            if "CHECK" in sql:
-                self.conn.executescript("""
-                    BEGIN;
-                    CREATE TABLE conversations_new(id TEXT PRIMARY KEY, kind TEXT, title TEXT, role TEXT NULL, created_at REAL);
-                    INSERT INTO conversations_new SELECT id, kind, title, role, created_at FROM conversations;
-                    DROP TABLE conversations; ALTER TABLE conversations_new RENAME TO conversations;
-                    COMMIT;""")
-            for r in self.conn.execute("SELECT * FROM conversations WHERE kind='thread'").fetchall():
-                self.conn.execute("UPDATE conversations SET kind='feature' WHERE id=?", (r["id"],))
-                if not self.conn.execute("SELECT 1 FROM features WHERE conversation_id=?", (r["id"],)).fetchone():
-                    self.conn.execute("INSERT INTO features(title, phase, owner, conversation_id, archived, created_at, updated_at)"
-                                      " VALUES(?,?,?,?,?,?,?)", (r["title"], "intake", None, r["id"], 0, r["created_at"], r["created_at"]))
 
     # ---- features --------------------------------------------------------
     def _feat_dict(self, r: sqlite3.Row) -> dict:
@@ -674,3 +647,49 @@ def ensure_git_exclude(project_path: str) -> bool:
     except OSError:
         pass
     return True
+
+
+# ---- migrations ----------------------------------------------------------------
+# Append-only. Entry n runs when PRAGMA user_version < n, inside its own transaction; never edit earlier entries.
+def _migration_1(conn: sqlite3.Connection) -> None:
+    """Today's SCHEMA plus the whole M1b/M1c upgrade path (all guarded), so v1/v2/v3 DBs and fresh ones converge."""
+    for stmt in SCHEMA.split(";"):
+        if stmt.strip():
+            conn.execute(stmt)
+    # v2: messages.ref, conversation kind CHECK dropped, thread -> feature rows
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(messages)")]
+    if "ref" not in cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN ref TEXT NULL")
+    sql = conn.execute("SELECT sql FROM sqlite_master WHERE name='conversations'").fetchone()["sql"]
+    if "CHECK" in sql:
+        conn.execute("CREATE TABLE conversations_new(id TEXT PRIMARY KEY, kind TEXT, title TEXT, role TEXT NULL,"
+                     " created_at REAL)")
+        conn.execute("INSERT INTO conversations_new SELECT id, kind, title, role, created_at FROM conversations")
+        conn.execute("DROP TABLE conversations")
+        conn.execute("ALTER TABLE conversations_new RENAME TO conversations")
+    for r in conn.execute("SELECT * FROM conversations WHERE kind='thread'").fetchall():
+        conn.execute("UPDATE conversations SET kind='feature' WHERE id=?", (r["id"],))
+        if not conn.execute("SELECT 1 FROM features WHERE conversation_id=?", (r["id"],)).fetchone():
+            conn.execute("INSERT INTO features(title, phase, owner, conversation_id, archived, created_at, updated_at)"
+                         " VALUES(?,?,?,?,?,?,?)", (r["title"], "intake", None, r["id"], 0, r["created_at"], r["created_at"]))
+    # v3: wake/turn kinds, turn prompt, session seq, conversation reset marker
+    adds = {"wake_queue": [("kind", "TEXT NOT NULL DEFAULT 'normal'"), ("ref", "INTEGER")],
+            "turns": [("kind", "TEXT NOT NULL DEFAULT 'normal'"), ("prompt", "TEXT")],
+            "sessions": [("seq", "INTEGER")],
+            "conversations": [("reset_after", "INTEGER NOT NULL DEFAULT 0")]}
+    for table, cols in adds.items():
+        have = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})")]
+        for name, ddl in cols:
+            if name not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+    for r in conn.execute("SELECT DISTINCT role FROM sessions").fetchall():
+        rows = conn.execute("SELECT rowid FROM sessions WHERE role=? ORDER BY created_at, rowid", (r["role"],)).fetchall()
+        for i, row in enumerate(rows, 1):
+            conn.execute("UPDATE sessions SET seq=? WHERE rowid=?", (i, row["rowid"]))
+    conn.execute("DELETE FROM kv WHERE key='schema_version'")  # retired: PRAGMA user_version is the version now
+
+
+MIGRATIONS: list = [
+    _migration_1,
+    "ALTER TABLE turns ADD COLUMN token TEXT",
+]
