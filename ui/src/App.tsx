@@ -14,6 +14,7 @@ import FeatureHeader from './components/FeatureHeader'
 import FeatureDocs from './components/FeatureDocs'
 import InboxView from './components/InboxView'
 import DashboardView from './components/DashboardView'
+import DashboardActions from './components/dashboard/DashboardActions'
 import HistoryView from './components/HistoryView'
 import RoleActions from './components/RoleActions'
 import StandupButton from './components/StandupButton'
@@ -166,12 +167,13 @@ export default function App() {
               )}
               {dmRole && <RoleActions role={dmRole} />}
               {current === 'standup' && <StandupButton />}
+              {current === 'dashboard' && <DashboardActions onSelect={(id, m) => select(id, undefined, m)} onNewTask={newTask} />}
               {error && <span className="ml-auto text-caption text-red-600 truncate">{error}</span>}
             </div>
           )}
 
           {current === 'dashboard' ? (
-            <DashboardView onSelect={(id, m) => select(id, undefined, m)} onNewTask={newTask} />
+            <DashboardView onSelect={(id, m) => select(id, undefined, m)} />
           ) : current === 'inbox' ? (
             <InboxView onOpen={(id) => select(id)} />
           ) : current === 'history' ? (

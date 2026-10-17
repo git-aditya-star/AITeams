@@ -20,20 +20,73 @@ const hoverTip = async (page: Page, target: Locator) => {
   await target.hover()
 }
 
-test('Needs you: a tile shows its label on hover, zero tiles are greyed, a click opens the Inbox', async ({ page, qa }) => {
+const KPIS: [string, string][] = [
+  ['questions', 'Questions'],
+  ['approvals', 'Approvals'],
+  ['commits', 'Commits'],
+  ['messages', 'Messages'],
+]
+const TITLES: [string, string][] = [
+  ['activity', 'Activity · last 24h'],
+  ['features', 'Features by phase'],
+  ['shipped', 'Shipped · last 14 days'],
+  ['team', 'Team'],
+]
+
+test('KPI cards: number and visible label, zero ones greyed but labelled, a click opens the Inbox', async ({ page, qa }) => {
   const dash = await qa.api<any>('/dashboard')
   await qa.open('/p/demo')
   await page.screenshot({ path: `${SHOTS}/dashboard.png`, animations: 'disabled' })
-  const tiles = page.getByRole('region', { name: 'Needs you' })
-  for (const k of ['questions', 'approvals', 'commits', 'messages']) await expect(tiles.locator(`[data-tile="${k}"]`)).toHaveText(String(dash.needs_you[k]))
+  for (const [k, label] of KPIS) {
+    const tile = page.locator(`[data-tile="${k}"]`)
+    await expect(tile.locator('[data-tile-value]')).toHaveText(String(dash.needs_you[k]))
+    await expect(tile.locator('[data-tile-label]')).toHaveText(label)
+    await expect(tile.locator('[data-tile-label]')).toBeVisible()
+    await expect(tile.locator('[data-tile-value]')).toHaveClass(dash.needs_you[k] ? /text-gray-900/ : /text-gray-300/)
+  }
   const n = dash.needs_you.approvals
-  const tile = tiles.locator('[data-tile="approvals"]')
-  await tile.hover()
-  await expect(tooltip(page)).toHaveText(`${n} approval${n === 1 ? '' : 's'}`)
+  const tile = page.locator('[data-tile="approvals"]')
   await expect(tile).toHaveAttribute('aria-label', `${n} approval${n === 1 ? '' : 's'}`)
-  await expect(tiles.locator('[data-tile="messages"]')).toHaveClass(dash.needs_you.messages ? /text-gray-900/ : /text-gray-300/)
   await tile.click()
   await expect(page.getByRole('heading', { name: 'Inbox' })).toBeVisible()
+})
+
+test('layout: titled cards in a 12-column grid, edges and heights line up per row, header buttons match', async ({ page, qa }) => {
+  await page.setViewportSize({ width: 1400, height: 900 })
+  await qa.open('/p/demo')
+  for (const [id, title] of TITLES) await expect(page.locator(`[data-card="${id}"]`).getByRole('heading', { name: title })).toBeVisible()
+
+  const box = async (sel: string) => (await page.locator(sel).boundingBox())!
+  const grid = await box('[data-dashboard-grid]')
+  const near = (a: number, b: number) => expect(Math.abs(a - b)).toBeLessThanOrEqual(1)
+  const rows = [
+    KPIS.map(([k]) => `[data-kpi="${k}"]`),
+    ['[data-card="activity"]', '[data-card="features"]'],
+    ['[data-card="shipped"]', '[data-card="team"]'],
+  ]
+  const lefts: number[][] = []
+  for (const row of rows) {
+    const boxes = await Promise.all(row.map(box))
+    near(boxes[0].x, grid.x) // the row starts at the grid's left edge…
+    near(boxes.at(-1)!.x + boxes.at(-1)!.width, grid.x + grid.width) // …and ends at its right edge
+    for (const b of boxes) {
+      near(b.y, boxes[0].y)
+      near(b.height, boxes[0].height)
+    }
+    lefts.push(boxes.map((b) => b.x))
+  }
+  // The wide cards share their column edges, and the narrow ones line up with the last KPI card's right edge.
+  near(lefts[1][1], lefts[2][1])
+  const lastKpi = await box('[data-kpi="messages"]')
+  const team = await box('[data-card="team"]')
+  near(lastKpi.x + lastKpi.width, team.x + team.width)
+
+  // Header: Standup, the last-report clock (when there is one) and New task share one height.
+  const actions = page.locator('[data-dashboard-actions]')
+  const standup = await actions.getByRole('button', { name: 'Standup' }).boundingBox()
+  const newTask = await actions.getByRole('button', { name: 'New task' }).boundingBox()
+  near(standup!.height, newTask!.height)
+  near(standup!.y, newTask!.y)
 })
 
 test('Activity: 24 hourly bars; a bar tooltip shows its counts, commit hours carry a dot', async ({ page, qa }) => {

@@ -4,8 +4,8 @@ import { useAppDispatch, useAppSelector } from '../store'
 import { startStandup } from '../store/thunks'
 import { Button } from './ui/button'
 
-// Standup button + status line; shows the "nothing changed" result inline for a few seconds.
-export default function StandupButton() {
+// Standup button + status line (`size` default in the Dashboard header, next to New task); shows the "nothing changed" result inline for a few seconds.
+export default function StandupButton({ size = 'xs' }: { size?: 'xs' | 'default' }) {
   const dispatch = useAppDispatch()
   const standup = useAppSelector((s) => s.dashboard?.standup ?? null)
   const onStart = () => dispatch(startStandup())
@@ -35,7 +35,7 @@ export default function StandupButton() {
 
   return (
     <div className="flex items-center gap-2 text-caption flex-wrap">
-      <Button variant="outline" size="xs" disabled={busy || !!active} onClick={() => void start()}>
+      <Button variant="outline" size={size} disabled={busy || !!active} onClick={() => void start()}>
         Standup
       </Button>
       {active && (

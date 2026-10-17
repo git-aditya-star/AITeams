@@ -1,69 +1,44 @@
-import { BadgeCheck, CircleHelp, GitPullRequest, History, MessageSquare, type LucideIcon } from 'lucide-react'
+import { BadgeCheck, CircleHelp, GitPullRequest, MessageSquare, type LucideIcon } from 'lucide-react'
 import type { Dashboard } from '../../api'
-import { fmtAgo } from '../../api'
-import NewTaskForm from '../NewTaskForm'
-import StandupButton from '../StandupButton'
-import { Button } from '../ui/button'
-import { Tip } from '../ui/tooltip'
+import { Card } from '../ui/card'
 
 const TILES: [keyof Dashboard['needs_you'], LucideIcon, string, string][] = [
-  ['questions', CircleHelp, 'question', 'questions'],
-  ['approvals', BadgeCheck, 'approval', 'approvals'],
-  ['commits', GitPullRequest, 'commit', 'commits'],
-  ['messages', MessageSquare, 'message', 'messages'],
+  ['questions', CircleHelp, 'Questions', 'question'],
+  ['approvals', BadgeCheck, 'Approvals', 'approval'],
+  ['commits', GitPullRequest, 'Commits', 'commit'],
+  ['messages', MessageSquare, 'Messages', 'message'],
 ]
 
-// F-18: what waits on the Master, as four tiles (zero ones greyed); a click opens the Inbox. New task and
-// Standup sit at the row's end, with the last standup report behind a clock icon.
-export default function NeedsYouTiles({
-  dash,
-  onSelect,
-  onNewTask,
-}: {
-  dash: Dashboard
-  onSelect: (id: string, messageId?: number) => void
-  onNewTask: (body: { text: string; starter: string }) => Promise<void>
-}) {
-  const last = dash.last_standup?.state === 'done' ? dash.last_standup : null
+// F-18: what waits on the Master, as four KPI cards (icon, number, label); zero ones are greyed but keep their
+// label. A click opens the Inbox. Each card is one cell of the Dashboard grid.
+export default function NeedsYouTiles({ dash, onSelect, className }: { dash: Dashboard; onSelect: (id: string) => void; className: string }) {
   return (
-    <section aria-label="Needs you" className="flex items-center gap-3 flex-wrap">
-      {TILES.map(([k, Icon, one, many]) => {
+    <>
+      {TILES.map(([k, Icon, label, one]) => {
         const v = dash.needs_you[k]
-        const label = `${v} ${v === 1 ? one : many}`
         return (
-          <Tip key={k} content={label}>
+          <Card key={k} className={`p-0 ${className}`} data-kpi={k}>
             <button
               data-tile={k}
-              aria-label={label}
+              aria-label={`${v} ${v === 1 ? one : `${one}s`}`}
               onClick={() => onSelect('inbox')}
-              className={`flex h-20 w-24 cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border hover:bg-gray-50 ${
-                v ? 'border-gray-300 text-gray-900' : 'border-gray-200 text-gray-300'
-              }`}
+              className="flex h-full w-full cursor-pointer items-center gap-3 rounded-lg p-4 text-left hover:bg-gray-50"
             >
-              <Icon className={`size-5 ${v ? 'text-blue-600' : ''}`} />
-              <span className="text-title">{v}</span>
+              <span className={`flex size-10 shrink-0 items-center justify-center rounded-md ${v ? 'bg-blue-50 text-blue-600' : 'bg-gray-50 text-gray-300'}`}>
+                <Icon className="size-5" />
+              </span>
+              <span className="flex flex-col">
+                <span data-tile-value className={`text-title ${v ? 'text-gray-900' : 'text-gray-300'}`}>
+                  {v}
+                </span>
+                <span data-tile-label className={`text-meta ${v ? 'text-gray-600' : 'text-gray-400'}`}>
+                  {label}
+                </span>
+              </span>
             </button>
-          </Tip>
+          </Card>
         )
       })}
-      <div className="ml-auto flex items-center gap-2">
-        <StandupButton />
-        {last && (
-          <Tip content={`last standup report · ${fmtAgo(last.ended_at ?? last.created_at)}`}>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              className="text-gray-500"
-              aria-label="Last standup report"
-              data-last-standup
-              onClick={() => onSelect('standup', last.message_id ?? undefined)}
-            >
-              <History className="size-4" />
-            </Button>
-          </Tip>
-        )}
-        <NewTaskForm onNewTask={onNewTask} buttonClass="" />
-      </div>
-    </section>
+    </>
   )
 }

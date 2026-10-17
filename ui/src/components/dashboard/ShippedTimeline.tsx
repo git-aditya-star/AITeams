@@ -39,7 +39,7 @@ export default function ShippedTimeline({ shipped, onSelect }: { shipped: Shippe
   const n = timeline.length
 
   return (
-    <section aria-label="Shipped, last 14 days" data-ship className="flex max-w-3xl items-end gap-4">
+    <section aria-label="Shipped, last 14 days" data-ship className="flex items-end gap-4">
       <Tip content={n ? `${n} in ${DAYS} days · total ${shipped.total}` : `nothing shipped in ${DAYS} days · total ${shipped.total}`}>
         <span data-ship-count className={`w-12 shrink-0 text-right text-title ${n ? 'text-gray-900' : 'text-gray-300'}`}>
           {n}

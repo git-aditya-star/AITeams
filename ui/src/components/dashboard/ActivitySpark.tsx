@@ -10,15 +10,15 @@ export default function ActivitySpark({ hours }: { hours: HourBucket[] }) {
   const max = Math.max(0, ...hours.map((h) => h.messages))
   const quiet = hours.every((h) => !h.messages && !h.commits)
   return (
-    <section aria-label="Activity, last 24 hours" data-spark className="max-w-3xl">
+    <section aria-label="Activity, last 24 hours" data-spark>
       {quiet ? (
         <Tip content="quiet for 24h">
-          <div data-spark-quiet className="flex h-12 items-end">
+          <div data-spark-quiet className="flex h-28 items-end">
             <div className="h-0.5 w-full rounded-sm bg-gray-200" />
           </div>
         </Tip>
       ) : (
-        <div className="flex h-12 items-end gap-0.5">
+        <div className="flex h-28 items-end gap-0.5">
           {hours.map((h, i) => {
             const label = `${hh(h.start)}–${hh(h.start + 3600)} · ${plural(h.messages, 'message')}${h.commits ? ` · ${plural(h.commits, 'commit')}` : ''}`
             return (

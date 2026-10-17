@@ -13,9 +13,11 @@ const STARTERS = ['product', 'lead', 'manager'] as const
 export default function NewTaskForm({
   onNewTask,
   buttonClass = 'w-full',
+  size = 'lg',
 }: {
   onNewTask: (body: { text: string; starter: string }) => Promise<void>
   buttonClass?: string
+  size?: 'lg' | 'default'
 }) {
   const [open, setOpen] = useState(false)
   const [text, setText] = useState('')
@@ -41,7 +43,7 @@ export default function NewTaskForm({
 
   return (
     <>
-      <Button size="lg" onClick={() => setOpen(true)} className={buttonClass}>
+      <Button size={size} onClick={() => setOpen(true)} className={buttonClass}>
         <Plus />
         New task
       </Button>

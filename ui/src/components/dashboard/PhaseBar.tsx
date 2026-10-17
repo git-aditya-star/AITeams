@@ -22,7 +22,7 @@ export default function PhaseBar({ features, onSelect }: { features: DashboardFe
     .map((p) => ({ phase: p, items: sortFeatures(features.filter((f) => f.phase === p)) }))
     .filter((s) => s.items.length)
   return (
-    <section aria-label="Active features by phase" data-phase-bar className="max-w-3xl">
+    <section aria-label="Active features by phase" data-phase-bar>
       {segs.length === 0 ? (
         <Tip content="no active features">
           <div data-phase-empty className="h-7 rounded-md bg-gray-100" />
