@@ -1,0 +1,125 @@
+# AITeams
+
+A local "Slack of AIs": six role-based Claude Code sessions (Manager, Lead, Product, Frontend,
+Backend, QA) that work as an engineering team on your own repos. You are the **Master**: you
+hand out tasks, answer questions, approve scope and commits, and watch everything from a light,
+flat web UI. Runs entirely on your machine with your Claude Team login. No API key, no cloud, no
+GitHub integration.
+
+![Dashboard](docs/dashboard.jpg)
+
+## What it does
+
+- **Features, not tickets.** A task becomes a feature `F-<n>` with its own conversation and a folder
+  of living docs (`prd.md`, `design.md`, `test-plan.md`). The phase (intake → done) is a label any role
+  can set; there is no pipeline to wait on.
+- **Roles that behave like a team.** Product writes the PRD and asks you to lock scope. Lead designs
+  and reviews every commit. Backend/Frontend build. QA writes the test plan and files bugs. Manager
+  routes, chases, runs standups and keeps your attention cheap.
+- **You stay in control.** Agents never commit or push. They request a commit with exact files; the
+  Lead reviews it; you approve it from your Inbox and the daemon commits in your name. Hooks enforce
+  file locks (one role per file per turn) and deny `git commit`/`push` regardless of what a role tries.
+- **Inbox** collects only what needs you: questions, approvals, commits ready to land, blockers.
+- **Sessions stay small.** The daemon tracks each role's context; past 60% the role writes a handoff
+  and continues in a fresh session seeded from it. You can also Stop a running agent or give any role
+  a fresh start, and the Manager can do the same through tools.
+- **Standup on demand.** One click (or the Manager's own call) asks the roles that were active for
+  Done/Next/Blocked, and the Manager compiles a report. Nothing scheduled, nothing nags you.
+- **Live session view.** Every role's DM has a tab showing its Claude Code session as it runs: tool
+  calls, diffs, command output, the exact prompt it was given.
+
+![Feature conversation](docs/feature.jpg)
+
+![Standup channel](docs/standup.jpg)
+
+## How it works
+
+```
+aiteams (CLI) ──registers folder──▶ daemon (FastAPI + React UI, 127.0.0.1:7700)
+                                        │  SQLite per project: <repo>/.aiteams/state.db
+                                        │  wake queue · scheduler (max 3 concurrent, Master first)
+                                        ▼
+                     per turn:  claude -p --resume <role session> ... --mcp-config <aiteams tools>
+                                        │  roles talk to chat ONLY through MCP tools
+                                        │  PreToolUse hook: file locks, deny git commit/push
+                                        ▼
+                             stream-json events → DB + websocket → Live session tab
+```
+
+- **Spawn per turn.** A role is woken when it is @mentioned or DM'd. Each wake spawns one headless
+  `claude -p` process that resumes the role's session, acts, and exits. Idle roles cost nothing.
+- **Isolation.** Roles run with `--setting-sources local`, their own hooks and MCP config, and a
+  role prompt + shared team rules appended to the system prompt. Your global `~/.claude` config does
+  not leak in.
+- **Everything is a file.** Specs, designs, handoffs and standup reports live under `<repo>/.aiteams/`
+  (git-excluded via `.git/info/exclude`), so a role can always re-read the truth instead of trusting
+  its memory.
+
+The full decision log is in [`BRAINSTORM.md`](BRAINSTORM.md); the milestone specs are in
+[`SPEC.md`](SPEC.md) and [`specs/`](specs/).
+
+## Requirements
+
+- macOS or Linux, Python 3.12+, [uv](https://docs.astral.sh/uv/), Node 20+ (only to build the UI).
+- [Claude Code](https://docs.claude.com/en/docs/claude-code) CLI installed and logged in with a
+  Claude Team plan (that is what it was built and tested with; no API key is used). Agents share your plan's usage window; the daemon pauses the team when
+  the limit is hit and tells you.
+- A git repository to work on (several linked repos per project are planned, not built yet).
+
+## Install
+
+```bash
+git clone <this repo> ~/AITeams && cd ~/AITeams
+(cd ui && npm install && npm run build)   # builds the UI into aiteams/static/
+uv tool install -e .                      # installs the `aiteams` command
+```
+
+## Use
+
+```bash
+cd ~/code/my-project     # any git repo
+aiteams                  # starts the daemon if needed, registers the folder, opens the UI
+```
+
+Then click **New task**, describe what the team should do, and pick who starts (Product by default).
+Watch the Inbox, answer when asked, approve the scope and the commits. The
+[user guide](docs/GUIDE.md) walks through every screen and action; the GIF below is a quick tour.
+
+![Walkthrough](docs/walkthrough.gif)
+
+Useful commands:
+
+```bash
+aiteams status   # daemon pid, port, running turns
+aiteams stop     # stop the daemon (running turns are interrupted and re-queued)
+```
+
+Settings live in `~/.aiteams/settings.json` (`default_model`, per-role `models`, `max_concurrent`,
+`rotate_pct`, `stale_hours`, timeouts) and can be changed with `PUT /api/settings`.
+
+## Project layout
+
+```
+aiteams/            daemon, CLI, SQLite schema, scheduler/turn runner, MCP server, hook, role prompts
+aiteams/roles/      manager.md, lead.md, ... and team-rules.md (override per project in .aiteams/roles/)
+ui/                 React + Vite + Tailwind UI (built into aiteams/static/)
+tests/              pytest suite (no real claude needed; a fake child process stands in)
+scripts/            end-to-end verification walkthroughs run against the real CLI
+specs/, SPEC.md     milestone specs; BRAINSTORM.md is the decision log
+docs/               this guide, screenshots, walkthrough GIF
+```
+
+## Status
+
+- **M1 (done):** daemon + CLI, chat with typed messages and read receipts, six roles with live session
+  view, features with living docs, approvals, commit flow with Lead review, file locks, Inbox,
+  dashboard, session rotation with handoffs, Stop/interrupt/checkpoint, on-demand standup, feature
+  fresh start, History.
+- **M2 (next):** the AITeams team builds AITeams on this repo (dogfooding): toast notifications, a
+  runtime snapshot so the team's edits never touch the running daemon, settings UI, digests.
+
+Personal project. Issues and ideas welcome; expect rough edges.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
