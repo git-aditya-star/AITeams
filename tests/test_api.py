@@ -107,13 +107,16 @@ def test_permission_passthrough_and_question_long_poll(client, repo):
     q = {"questions": [{"question": "Which DB?", "header": "DB", "multiSelect": False,
                         "options": [{"label": "Postgres", "description": "d1"}, {"label": "SQLite", "description": "d2"}]}]}
     out = {}
+    # F-26: conftest's 2 s ask_timeout_s is for the expiry test below; here the question must outlive the polling and the
+    # answer however busy the machine is, or it expires first and the answer is a 409.
+    client.app.state.app.settings["ask_timeout_s"] = 60
 
     def ask():
         out["resp"] = client.post("/internal/permission", json={"tool_name": "AskUserQuestion", "input": q, "tool_use_id": "tu1"},
                                   headers=h).json()
     th = threading.Thread(target=ask)
     th.start()
-    for _ in range(50):
+    for _ in range(600):  # up to 30 s; it normally takes a few polls
         pending = client.get(f"/api/p/{pid}/questions").json()
         if pending:
             break

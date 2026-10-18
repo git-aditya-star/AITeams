@@ -160,3 +160,87 @@ def test_group_files_reads_the_overlap_and_defaults_to_none(rt, monkeypatch):
     assert rt.group_files(5) == ([5], ["a.py"], answer["overlap"])
     monkeypatch.setattr(rt.urllib.request, "urlopen", lambda req, timeout: Resp(b'{"ids": [5], "files": ["a.py"]}'))
     assert rt.group_files(5) == ([5], ["a.py"], [])
+
+
+PYTEST_FAILED = """..F.E
+=================================== FAILURES ===================================
+FAILED tests/not_a_summary.py::test_printed_by_a_failing_test
+=========================== short test summary info ============================
+FAILED tests/test_a.py::test_flaky - assert 1 == 2
+FAILED tests/test_a.py::test_param[a - b] - AssertionError: boom
+ERROR tests/test_b.py::test_setup - RuntimeError: no port
+ERROR tests/test_c.py
+FAILED tests/test_a.py::test_flaky - assert 1 == 2
+=========================== 2 failed, 3 passed, 1 error in 12.34s ==============
+"""
+
+
+def test_pytest_failures_name_each_failing_test_once(rt):
+    """F-26: ids come from the short summary only, in order, once each; an id may contain " - " inside brackets."""
+    assert rt.pytest_failures(PYTEST_FAILED) == [
+        "tests/test_a.py::test_flaky", "tests/test_a.py::test_param[a - b]", "tests/test_b.py::test_setup",
+        "tests/test_c.py"]
+    assert rt.pytest_failures("....\n=========== 4 passed in 0.5s ===========\n") == []
+    assert rt.pytest_failures("") == []
+    assert rt.pytest_failures("\x1b[31mFAILED\x1b[0m tests/x.py::t") == []  # colour codes, no summary section: nothing
+    colour = "\x1b[1m=== short test summary info ===\x1b[0m\n\x1b[31mFAILED\x1b[0m tests/x.py::t - boom\n"
+    assert rt.pytest_failures(colour) == ["tests/x.py::t"]
+
+
+def test_e2e_failures_name_each_failing_title_once(rt):
+    out = ("  ✓  1 [chromium] › e2e/a.spec.ts:3:1 › fine (100ms)\n"
+           "  ✘  2 [chromium] › e2e/b.spec.ts:10:3 › it fails (1.2s)\n"
+           "  ✘  3 [chromium] › e2e/b.spec.ts:20:3 › retried (retry #1) (2.0s)\n"
+           "  ✘  3 [chromium] › e2e/b.spec.ts:20:3 › retried (2.0s)\n"
+           "  ✓  4 [chromium] › e2e/a.spec.ts:9:1 › also fine (90ms)\n"
+           "  2 failed\n  1 passed (5.0s)\n")
+    assert rt.e2e_failures(out) == ["e2e/b.spec.ts:10:3 › it fails", "e2e/b.spec.ts:20:3 › retried"]
+    assert rt.e2e_failures("  ✓  1 [chromium] › e2e/a.spec.ts:3:1 › fine (100ms)\n  1 passed (1.0s)\n") == []
+
+
+def stub_subprocess(rt, monkeypatch, tree, returncode, stdout):
+    """Make rt.subprocess.run answer the aiteams import probe with the tree and everything else with a canned run;
+    returns the list of non-probe commands that were run."""
+    import types
+    ran = []
+
+    def fake(cmd, **kw):
+        if "-c" in cmd:  # run_pytest's "where does aiteams import from" probe
+            return types.SimpleNamespace(stdout=str(tree) + "/aiteams/__init__.py", stderr="", returncode=0)
+        ran.append(cmd)
+        return types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+    monkeypatch.setattr(rt.subprocess, "run", fake)
+    return ran
+
+
+def test_run_pytest_asks_for_the_failure_summary_and_prints_one_line_per_failure(rt, tmp_path, monkeypatch):
+    """F-26: `-rfE` is passed explicitly; a failed run puts `pytest-failed: <id>` lines right after `pytest:`; a green run
+    adds none."""
+    ran = stub_subprocess(rt, monkeypatch, tmp_path, 1, PYTEST_FAILED)
+    ok, text = rt.run_pytest(tmp_path)
+    assert not ok and "-rfE" in ran[0] and "-q" in ran[0]
+    lines = text.splitlines()
+    assert lines[0].startswith("pytest: ") and "2 failed, 3 passed, 1 error in 12.34s" in lines[0]
+    assert lines[1:] == ["pytest-failed: tests/test_a.py::test_flaky", "pytest-failed: tests/test_a.py::test_param[a - b]",
+                         "pytest-failed: tests/test_b.py::test_setup", "pytest-failed: tests/test_c.py"]
+    stub_subprocess(rt, monkeypatch, tmp_path, 0, "....\n=========== 4 passed in 0.5s ===========\n")
+    ok, text = rt.run_pytest(tmp_path)
+    assert ok and text.count("\n") == 0 and "4 passed in 0.5s" in text
+
+
+def test_run_e2e_prints_one_line_per_failing_title(rt, tmp_path, monkeypatch):
+    out = ("  ✘  2 [chromium] › e2e/b.spec.ts:10:3 › it fails (1.2s)\n  ✓  3 [chromium] › e2e/a.spec.ts:3:1 › fine (9ms)\n"
+           "  1 failed\n  1 passed (5.0s)\n")
+    (tmp_path / "ui").mkdir()
+    stub_subprocess(rt, monkeypatch, tmp_path, 1, out)
+    ok, text = rt.run_e2e(tmp_path)
+    assert not ok and text.splitlines() == ["e2e: 1 passed (5.0s)", "e2e-failed: e2e/b.spec.ts:10:3 › it fails"]
+    stub_subprocess(rt, monkeypatch, tmp_path, 0, "  ✓  1 [chromium] › e2e/a.spec.ts:3:1 › fine (9ms)\n  1 passed (1.0s)\n")
+    assert rt.run_e2e(tmp_path) == (True, "e2e: 1 passed (1.0s)")
+
+
+def test_main_prints_the_failure_lines_after_the_summary_and_exits_1(rt, repo, monkeypatch, capsys):
+    monkeypatch.setattr(rt, "run_pytest", lambda tree: (False, "pytest: 1 failed, 5 passed in 1s\npytest-failed: tests/t.py::x"))
+    assert rt.main(["--files", "a.py", "--repo", str(repo)]) == 1
+    out = capsys.readouterr().out.splitlines()
+    assert out[-2:] == ["pytest: 1 failed, 5 passed in 1s", "pytest-failed: tests/t.py::x"]

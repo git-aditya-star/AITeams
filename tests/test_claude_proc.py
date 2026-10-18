@@ -29,7 +29,10 @@ def out(e): sys.stdout.write(json.dumps(e) + "\n"); sys.stdout.flush()
 def on_int(*a):
     out({"type": "result", "subtype": "success", "is_error": False, "result": "interrupted", "total_cost_usd": 0.001})
     sys.exit(0)
+time.sleep(float(os.environ.get("FAKE_STARTUP_DELAY") or 0))  # a slow interpreter start, as on a loaded machine
 signal.signal(signal.SIGINT, on_int)
+if os.environ.get("FAKE_READY"):
+    open(os.environ["FAKE_READY"], "w").close()  # the SIGINT handler is installed: safe to start a timeout now
 line = sys.stdin.readline()
 assert json.loads(line)["type"] == "user"
 for e in events: out(e)
@@ -42,10 +45,10 @@ def fake_cmd():
     return [sys.executable, "-B", "-c", FAKE]
 
 
-def fake_env(events, hang=False):
+def fake_env(events, hang=False, **extra):
     import os
     return {**os.environ, "FAKE_EVENTS": json.dumps(events), "FAKE_HANG": "1" if hang else "0",
-            "PYTHONDONTWRITEBYTECODE": "1"}
+            "PYTHONDONTWRITEBYTECODE": "1", **extra}
 
 
 async def collect(proc):
@@ -142,8 +145,23 @@ def test_turn_timeout_still_captures_sigint_result(db, home, monkeypatch):
     from aiteams.orchestrator.turn import TurnRunner
     from tests.conftest import FakeHub
 
+    # F-26: the 1 s turn timeout starts when the stream starts, so on a loaded machine a slow-starting child could get
+    # its SIGINT before it had installed the handler (it died with no result). The child is made slow on purpose (1.3 s
+    # before the handler) and the test waits for its ready marker before the clock can start, so it never depends on load.
+    ready = db.dir / "child-ready"
     monkeypatch.setattr(turn_mod, "build_cmd", lambda *a, **k: fake_cmd())
-    monkeypatch.setattr(turn_mod, "child_env", lambda *a, **k: fake_env([INIT], hang=True))
+    monkeypatch.setattr(turn_mod, "child_env", lambda *a, **k: fake_env(
+        [INIT], hang=True, FAKE_READY=str(ready), FAKE_STARTUP_DELAY="1.3"))
+    orig_start = ClaudeProc.start
+
+    async def start_when_ready(self):
+        await orig_start(self)
+        for _ in range(3000):  # up to 30 s for the child to be ready; no timing assumption about the machine
+            if ready.exists():
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("the fake child never became ready")
+    monkeypatch.setattr(ClaudeProc, "start", start_when_ready)
     st = AppState(7799)
     st.settings["turn_timeout_s"] = 1
     proj = Project({"id": "p1", "path": db.project_path, "name": "demo", "registered_at": 0})

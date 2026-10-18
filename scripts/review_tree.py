@@ -8,14 +8,16 @@ request's (or its open commit group's) files, then pytest, plus `npm run e2e` wh
 The commit-id form uses the role turn's own environment (the same per-turn token the MCP server uses). A listed file
 that is missing from the working tree is deleted in the worktree. `.venv` and `ui/node_modules` are symlinked from
 the repo, so nothing is installed. The worktree is removed afterwards unless --keep. Exit code 0 only if every run
-passed. Prints `pytest: …` and `e2e: …` summary lines to quote in a review note, and (commit-id form) one
-`overlap: …` line per other open request that shares a file with the request or group.
+passed. Prints `pytest: …` and `e2e: …` summary lines to quote in a review note, one `pytest-failed: <test id>` /
+`e2e-failed: <title>` line per failing test right after its summary line (so a flake names itself), and (commit-id form)
+one `overlap: …` line per other open request that shares a file with the request or group.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -68,6 +70,54 @@ def last_line(text: str, needle: str) -> str:
     return lines[-1] if lines else (text.strip().splitlines() or ["(no output)"])[-1]
 
 
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def pytest_failures(out: str) -> list[str]:
+    """F-26: test ids from pytest's `short test summary info` section (`-rfE`): `FAILED tests/x.py::test_y[p] - msg` and
+    `ERROR tests/x.py::...` (a setup error or a collection error). In order, once each. Only that section counts, so a
+    line a test printed itself can't pass for a failure."""
+    ids: list[str] = []
+    in_summary = False
+    for line in ANSI_RE.sub("", out).splitlines():
+        if line.startswith("=") and "short test summary info" in line:
+            in_summary = True
+        elif line.startswith("="):
+            in_summary = False
+        m = in_summary and re.match(r"(?:FAILED|ERROR) (\S.*)", line)
+        nodeid = _before_message(m.group(1)) if m else None
+        if nodeid and nodeid not in ids:
+            ids.append(nodeid)
+    return ids
+
+
+def _before_message(rest: str) -> str:
+    """`tests/x.py::t[a - b] - msg` -> `tests/x.py::t[a - b]`: cut at the first " - " outside square brackets (a
+    parametrize id may contain one)."""
+    depth = 0
+    for i, ch in enumerate(rest):
+        depth += (ch == "[") - (ch == "]" and depth > 0)
+        if depth == 0 and rest.startswith(" - ", i):
+            return rest[:i].strip()
+    return rest.strip()
+
+
+def e2e_failures(out: str) -> list[str]:
+    """F-26: titles of the failing Playwright tests from the list reporter's `✘` lines (`e2e/x.spec.ts:10:3 › title`),
+    without the running index, the `[chromium]` project tag, the timing or a retry suffix. In order, once each."""
+    titles: list[str] = []
+    for line in ANSI_RE.sub("", out).splitlines():
+        m = re.match(r"\s*[✘✗x]\s+\d+\s+(?:\[[^\]]*\]\s+›\s+)?(.*?)(?:\s+\(retry #\d+\))?\s*(?:\([\d.]+m?s\))?\s*$", line)
+        if m and m.group(1) and m.group(1) not in titles:
+            titles.append(m.group(1))
+    return titles
+
+
+def with_failures(summary: str, failed: list[str], tag: str) -> str:
+    """The summary line, then one `<tag>: <id>` line per failure."""
+    return "\n".join([summary, *(f"{tag}: {f}" for f in failed)])
+
+
 def prepare(repo: Path, tree: Path, files: list[str]) -> None:
     git(repo, "worktree", "add", "--detach", str(tree), "HEAD")
     for f in files:
@@ -89,15 +139,18 @@ def run_pytest(tree: Path) -> tuple[bool, str]:
                            capture_output=True, text=True)
     if not where.stdout.strip().startswith(str(tree.resolve())) and not where.stdout.strip().startswith(str(tree)):
         return False, f"pytest: ABORTED, aiteams imports from {where.stdout.strip() or where.stderr.strip()}, not the worktree"
-    r = subprocess.run([py, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider"], cwd=tree, capture_output=True,
+    r = subprocess.run([py, "-B", "-m", "pytest", "-q", "-rfE", "-p", "no:cacheprovider"], cwd=tree, capture_output=True,
                        text=True)
-    return r.returncode == 0, "pytest: " + last_line(r.stdout, " in ")
+    failed = pytest_failures(r.stdout) if r.returncode != 0 else []
+    return r.returncode == 0, with_failures("pytest: " + last_line(r.stdout, " in "), failed, "pytest-failed")
 
 
 def run_e2e(tree: Path) -> tuple[bool, str]:
     r = subprocess.run(["npm", "run", "e2e"], cwd=tree / "ui", capture_output=True, text=True)
     out = r.stdout + r.stderr
-    return r.returncode == 0, "e2e: " + last_line(out, "passed" if "passed" in out else "failed")
+    failed = e2e_failures(out) if r.returncode != 0 else []
+    return r.returncode == 0, with_failures("e2e: " + last_line(out, "passed" if "passed" in out else "failed"),
+                                            failed, "e2e-failed")
 
 
 def main(argv: list[str] | None = None) -> int:
