@@ -76,6 +76,19 @@ export const ringTone = (t: { state: string; last_turn?: { state: string } | nul
   if (t?.last_turn && (t.last_turn.state === 'interrupted' || t.last_turn.state === 'failed') && t.state !== 'running') return 'red'
   return t?.state === 'running' ? 'green' : t?.state === 'queued' ? 'amber' : 'gray'
 }
+// The word under a role's name on the Dashboard: "working" for a plain running turn, the turn kind while a
+// handoff / standup / brainstorm runs, "interrupted" / "failed" when the last turn was cut short, else the state.
+export const ringWord = (t: { state: string; kind?: string | null; last_turn?: { state: string } | null } | undefined) => {
+  if (ringTone(t) === 'red') return t!.last_turn!.state
+  const w = stateWord(t)
+  return w === 'running' ? 'working' : w
+}
+export const TONE_TEXT: Record<string, string> = {
+  green: 'text-green-700',
+  amber: 'text-amber-700',
+  gray: 'text-gray-500',
+  red: 'text-red-600',
+}
 export const RING_STROKE: Record<string, string> = {
   green: 'stroke-green-500',
   amber: 'stroke-amber-400',

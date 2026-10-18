@@ -256,21 +256,83 @@ test('Shipped: more than 3 shows "+N more", which opens the first hidden one; do
   await expect(page).toHaveURL(/c=feature-2[0-9]/)
 })
 
-test('Team: a ring shows the model and context on hover, a click opens Stop / Fresh start', async ({ page, qa }) => {
-  const t = ((await qa.api<any>('/dashboard')).team as any[]).find((r) => r.role === 'frontend')
+const ROLE_NAMES: Record<string, string> = { manager: 'Manager', lead: 'Lead', product: 'Product', frontend: 'Frontend', backend: 'Backend', qa: 'Qa' }
+
+test('Team: every role shows name, state word and "F-n · context"; hover shows the model, a click opens Stop / Fresh start', async ({ page, qa }) => {
+  const team = (await qa.api<any>('/dashboard')).team as any[]
   await qa.open('/p/demo')
-  const ring = page.locator('[data-ring="frontend"]')
-  await expect(page.locator('[data-ring]')).toHaveCount(6)
+  const card = page.locator('[data-card="team"]')
+  await expect(card.locator('[data-ring]')).toHaveCount(6)
+  const queued = team.filter((t) => t.state === 'queued').length
+  const running = team.filter((t) => t.state === 'running').length
+  await expect(card.locator('[data-team-headline]')).toHaveText(running ? `${running} working` : queued ? `${queued} queued` : 'all idle')
+
+  for (const t of team) {
+    const block = card.locator(`[data-ring="${t.role}"]`)
+    await expect(block.locator('[data-ring-name]')).toHaveText(ROLE_NAMES[t.role])
+    await expect(block.locator('[data-ring-name]')).toBeVisible()
+    // the seed has nobody running or cut short, so the state word is the plain state
+    await expect(block.locator('[data-ring-state]')).toHaveText(t.state)
+    await expect(block.locator('[data-ring-detail]')).toHaveText(`${t.current?.feature_key ?? '—'} · ${Math.round(t.context_pct * 100)}%`)
+  }
+  await expect(card.locator('[data-ring="frontend"] [data-ring-detail]')).toContainText('F-1')
+
+  const fe = team.find((t) => t.role === 'frontend')
+  const ring = card.locator('[data-ring="frontend"]')
   await ring.hover()
-  await expect(tooltip(page)).toContainText(t.model_label || t.model)
-  await expect(tooltip(page)).toContainText(`context ${Math.round(t.context_pct * 100)}%`)
-  await expect(page.locator('[data-ring-feature="frontend"]')).toHaveText(t.current?.feature_key ?? '')
+  await expect(tooltip(page)).toContainText(fe.model_label || fe.model)
+  await expect(tooltip(page)).toContainText(`fresh starts ${fe.fresh_starts ?? 0}`)
   await ring.click()
   const menu = page.locator('[data-role-actions="frontend"]')
   await expect(menu.getByRole('button', { name: 'Fresh start' })).toBeVisible()
   await away(page)
   await page.keyboard.press('Escape')
   await expect(menu).toHaveCount(0)
+})
+
+test('Team: working, handoff, standup, interrupted and idle read as words, with a matching headline', async ({ page, qa }) => {
+  // the UI reads the team from /team (the store), not from the dashboard payload
+  await page.route(/\/api\/p\/demo\/team$/, async (route) => {
+    const r = await route.fetch()
+    const d = await r.json()
+    const by = (role: string) => d.roles.find((t: any) => t.role === role)
+    Object.assign(by('manager'), { state: 'running', kind: 'turn', context_pct: 0.34, current: { conversation_id: 'feature-1', label: 'F-1', feature_key: 'F-18' } })
+    Object.assign(by('lead'), { state: 'running', kind: 'handoff' })
+    Object.assign(by('product'), { state: 'running', kind: 'standup' })
+    Object.assign(by('backend'), { state: 'idle', kind: null, last_turn: { ...(by('backend').last_turn ?? {}), state: 'interrupted' }, current: null })
+    Object.assign(by('frontend'), { state: 'idle', kind: null, last_turn: null, current: null })
+    Object.assign(by('qa'), { state: 'queued', kind: null, last_turn: null })
+    await route.fulfill({ response: r, json: d })
+  })
+  await qa.open('/p/demo')
+  const card = page.locator('[data-card="team"]')
+  const state = (role: string) => card.locator(`[data-ring="${role}"] [data-ring-state]`)
+  await expect(card.locator('[data-team-headline]')).toHaveText('3 working')
+  await expect(state('manager')).toHaveText('working')
+  await expect(card.locator('[data-ring="manager"] [data-ring-detail]')).toHaveText('F-18 · 34%')
+  await expect(state('lead')).toHaveText('handoff')
+  await expect(state('product')).toHaveText('standup')
+  await expect(state('backend')).toHaveText('interrupted')
+  await expect(card.locator('[data-ring="backend"]')).toHaveAttribute('data-ring-tone', 'red')
+  await expect(card.locator('[data-ring="backend"] [data-ring-detail]')).toHaveText(/^— · \d+%$/)
+  await expect(state('frontend')).toHaveText('idle')
+  await expect(state('qa')).toHaveText('queued')
+  await page.screenshot({ path: `${SHOTS}/dashboard-team-states.png`, animations: 'disabled' })
+})
+
+test('Team: at about 1100px the narrow card wraps into whole blocks, nothing is cut off', async ({ page, qa }) => {
+  await page.setViewportSize({ width: 1100, height: 800 })
+  await qa.open('/p/demo')
+  await page.screenshot({ path: `${SHOTS}/dashboard-1100.png`, animations: 'disabled' })
+  const card = await page.locator('[data-card="team"]').boundingBox()
+  for (const role of Object.keys(ROLE_NAMES)) {
+    const b = (await page.locator(`[data-ring="${role}"]`).boundingBox())!
+    expect(b.x).toBeGreaterThanOrEqual(card!.x)
+    expect(b.x + b.width).toBeLessThanOrEqual(card!.x + card!.width + 1)
+    // the role name is not truncated
+    const name = page.locator(`[data-ring="${role}"] [data-ring-name]`)
+    expect(await name.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true)
+  }
 })
 
 test('empty states: quiet sparkline, empty phase bar, nothing shipped in 14 days', async ({ page, qa }) => {

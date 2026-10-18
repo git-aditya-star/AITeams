@@ -4,7 +4,7 @@ import ActivitySpark, { activityHeadline } from './dashboard/ActivitySpark'
 import NeedsYouTiles from './dashboard/NeedsYouTiles'
 import PhaseBar, { featuresHeadline } from './dashboard/PhaseBar'
 import ShippedTimeline, { shippedHeadline } from './dashboard/ShippedTimeline'
-import TeamRings from './dashboard/TeamRings'
+import TeamRings, { teamHeadline } from './dashboard/TeamRings'
 import { Card, CardContent, CardHeader } from './ui/card'
 
 // F-18 v2: the Dashboard as a 12-column grid of titled cards: four KPI cards, then Activity (wide) + Features,
@@ -70,7 +70,7 @@ export default function DashboardView({ onSelect }: { onSelect: (id: string, mes
         >
           {dash.shipped?.timeline ? <ShippedTimeline shipped={dash.shipped} onSelect={onSelect} /> : <Missing />}
         </Block>
-        <Block id="team" title="Team" className={NARROW}>
+        <Block id="team" title="Team" headline={<span data-team-headline>{teamHeadline(byRole)}</span>} className={NARROW}>
           <TeamRings byRole={byRole} />
         </Block>
       </div>
