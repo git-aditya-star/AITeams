@@ -70,11 +70,12 @@ def docs_list(db: ProjectDB, project_path: str, feat: dict) -> list[dict]:
 
 
 def design_state(db: ProjectDB, feat: dict) -> str:
-    """F-21: approved | pending | changes | none, from the feature's latest `Design:` approval."""
+    """F-21: approved | pending | changes | rejected | none, from the feature's latest `Design:` approval."""
     return db.design_info(feat["id"], feat["created_at"])["state"]
 
 
-DESIGN_WORDS = {"approved": "approved", "pending": "pending", "changes": "changes requested", "none": "not requested"}
+DESIGN_WORDS = {"approved": "approved", "pending": "pending", "changes": "changes requested", "rejected": "rejected",
+                "none": "not requested"}
 
 
 def design_line(db: ProjectDB, feat: dict) -> str:
@@ -468,11 +469,11 @@ async def decide_approval(st, proj: Project, aid: int, decision: str, note: str 
         raise HTTPException(404, "unknown approval")
     if a["state"] != "pending":
         raise HTTPException(409, f"approval is {a['state']}")
-    if decision not in ("approve", "changes"):
-        raise HTTPException(400, "decision must be approve|changes")
+    if decision not in ("approve", "changes", "reject"):
+        raise HTTPException(400, "decision must be approve|changes|reject")
     if set_phase and set_phase not in PHASES:
         raise HTTPException(400, "bad set_phase")
-    state = "approved" if decision == "approve" else "changes_requested"
+    state = {"approve": "approved", "changes": "changes_requested", "reject": "rejected"}[decision]
     a = proj.db.resolve_approval(aid, state, note)
     feat = proj.db.feature(a["feature_id"]) if a["feature_id"] else None
     extra = ""
@@ -482,12 +483,14 @@ async def decide_approval(st, proj: Project, aid: int, decision: str, note: str 
         extra = f" (phase → {set_phase})"
     if decision == "approve":
         text = f"Approved: {a['title']}{extra}" + (f"\n\n{note}" if note else "")
+    elif decision == "reject":  # F-25: "no, stop"; Changes requested means revise and ask again
+        text = f"Rejected: {a['title']}" + (f"\n\n{note}" if note else "")
     else:
         text = f"Changes requested on {a['title']}: {note or '(no note)'}"
     conv = feat["conversation_id"] if feat else f"dm-{a['role']}"
     await _post(st, proj, conv, "master", f"@{a['role']} {text}", "Decision", [a["role"]])
-    await _activity(proj, "approval", f"{'Approved' if decision == 'approve' else 'Changes requested'}: {a['title']}",
-                    a["role"], a["feature_id"], conv, f"approval:{aid}")
+    word = {"approve": "Approved", "changes": "Changes requested", "reject": "Rejected"}[decision]
+    await _activity(proj, "approval", f"{word}: {a['title']}", a["role"], a["feature_id"], conv, f"approval:{aid}")
     await proj.hub.broadcast("approval", a)
     await broadcast_inbox(proj)
     return a

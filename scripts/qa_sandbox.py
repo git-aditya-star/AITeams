@@ -189,6 +189,12 @@ async def seed(st, proj) -> None:
     db.x("UPDATE features SET lead='lead'")
     f4 = await workflow.new_feature(st, proj, "Order export schedule", "build", "backend")
     db.x("UPDATE features SET lead='lead-2' WHERE id=?", f4["id"])
+    # F-25: two resolved approvals on F-3 for History's Approvals tab and the outcome badges. Last, and straight to the
+    # db (no message), so no seeded id or message count moves. Their ids come after every seeded approval (#3, #4).
+    ch = db.create_approval(f3["id"], "backend", None, "Use skill: team-skills:local-preview", "Preview the notes page locally.")
+    db.resolve_approval(ch["id"], "changes_requested", "Say which page, then ask again.")
+    rj = db.create_approval(f3["id"], "frontend", None, "Scope lock: Order notes export", "Also export notes to PDF.")
+    db.resolve_approval(rj["id"], "rejected", "PDF is out of scope for this release.")
 
 
 LIVE_EVENTS = [

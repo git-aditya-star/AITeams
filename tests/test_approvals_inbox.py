@@ -65,6 +65,68 @@ def test_changes_requested_and_no_feature(client, pid):
     assert client.post(f"/api/p/{pid}/approvals/99/decide", json={"decision": "approve"}).status_code == 404
 
 
+def test_reject_with_and_without_a_note(client, pid):
+    """F-25: `reject` closes the approval as `rejected`, tells the requester, and is final."""
+    proj = client.app.state.app.projects[pid]
+    client.post(f"/api/p/{pid}/features", json={"text": "Export", "starter": "product"})
+    product, qa = turn(client, pid, "product"), turn(client, pid, "qa")
+    a1 = client.post("/internal/approvals", json={"feature": "F-1", "title": "Use skill: acme:deploy", "summary": "s"},
+                     headers=product).json()["id"]
+    a2 = client.post("/internal/approvals", json={"title": "Skip flaky test?", "summary": "s"}, headers=qa).json()["id"]
+    assert client.get(f"/api/p/{pid}/inbox").json()["count"] == 2
+    proj.db.set_wake_state(proj.db.queued_wakes()[0]["id"], "started")
+    r = client.post(f"/api/p/{pid}/approvals/{a1}/decide", json={"decision": "reject", "note": "not now"}).json()
+    assert r["state"] == "rejected" and r["note"] == "not now" and r["resolved_at"]
+    last = client.get(f"/api/p/{pid}/messages", params={"conversation": "feature-1"}).json()[-1]
+    assert last["author"] == "master" and last["type"] == "Decision" and last["mentions"] == ["product"]
+    assert last["text"] == "@product Rejected: Use skill: acme:deploy\n\nnot now"
+    assert [w["role"] for w in proj.db.queued_wakes()] == ["product"]  # the requester hears about it
+    act = proj.db.q("SELECT kind, text FROM activity ORDER BY id DESC LIMIT 1")[0]
+    assert (act["kind"], act["text"]) == ("approval", "Rejected: Use skill: acme:deploy")
+    # no note, no feature: the Decision goes to the role's DM, with no trailing blank line
+    r = client.post(f"/api/p/{pid}/approvals/{a2}/decide", json={"decision": "reject"}).json()
+    assert r["state"] == "rejected" and r["note"] is None
+    last = client.get(f"/api/p/{pid}/messages", params={"conversation": "dm-qa"}).json()[-1]
+    assert last["text"] == "@qa Rejected: Skip flaky test?" and last["mentions"] == ["qa"]
+    # both left the Inbox; a second decision on either is 409; the list filter knows the new state
+    assert client.get(f"/api/p/{pid}/inbox").json()["count"] == 0
+    for aid in (a1, a2):
+        for d in ("reject", "approve", "changes"):
+            assert client.post(f"/api/p/{pid}/approvals/{aid}/decide", json={"decision": d}).status_code == 409
+    assert [x["id"] for x in client.get(f"/api/p/{pid}/approvals", params={"state": "rejected"}).json()] == [a2, a1]
+    assert client.get(f"/api/p/{pid}/approvals", params={"state": "approved"}).json() == []
+    assert client.get(f"/api/p/{pid}/approvals", params={"state": "pending"}).json() == []
+    assert client.get(f"/api/p/{pid}/approvals", params={"state": "refused"}).status_code == 400
+    m = [m for m in client.get(f"/api/p/{pid}/messages", params={"conversation": "feature-1"}).json() if m.get("approval")][0]
+    assert m["approval"]["state"] == "rejected"  # the embedded card row is live
+
+
+def test_a_bad_decision_is_a_400_that_names_all_three(client, pid):
+    qa = turn(client, pid, "qa")
+    aid = client.post("/internal/approvals", json={"title": "Skip flaky test?", "summary": "s"}, headers=qa).json()["id"]
+    for bad in ("rejected", "Reject", "no", ""):
+        r = client.post(f"/api/p/{pid}/approvals/{aid}/decide", json={"decision": bad})
+        assert r.status_code == 400 and r.json()["detail"] == "decision must be approve|changes|reject", bad
+    assert client.get(f"/api/p/{pid}/approvals").json()[0]["state"] == "pending"  # nothing changed
+
+
+def test_reject_never_sets_the_phase_and_changes_requested_keeps_its_words(client, pid):
+    proj = client.app.state.app.projects[pid]
+    client.post(f"/api/p/{pid}/features", json={"text": "Export", "starter": "product"})
+    product = turn(client, pid, "product")
+    a1 = client.post("/internal/approvals", json={"feature": "F-1", "title": "Scope lock: Export", "summary": "s"},
+                     headers=product).json()["id"]
+    r = client.post(f"/api/p/{pid}/approvals/{a1}/decide", json={"decision": "reject", "set_phase": "build"})
+    assert r.json()["state"] == "rejected" and proj.db.feature(1)["phase"] == "intake"
+    a2 = client.post("/internal/approvals", json={"feature": "F-1", "title": "Scope lock: Export v2", "summary": "s"},
+                     headers=product).json()["id"]
+    client.post(f"/api/p/{pid}/approvals/{a2}/decide", json={"decision": "changes", "note": "narrower"})
+    last = client.get(f"/api/p/{pid}/messages", params={"conversation": "feature-1"}).json()[-1]
+    assert last["text"] == "@product Changes requested on Scope lock: Export v2: narrower"
+    act = proj.db.q("SELECT text FROM activity ORDER BY id DESC LIMIT 1")[0]["text"]
+    assert act == "Changes requested: Scope lock: Export v2"
+
+
 def test_inbox_messages_and_resolve(client, pid):
     qa = turn(client, pid, "qa")
     hdr = qa

@@ -63,3 +63,29 @@ def test_legacy_team_skill_approval_still_counts_for_team_skills_only(client, re
     assert ok("team-skills:shared") is True
     assert ok("team-skills:cli-use") is False  # frontend's approval, not backend's
     assert ok("acme:local-preview") is False and ok("local-preview") is False  # the old title only widens team-skills
+
+
+def test_a_rejected_skill_approval_keeps_the_skill_refused_until_a_new_one_is_approved(client, repo):
+    """F-25: Reject is "not approved" for the Use skill gate, for the new title and the legacy one; a later approval of
+    the same skill (the role asked again with new information) opens it."""
+    pid = client.post("/api/projects/register", json={"path": str(repo)}).json()["id"]
+    db = client.app.state.app.projects[pid].db
+    _, hdr = running_turn(db, "backend", pid=pid)
+
+    def ok(skill):
+        return client.get("/internal/skill-approval", params={"skill": skill}, headers=hdr).json()["ok"]
+
+    def resolve(title, state):
+        a = db.create_approval(None, "backend", None, title, "why")
+        db.resolve_approval(a["id"], state, "no")
+
+    resolve("Use skill: acme:deploy", "rejected")
+    resolve("Use team-skill: local-preview", "rejected")
+    resolve("Use skill: acme:lint", "changes_requested")
+    assert not ok("acme:deploy") and not ok("team-skills:local-preview") and not ok("acme:lint")
+    resolve("Use skill: acme:deploy", "approved")  # asked again, this time approved
+    assert ok("acme:deploy") is True and not ok("team-skills:local-preview")
+    # through the real decide route too
+    a = db.create_approval(None, "backend", None, "Use skill: acme:fmt", "why")
+    client.post(f"/api/p/{pid}/approvals/{a['id']}/decide", json={"decision": "reject"})
+    assert db.approval(a["id"])["state"] == "rejected" and not ok("acme:fmt")

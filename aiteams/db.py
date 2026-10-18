@@ -558,14 +558,15 @@ class ProjectDB:
 
     def design_info(self, fid: int, created_at: float | None, gate_since=False) -> dict:
         """F-21: {state, approval_id, gated} from the feature's latest approval titled `Design:`. State is approved |
-        pending | changes | none. A feature is gated when it was created at/after kv design_gate_since (migration 8),
-        or has any Design approval (a redesign gates an older feature too). `gate_since` lets a loop fetch it once."""
+        pending | changes | rejected | none. A feature is gated when it was created at/after kv design_gate_since
+        (migration 8), or has any Design approval (a redesign gates an older feature too). `gate_since` lets a loop
+        fetch it once."""
         a = self.one("SELECT id, state FROM approvals WHERE feature_id=? AND trim(title) LIKE 'design:%'"
                      " ORDER BY id DESC LIMIT 1", fid)
         if gate_since is False:
             gate_since = self.get_kv("design_gate_since")
-        state = {"approved": "approved", "pending": "pending", "changes_requested": "changes"}.get(a["state"], "none") \
-            if a else "none"
+        state = {"approved": "approved", "pending": "pending", "changes_requested": "changes",
+                 "rejected": "rejected"}.get(a["state"], "none") if a else "none"
         gated = a is not None or (gate_since is not None and (created_at or 0) >= gate_since)
         return {"state": state, "approval_id": a["id"] if a else None, "gated": gated}
 

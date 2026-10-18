@@ -83,6 +83,37 @@ def test_pending_refused_then_approved_allowed_then_redesign_blocks_again(client
     assert file_commit(client, pid, name="b.py").status_code == 200
 
 
+def test_a_rejected_design_blocks_commits_until_a_newer_one_is_approved(client, pid):
+    """F-25: Reject on a `Design:` approval is "not approved": the gate stays shut, and the header says so."""
+    new_feature(client, pid)
+    db = proj_of(client, pid).db
+    first = design_approval(client, pid)
+    decide(client, pid, first, "reject")
+    assert db.feature(1)["design"] == {"state": "rejected", "approval_id": first, "gated": True}
+    assert "- design: rejected (#1)" in workflow.feature_header(db, "", db.feature(1))
+    assert client.get(f"/api/p/{pid}/features/1").json()["design"]["state"] == "rejected"
+    assert client.get(f"/api/p/{pid}/dashboard").json()["features"][0]["design"]["state"] == "rejected"
+    r = file_commit(client, pid)
+    assert r.status_code == 409
+    assert r.json()["detail"].startswith("F-1's design isn't approved yet (rejected).")
+    assert db.commits("all") == []
+    second = design_approval(client, pid, "Design: Export v2")  # asking again after a rejection is allowed
+    assert db.feature(1)["design"]["state"] == "pending" and file_commit(client, pid).status_code == 409
+    decide(client, pid, second, "approve")
+    assert db.feature(1)["design"]["state"] == "approved" and file_commit(client, pid).status_code == 200
+    third = design_approval(client, pid, "Design: Export v3")  # and a later rejection closes the gate again
+    decide(client, pid, third, "reject")
+    assert file_commit(client, pid, name="b.py").status_code == 409
+
+
+def test_a_rejected_non_design_approval_does_not_touch_the_design_state(client, pid):
+    new_feature(client, pid)
+    db = proj_of(client, pid).db
+    decide(client, pid, design_approval(client, pid), "approve")
+    decide(client, pid, design_approval(client, pid, "PRD ready: Export"), "reject")
+    assert db.feature(1)["design"]["state"] == "approved" and file_commit(client, pid).status_code == 200
+
+
 def test_the_lead_is_gated_too_and_other_approvals_dont_count(client, pid):
     new_feature(client, pid)
     other = design_approval(client, pid, "PRD ready: Export")

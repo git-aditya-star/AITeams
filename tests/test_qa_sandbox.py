@@ -212,3 +212,23 @@ def test_fire_plugin_missing_flags_a_row_and_reset_clears_it(sandbox):
         assert [r["id"] for r in c.get("/api/settings/plugins", headers=auth).json()["rows"]] == [notes, "acme@market"]
         assert c.post("/qa/reset", headers=auth).json() == {"ok": True}
         assert c.get("/api/settings/plugins", headers=auth).json() == {"rows": [], "status": {}}
+
+
+def test_seed_has_a_changes_requested_and_a_rejected_approval_on_f3(sandbox):
+    """F-25: two resolved approvals on F-3, created last with no message, so History's Approvals tab and the badge shots
+    have data and no seeded id moved (PRD #1 and the approved Design #2 keep their ids)."""
+    mod, work, _ = sandbox
+    app = mod.build_app(8790, work, "demo")
+    auth = {"Authorization": "Bearer sb-token"}
+    with TestClient(app) as c:
+        rows = {a["id"]: a for a in c.get("/api/p/demo/approvals", params={"state": "all"}, headers=auth).json()}
+        assert sorted(rows) == [1, 2, 3, 4]
+        assert (rows[1]["state"], rows[2]["state"]) == ("pending", "approved") and rows[2]["title"].startswith("Design:")
+        f3 = c.app.state.app.projects["demo"].db.feature("F-3")["id"]
+        assert (rows[3]["state"], rows[3]["feature_id"]) == ("changes_requested", f3) and rows[3]["note"]
+        assert (rows[4]["state"], rows[4]["feature_id"]) == ("rejected", f3) and rows[4]["note"]
+        assert all(rows[i]["message_id"] is None and rows[i]["resolved_at"] for i in (3, 4))
+        assert [r["id"] for r in c.get("/api/p/demo/approvals", params={"state": "rejected"}, headers=auth).json()] == [4]
+        assert len(c.get("/api/p/demo/inbox", headers=auth).json()["approvals"]) == 1  # still only the PRD card
+        new = c.post("/qa/fire", json={"kind": "approval"}, headers=auth).json()["approval"]
+        assert new == 5  # fired approvals follow the seeded ones
