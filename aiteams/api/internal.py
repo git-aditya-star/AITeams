@@ -7,7 +7,7 @@ import hmac
 from fastapi import APIRouter, HTTPException, Request
 
 from .. import workflow
-from ..config import ROLES
+from ..config import ROLES, role_name
 from ..db import EMOJI
 from ..models import (AskMasterBody, CheckpointBody, HandoffBody, InternalApprovalBody, InternalBrainstormBody,
                       InternalCommitBody, InternalFeatureBody, InternalFeaturePatchBody, InternalMessageBody,
@@ -123,7 +123,8 @@ async def permission(request: Request, body: PermissionBody):
 
 # ---- features / approvals / commits / locks (M1b) --------------------------------
 def _feature_line(f: dict) -> str:
-    return (f"{f['key']} · {f['phase']} · owner {f['owner'] or 'none'} · {f['title']} · conv {f['conversation_id']}"
+    return (f"{f['key']} · {f['phase']} · owner {f['owner'] or 'none'} · lead "
+            f"{role_name(f['lead']) if f.get('lead') else 'not assigned'} · {f['title']} · conv {f['conversation_id']}"
             + (" · archived" if f["archived"] else ""))
 
 

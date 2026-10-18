@@ -7,7 +7,27 @@ import secrets
 import uuid
 from pathlib import Path
 
-ROLES = ["manager", "lead", "product", "frontend", "backend", "qa"]
+ROLES = ["manager", "lead", "lead-2", "product", "frontend", "backend", "qa"]
+# F-22: two Leads. Lead 1 keeps the internal id `lead` (every table, DM and setting already uses it), Lead 2 is
+# `lead-2`; people see "Lead 1" / "Lead 2". `@lead-1` is an alias for `lead`.
+LEADS = ("lead", "lead-2")
+ROLE_NAMES = {"lead": "Lead 1", "lead-2": "Lead 2", **{r: r.capitalize() for r in ROLES if r not in LEADS}}
+
+
+def role_name(role: str) -> str:
+    """What the team and the Master see: "Lead 1", "Lead 2", "Backend"."""
+    return ROLE_NAMES.get(role) or str(role).capitalize()
+
+
+def base_role(role: str) -> str:
+    """The role whose prompt file an instance uses: lead-2 -> lead."""
+    return role[:-2] if len(role) > 2 and role[-2] == "-" and role[-1].isdigit() else role
+
+
+def canonical_role(name) -> str:
+    """Lower-case id without a leading @, with the Lead 1 alias resolved: lead-1 -> lead."""
+    r = str(name or "").strip().lstrip("@").lower()
+    return "lead" if r == "lead-1" else r
 # F-9: what the role settings dialog offers. `claude --help` lists fable as a model alias (2026-10-17).
 # Part 2: (id, label) pairs, aliases first. Only IDs the probe accepted AND that answer as themselves
 # (claude-opus-4-1 is accepted but runs Opus 5.5, so it is left out). See .aiteams/features/F-9/design.md.

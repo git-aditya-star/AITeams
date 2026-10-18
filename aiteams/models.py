@@ -51,6 +51,7 @@ class FeaturePatchBody(BaseModel):
     owner: str | None = None
     title: str | None = None
     archived: bool | None = None
+    lead: str | None = None  # F-22: lead | lead-1 | lead-2; null unassigns (Master only)
 
 
 class ApprovalDecideBody(BaseModel):
@@ -81,6 +82,7 @@ class InternalFeaturePatchBody(BaseModel):
     phase: str | None = None
     owner: str | None = None
     title: str | None = None
+    lead: str | None = None  # F-22: Manager only
 
 
 class AskMasterBody(BaseModel):

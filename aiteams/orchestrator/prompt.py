@@ -6,7 +6,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from ..config import ROLES
+from ..config import LEADS, ROLES, base_role, role_name
 from ..db import ProjectDB
 
 ROLES_DIR = Path(__file__).resolve().parent.parent / "roles"
@@ -21,8 +21,9 @@ def _read(path: Path) -> str:
 
 
 def role_prompt_text(project_path: str, role: str) -> str:
-    override = Path(project_path) / ".aiteams" / "roles" / f"{role}.md"
-    return _read(override) or _read(ROLES_DIR / f"{role}.md")
+    base = base_role(role)  # F-22: lead-2 uses lead.md
+    override = Path(project_path) / ".aiteams" / "roles" / f"{base}.md"
+    return _read(override) or _read(ROLES_DIR / f"{base}.md")
 
 
 def team_rules_text(project_path: str) -> str:
@@ -39,12 +40,24 @@ def git_branch(project_path: str) -> str:
         return "(unknown)"
 
 
-def build_system_prompt(project_path: str, project_name: str, role: str) -> str:
+def lead_line(role: str, features: list[str] | None) -> str | None:
+    """F-22: what a Lead may act on. `features` = keys of the open features whose Lead is this role."""
+    if role not in LEADS or features is None:
+        return None
+    mine = ", ".join(features) if features else "none yet"
+    return (f"You are {role_name(role)}. You act only in features whose Lead is you: {mine}. "
+            "Another Lead's feature is read-only for you.")
+
+
+def build_system_prompt(project_path: str, project_name: str, role: str, lead_features: list[str] | None = None) -> str:
+    title = (f"# You are {role_name(role)} of the AITeams team on project \"{project_name}\"" if role in LEADS
+             else f"# You are the {role_name(role)} of the AITeams team on project \"{project_name}\"")
     parts = [
-        f"# You are the {role.capitalize()} of the AITeams team on project \"{project_name}\"",
+        title,
         f"- Project path: {project_path}",
         f"- Git branch: {git_branch(project_path)}",
         f"- Roles on the team: {', '.join(ROLES)} (you are `{role}`; the human is the Master)",
+        *([f"- {lead_line(role, lead_features)}"] if lead_line(role, lead_features) else []),
         "",
         role_prompt_text(project_path, role).strip(),
         "",
@@ -57,11 +70,11 @@ def build_system_prompt(project_path: str, project_name: str, role: str) -> str:
     return "\n".join(parts) + "\n"
 
 
-def write_system_prompt(project_path: str, project_name: str, role: str) -> str:
+def write_system_prompt(project_path: str, project_name: str, role: str, lead_features: list[str] | None = None) -> str:
     d = Path(project_path) / ".aiteams" / "prompts"
     d.mkdir(parents=True, exist_ok=True)
     p = d / f"{role}.system.md"
-    p.write_text(build_system_prompt(project_path, project_name, role))
+    p.write_text(build_system_prompt(project_path, project_name, role, lead_features))
     return str(p)
 
 
@@ -102,7 +115,7 @@ def build_wake_prompt(db: ProjectDB, role: str, message_ids: list[int], handoff:
         out += [f"# Fresh session #{info['seq']} — handoff from your previous session "
                 f"(written {when}, reason: {handoff.get('reason') or 'rotation'})",
                 _read(Path(handoff["path"])).strip() or "(handoff file missing)", ""]
-    out.append(f"# New messages for {role.capitalize()}")
+    out.append(f"# New messages for {role_name(role)}")
     for cid, ms in by_conv.items():
         out.append("\n## " + _conv_label(db, cid))
         out += [_fmt(m) for m in ms]
@@ -137,7 +150,7 @@ def _conv_label(db: ProjectDB, cid: str) -> str:
 def build_handoff_prompt(db: ProjectDB, role: str, reason: str | None) -> str:
     info = db.session_info(role)
     return "\n".join([
-        f"# Handoff turn for {role.capitalize()} (session #{info['seq']})",
+        f"# Handoff turn for {role_name(role)} (session #{info['seq']})",
         f"Reason: {reason or 'rotation'}. This session is being retired; your next wake starts a fresh session"
         " that only knows what you write now.",
         "",
@@ -234,6 +247,7 @@ def build_compile_prompt(db: ProjectDB, project_path: str, standup: dict, team_r
     for f in feature_rows:
         w = f.get("waits_on")
         lines.append(f"- {f['key']} {f['title']}: phase {f['phase']}, owner {f['owner'] or 'none'}, "
+                     f"lead {role_name(f['lead']) if f.get('lead') else 'not assigned'}, "
                      f"waits on {w['who'] + ' (' + w['kind'] + ')' if w else 'nobody'}, last activity {_ago(f['last_activity'])}"
                      + (", STALE" if f.get("stale") else ""))
     if not feature_rows:

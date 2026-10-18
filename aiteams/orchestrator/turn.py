@@ -7,7 +7,7 @@ import secrets
 import time
 import uuid
 
-from ..config import effort_for, model_for
+from ..config import LEADS, effort_for, model_for
 from . import receipts
 from .claude_proc import ClaudeProc, build_cmd, child_env, display_argv
 from .prompt import (build_brainstorm_compile_prompt, build_brainstorm_prompt, build_compile_prompt,
@@ -110,7 +110,9 @@ class TurnRunner:
         if kind == "normal":
             await receipts.mark(db, hub, message_ids, role, "seen")
 
-        sys_file = write_system_prompt(self.project.path, self.project.name, role)
+        from ..workflow import lead_open_features  # late import: workflow imports this package
+        mine = lead_open_features(db, role) if role in LEADS else None  # F-22: a Lead's prompt names its features
+        sys_file = write_system_prompt(self.project.path, self.project.name, role, mine)
         self.project.delivered[tid] = db.max_message_id()  # F-16: the prompt shows everything up to here
         prompt = self._prompt(kind, message_ids, handoff)
         db.update_turn(tid, prompt=prompt)

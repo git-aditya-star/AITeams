@@ -3,21 +3,23 @@ from __future__ import annotations
 
 import re
 
-from ..config import ROLES
+from ..config import ROLES, canonical_role
 from ..db import ProjectDB
 
-MENTION_RE = re.compile(r"(?<![\w@])@([a-zA-Z]+)\b")
+# F-22: `@name` or `@name-<digits>` (@lead-2); @lead-1 is an alias for @lead. A hyphen followed by anything else
+# still ends the name, as before (@lead-review mentions @lead).
+MENTION_RE = re.compile(r"(?<![\w@])@([a-zA-Z]+(?:-\d+)?)\b")
 
 
 def parse_mentions(text: str, extra: list[str] | None = None) -> list[str]:
     """Normalised, de-duplicated role list from @tokens in the text plus an explicit list."""
     found: list[str] = []
     for m in MENTION_RE.findall(text or ""):
-        r = m.lower()
+        r = canonical_role(m)
         if (r in ROLES or r == "master") and r not in found:
             found.append(r)
     for r in extra or []:
-        r = str(r).lower().lstrip("@")
+        r = canonical_role(r)
         if (r in ROLES or r == "master") and r not in found:
             found.append(r)
     return found

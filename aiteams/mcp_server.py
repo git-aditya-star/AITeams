@@ -60,11 +60,13 @@ TOOLS = [
          "phase": {"type": "string", "enum": ["intake", "spec", "design", "build", "qa", "done"], "default": "intake"},
          "owner": {"type": ["string", "null"]}}, "required": ["title"]}},
     {"name": "set_feature",
-     "description": "Change a feature's phase (any direction, it is a label), owner or title. Posts a System line.",
+     "description": "Change a feature's phase (any direction, it is a label), owner, title or Lead. Posts a System "
+                    "line. `lead` (lead-1 or lead-2) is the Manager's: it names the one Lead who acts in the feature.",
      "inputSchema": {"type": "object", "properties": {
          "feature": {"type": "string"},
          "phase": {"type": "string", "enum": ["intake", "spec", "design", "build", "qa", "done"]},
-         "owner": {"type": ["string", "null"]}, "title": {"type": "string"}}, "required": ["feature"]}},
+         "owner": {"type": ["string", "null"]}, "title": {"type": "string"},
+         "lead": {"type": "string", "enum": ["lead-1", "lead-2"]}}, "required": ["feature"]}},
     {"name": "ask_master",
      "description": "Ask the Master 1-6 multiple-choice questions as a clickable card (2-4 options each; the UI "
                     "always adds a free-text Other, so don't). Non-blocking: end your turn after posting; the "
@@ -250,7 +252,7 @@ def tool_create_feature(a):
 
 
 def tool_set_feature(a):
-    body = {k: a[k] for k in ("phase", "owner", "title") if k in a}
+    body = {k: a[k] for k in ("phase", "owner", "title", "lead") if k in a}
     return http("PATCH", "/internal/features/" + urllib.request.quote(str(a.get("feature") or "")), body)["header"]
 
 

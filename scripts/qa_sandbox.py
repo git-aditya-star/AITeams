@@ -120,7 +120,7 @@ def make_repo(repo: Path) -> None:
 
 
 async def seed(st, proj) -> None:
-    """Deterministic demo data: features F-1 (docs, chat with mentions, approval, question, commit request), F-2 (done) and F-3 (done, with a prd.md Summary and a request committed 3h ago); the early chat is backdated."""
+    """Deterministic demo data: features F-1 (docs, chat with mentions, approval, question, commit request), F-2 (done) F-3 (done, with a prd.md Summary and a request committed 3h ago) and F-4 (build, Lead 2); the early chat is backdated."""
     from aiteams import workflow
     from aiteams.api.public import post_message
 
@@ -181,6 +181,11 @@ async def seed(st, proj) -> None:
     c3 = db.create_commit(f3["id"], "backend", None, ["src/notes.py"], "add order notes", {}, "committed")
     db.x("UPDATE commits SET sha=?, created_at=?, updated_at=? WHERE id=?", "0a1b2c3", now - 3 * 3600 - 60,
          now - 3 * 3600, c3["id"])
+    # F-22: F-1..F-3 belong to Lead 1 (what migration 9 gives existing features); F-4, an active feature, to Lead 2.
+    # Direct SQL, so updated_at (History's order) and every seeded message id stay as they are.
+    db.x("UPDATE features SET lead='lead'")
+    f4 = await workflow.new_feature(st, proj, "Order export schedule", "build", "backend")
+    db.x("UPDATE features SET lead='lead-2' WHERE id=?", f4["id"])
 
 
 LIVE_EVENTS = [

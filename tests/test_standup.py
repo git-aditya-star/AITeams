@@ -123,7 +123,7 @@ def test_permissions(client, pid):
     assert "checkpoint (loops)" in proj.db.messages("dm-qa")[-1]["text"]
     assert client.post("/internal/standup", headers=manager).json()["status"] == "nothing_changed"
     team = client.get("/internal/team", headers=manager).json()["team"]
-    assert len(team) == 6 and team[5].startswith("qa: ") and "rotation pending (checkpoint: loops)" in team[5]
+    assert len(team) == 7 and team[6].startswith("qa: ") and "rotation pending (checkpoint: loops)" in team[6]
     # write_handoff works for any role in any turn
     r = client.post("/internal/handoff", json={"text": "notes"}, headers=backend).json()
     assert r["path"] == ".aiteams/handoffs/backend/1.md"

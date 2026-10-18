@@ -12,7 +12,7 @@ import time
 
 from fastapi import HTTPException
 
-from .config import ROLES, effort_for, model_for, model_label
+from .config import LEADS, ROLES, canonical_role, effort_for, model_for, model_label, role_name
 from . import commit_graph
 from .db import PHASES, WAKE_KINDS, ProjectDB
 from .runtime import Project
@@ -86,6 +86,7 @@ def design_line(db: ProjectDB, feat: dict) -> str:
 def feature_header(db: ProjectDB, project_path: str, feat: dict, with_sizes: bool = False) -> str:
     lines = [f"# Feature {feat['key']}: {feat['title']}",
              f"- phase: {feat['phase']} · owner: {feat['owner'] or 'none'} · conversation id: {feat['conversation_id']}"
+             f" · lead: {role_name(feat['lead']) if feat.get('lead') else 'not assigned'}"
              + (" · ARCHIVED" if feat["archived"] else "")]
     lines.append(design_line(db, feat))
     docs = docs_list(db, project_path, feat)
@@ -155,6 +156,16 @@ async def set_feature(st, proj: Project, feat: dict, fields: dict, by: str) -> d
         if fields["owner"] and fields["owner"] not in ROLES:
             raise HTTPException(400, "unknown owner role")
         changes["owner"] = fields["owner"] or None
+    if "lead" in fields:  # F-22: the Manager assigns a feature's Lead; the Master can change it from the header
+        if by not in ("master", "manager"):
+            raise HTTPException(403, "only the Manager assigns a feature's Lead")
+        lead = canonical_role(fields["lead"]) or None
+        if lead is None and by != "master":
+            raise HTTPException(400, "lead must be lead-1 or lead-2")
+        if lead is not None and lead not in LEADS:
+            raise HTTPException(400, "lead must be lead-1 or lead-2")
+        if lead != feat.get("lead"):
+            changes["lead"] = lead
     if fields.get("title") and fields["title"].strip() != feat["title"]:
         changes["title"] = fields["title"].strip()[:200]
     if fields.get("archived") is not None and bool(fields["archived"]) != feat["archived"]:
@@ -167,14 +178,52 @@ async def set_feature(st, proj: Project, feat: dict, fields: dict, by: str) -> d
     for k, v in changes.items():
         if k == "archived":
             lines.append(f"{who} {'archived' if v else 'unarchived'} {feat['key']}")
+        elif k == "lead":
+            lines.append(f"Lead set to {role_name(v) if v else 'not assigned'} by {who}")
         else:
             lines.append(f"{who} set {k} {v if v is not None else 'none'}")
     await _post(st, proj, feat["conversation_id"], "system", "\n".join(lines), "System", [])
+    if changes.get("lead"):  # the new Lead gets a wake in the feature; locks don't move
+        await _post(st, proj, feat["conversation_id"], "master" if by == "master" else by,
+                    f"@{changes['lead']} {feat['key']} is yours now.", "Message", [changes["lead"]])
     if "phase" in changes:
         await _activity(proj, "phase", f"{feat['key']} phase → {changes['phase']} ({who})",
                         None if by == "master" else by, feat["id"], feat["conversation_id"])
     await proj.hub.broadcast("feature", feat)
     return feat
+
+
+def lead_open_features(db: ProjectDB, role: str) -> list[str]:
+    """F-22: keys of the open (not done, not archived) features whose Lead is `role`, oldest first."""
+    return [f"F-{r['id']}" for r in db.q("SELECT id FROM features WHERE lead=? AND phase!='done' AND archived=0"
+                                         " ORDER BY id", role)]
+
+
+def _lead_busy(st, proj: Project, role: str) -> bool:
+    running = st.scheduler.running if st.scheduler else {}
+    return (proj.id, role) in running or any(proj.db.queued_wake(role, k) for k in WAKE_KINDS)
+
+
+async def feature_lead(st, proj: Project, feat: dict) -> str:
+    """F-22: the Lead of a feature. A feature with no Lead yet (the Manager hasn't assigned one) gets one now, so
+    nothing waits on the Manager's turn: an idle Lead if there is one, else whichever has fewer open features,
+    then Lead 1. The pick is stored and announced in the feature."""
+    db = proj.db
+    fresh = db.feature(feat["id"]) or feat
+    if fresh.get("lead") in LEADS:
+        return fresh["lead"]
+    busy = {r: _lead_busy(st, proj, r) for r in LEADS}
+    pool = [r for r in LEADS if not busy[r]] or list(LEADS)
+    load = {r: len(lead_open_features(db, r)) for r in LEADS}
+    pick = min(pool, key=lambda r: (load[r], LEADS.index(r)))
+    other = next(r for r in LEADS if r != pick)
+    why = (f"{role_name(other)} was busy" if not busy[pick] and busy[other]
+           else "fewer open features" if load[pick] != load[other] else "default")
+    feat = db.update_feature(fresh["id"], lead=pick)
+    await _post(st, proj, feat["conversation_id"], "system", f"{role_name(pick)} picked automatically ({why}).",
+                "System", [])
+    await proj.hub.broadcast("feature", feat)
+    return pick
 
 
 def resolve_feature(db: ProjectDB, ident) -> dict | None:
@@ -1170,7 +1219,7 @@ async def write_handoff(st, proj: Project, role: str, turn: dict, text: str) -> 
         from .orchestrator.turn import context_window_from
         res = json.loads(last[0]["result_json"]) if last[0].get("result_json") else None
         pct = last[0]["context_tokens"] / (context_window_from(res, None) or 1)
-    header = (f"# Handoff — {role.capitalize()}, session #{info['seq']}\n"
+    header = (f"# Handoff — {role_name(role)}, session #{info['seq']}\n"
               f"written {time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime())}\nreason: {reason}\n"
               + (f"context: {pct:.0%}\n" if pct is not None else "") + "\n")
     with open(path, "w", encoding="utf-8") as f:

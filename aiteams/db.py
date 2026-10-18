@@ -637,7 +637,7 @@ class ProjectDB:
         return self.feature(fid)
 
     def update_feature(self, fid: int, **fields) -> dict:
-        fields = {k: v for k, v in fields.items() if k in ("title", "phase", "owner", "archived")}
+        fields = {k: v for k, v in fields.items() if k in ("title", "phase", "owner", "archived", "lead")}
         if fields:
             if "archived" in fields:
                 fields["archived"] = 1 if fields["archived"] else 0
@@ -860,6 +860,13 @@ def _migration_8(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT OR REPLACE INTO kv(key, value) VALUES('design_gate_since', ?)", (json.dumps(design_gate_start()),))
 
 
+def _migration_9(conn: sqlite3.Connection) -> None:
+    """F-22: every feature has one Lead (`lead` = Lead 1, `lead-2` = Lead 2; NULL = not assigned yet). Features that
+    exist when this ships all belong to Lead 1."""
+    conn.execute("ALTER TABLE features ADD COLUMN lead TEXT NULL")
+    conn.execute("UPDATE features SET lead='lead'")
+
+
 MIGRATIONS: list = [
     _migration_1,
     "ALTER TABLE turns ADD COLUMN token TEXT",
@@ -874,4 +881,5 @@ MIGRATIONS: list = [
     "ALTER TABLE commits ADD COLUMN requires TEXT NULL",
     _migration_7,
     _migration_8,
+    _migration_9,
 ]

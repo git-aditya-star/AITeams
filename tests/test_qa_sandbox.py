@@ -158,3 +158,31 @@ def test_seed_f1_has_an_approved_design(sandbox):
         assert f1["design"] == {"state": "approved", "approval_id": 2, "gated": True}
         approvals = c.get("/api/p/demo/inbox", headers=auth).json()["approvals"]
         assert [a["id"] for a in approvals] == [1]
+
+
+def test_seed_has_lead_1_and_lead_2_features(sandbox):
+    """F-22: F-1..F-3 belong to Lead 1 (as migration 9 leaves existing features), the active F-4 to Lead 2; the seed
+    adds it last, so the ids and order the other specs rely on don't move."""
+    mod, work, _ = sandbox
+    app = mod.build_app(8790, work, "demo")
+    auth = {"Authorization": "Bearer sb-token"}
+    with TestClient(app) as c:
+        feats = {f["key"]: f for f in c.get("/api/p/demo/features", params={"history": 1}, headers=auth).json()}
+        assert {k: f["lead"] for k, f in feats.items()} == {"F-1": "lead", "F-2": "lead", "F-3": "lead", "F-4": "lead-2"}
+        assert feats["F-4"]["phase"] == "build" and feats["F-4"]["title"] == "Order export schedule"
+        dash = c.get("/api/p/demo/dashboard", headers=auth).json()
+        assert [f["key"] for f in dash["features"]] == ["F-4", "F-1"]  # active, newest first
+        assert [f["key"] for f in dash["shipped"]["timeline"]] == ["F-3", "F-2"]
+        inbox = c.get("/api/p/demo/inbox", headers=auth).json()
+        assert [x["id"] for x in inbox["commits"]] == [1] and [a["id"] for a in inbox["approvals"]] == [1]
+
+
+def test_fire_message_as_lead_2(sandbox):
+    """F-22: qa.fire('message', {role: 'lead-2'}) posts as Lead 2 (the e2e specs rely on it)."""
+    mod, work, _ = sandbox
+    app = mod.build_app(8790, work, "demo")
+    auth = {"Authorization": "Bearer sb-token"}
+    with TestClient(app) as c:
+        r = c.post("/qa/fire", json={"kind": "message", "role": "lead-2", "text": "from Lead 2"}, headers=auth).json()
+        msgs = c.get("/api/p/demo/messages", params={"conversation": r["conversation"]}, headers=auth).json()
+        assert msgs[-1]["author"] == "lead-2" and msgs[-1]["text"] == "from Lead 2"
