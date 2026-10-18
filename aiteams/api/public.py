@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .. import config
 from ..config import ROLES
-from .. import workflow
+from .. import plugins, workflow
 from ..models import AnswerBody, ConversationBody, FreshStartBody, MessageBody, PauseBody, RegisterBody
 from ..orchestrator import router as routing
 from ..orchestrator import receipts
@@ -138,6 +138,12 @@ def settings_options():
     return {"roles": config.ROLES, "models": [{"id": i, "label": lbl} for i, lbl in config.MODELS],
             "efforts": list(config.EFFORTS),
             "effort_support": {m: list(v) for m, v in config.EFFORT_SUPPORT.items()}}
+
+
+@api.get("/settings/plugins")
+def get_plugin_settings(request: Request):
+    """F-23: the saved plugin rows plus the missing check's last status per On row (saved through PUT /settings)."""
+    return plugins.plugins_view(_state(request))
 
 
 @api.put("/settings")

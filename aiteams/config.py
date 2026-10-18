@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import uuid
 from pathlib import Path
@@ -57,7 +58,11 @@ DEFAULT_SETTINGS = {
     "rotate_pct": 0.6,
     "stale_hours": 4,
     "fail_streak_rotate": 3,
+    # F-23: one global plugin list for every role's turn, [{"id": "name@marketplace", "on": bool, "ask": bool}].
+    # Empty by default (upgrade included): an unlisted plugin is left to Claude Code's own default.
+    "plugins": [],
 }
+PLUGIN_ID_RE = re.compile(r"^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$")
 
 
 def home() -> Path:
@@ -86,6 +91,7 @@ def load_settings() -> dict:
     for k in ("models", "efforts"):
         if not isinstance(s.get(k), dict):
             s[k] = {}
+    s["plugins"] = list(s["plugins"]) if isinstance(s.get("plugins"), list) else []
     return s
 
 
@@ -201,6 +207,54 @@ def model_label(model: str) -> str:
     return MODEL_LABELS.get(model, model)
 
 
+def plugin_name(plugin_id: str) -> str:
+    """`project-notes@project-notes` -> `project-notes`: the `<name>:` prefix of that plugin's skills."""
+    return str(plugin_id).split("@", 1)[0]
+
+
+def plugin_rows(settings: dict) -> list[dict]:
+    """The usable rows of settings["plugins"], first one per id. A hand-edited settings.json (non-objects, bad ids)
+    is skipped, so it can't crash a turn at spawn."""
+    rows, seen = [], set()
+    plugins = settings.get("plugins")
+    for r in plugins if isinstance(plugins, list) else []:
+        pid = r.get("id") if isinstance(r, dict) else None
+        if not (isinstance(pid, str) and PLUGIN_ID_RE.match(pid)) or pid.lower() in seen:
+            continue
+        seen.add(pid.lower())
+        rows.append({"id": pid, "on": r.get("on") is not False, "ask": r.get("ask") is True})
+    return rows
+
+
+def ask_plugin_names(settings: dict) -> list[str]:
+    """Names (plugin_name) of the plugins marked "Ask me first", for AITEAMS_ASK_PLUGINS."""
+    names = []
+    for r in plugin_rows(settings):
+        if r["ask"] and plugin_name(r["id"]) not in names:
+            names.append(plugin_name(r["id"]))
+    return names
+
+
+def validate_plugins(rows) -> list[dict]:
+    """F-23: check the `plugins` of a settings PUT; returns clean `{id, on, ask}` rows. Raises ValueError for the 400."""
+    if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+        raise ValueError("plugins must be a list of {id, on, ask} objects")
+    out, seen = [], set()
+    for r in rows:
+        pid = r.get("id")
+        pid = pid.strip() if isinstance(pid, str) else pid
+        if not (isinstance(pid, str) and PLUGIN_ID_RE.match(pid)):
+            raise ValueError(f"plugin id {pid!r} must look like name@marketplace (letters, digits, . _ -)")
+        if pid.lower() in seen:
+            raise ValueError(f"plugin {pid} is listed twice")
+        seen.add(pid.lower())
+        on, ask = r.get("on", True), r.get("ask", False)
+        if not isinstance(on, bool) or not isinstance(ask, bool):
+            raise ValueError(f"plugin {pid}: on and ask must be true or false")
+        out.append({"id": pid, "on": on, "ask": ask})
+    return out
+
+
 def validate_role_settings(body: dict, current: dict | None = None) -> dict:
     """Check the F-9 keys of a settings PUT; returns the body with inherit values ("" / None) removed from
     models/efforts. Raises ValueError with a message for the 400. Only keys in the body are checked, and a model
@@ -234,4 +288,6 @@ def validate_role_settings(body: dict, current: dict | None = None) -> dict:
                 raise ValueError(f"{key}.{role} must be one of {', '.join(allowed)}")
             clean[role] = v
         out[key] = clean
+    if "plugins" in out:
+        out["plugins"] = validate_plugins(out["plugins"])
     return out

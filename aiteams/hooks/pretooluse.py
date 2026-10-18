@@ -161,22 +161,23 @@ def check_lock(rel):
              % (rel, res.get("holder"), since))
 
 
-TEAM_SKILLS = "team-skills:"
-
-
 def check_skill(inp):
-    """team-skills need the Master's approval (F-5): ask the daemon; fail closed on any error during a turn."""
+    """Skills of a plugin marked "Ask me first" (F-23, AITEAMS_ASK_PLUGINS) need the Master's approval: ask the daemon;
+    fail closed on any error during a turn. Every other skill passes with no call."""
     skill = str(inp.get("skill") or "").strip()
-    if not skill.lower().startswith(TEAM_SKILLS):
+    plugin, sep, name = skill.partition(":")
+    plugin, name = plugin.strip().lower(), name.strip()
+    gated = {n.strip().lower() for n in os.environ.get("AITEAMS_ASK_PLUGINS", "").split(",") if n.strip()}
+    if not (sep and plugin in gated):
         return
     url, project, turn = (os.environ.get("AITEAMS_DAEMON_URL"), os.environ.get("AITEAMS_PROJECT"),
                           os.environ.get("AITEAMS_TURN"))
     if not (url and project and turn):
         return  # not a role turn (tests, the Master's own session)
-    name = skill[len(TEAM_SKILLS):].strip()
-    reason = ("team-skills need the Master's approval first: request_approval(feature, 'Use team-skill: %s', why), "
-              "end your turn, and use it after the approving Decision." % name)
-    req = urllib.request.Request(url.rstrip("/") + "/internal/skill-approval?skill=" + urllib.parse.quote(name, safe=""),
+    full = "%s:%s" % (plugin, name)
+    reason = ("%s skills need the Master's approval first: request_approval(feature, 'Use skill: %s', why), "
+              "end your turn, and use it after the approving Decision." % (plugin, full))
+    req = urllib.request.Request(url.rstrip("/") + "/internal/skill-approval?skill=" + urllib.parse.quote(full, safe=""),
                                  headers={"X-AITeams-Project": project, "X-AITeams-Turn": turn,
                                           "X-AITeams-Token": os.environ.get("AITEAMS_TURN_TOKEN", "")})
     try:

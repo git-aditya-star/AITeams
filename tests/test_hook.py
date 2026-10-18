@@ -155,35 +155,56 @@ def test_lock_allow_and_deny(repo, home, stub):
     assert len(_Stub.calls) == n
 
 
-def test_team_skills_gate(repo, home, stub):
-    """F-5: team-skills:* asks the daemon (short name, URL-encoded); other skills pass with no call."""
-    env = {"AITEAMS_DAEMON_URL": stub, "AITEAMS_PROJECT": "p1", "AITEAMS_TURN": "7", "AITEAMS_TURN_TOKEN": "tok"}
-    assert run_hook_env(repo, home, "Skill", {"skill": "code-review"}, env) is None
+GATED = {"AITEAMS_ASK_PLUGINS": "team-skills"}  # F-23: what a turn's env carries when the Master marked team-skills
+
+
+def test_ask_me_first_gate(repo, home, stub):
+    """F-23: `<plugin>:<skill>` of a plugin in AITEAMS_ASK_PLUGINS asks the daemon (URL-encoded); everything else, and
+    every skill while the list is empty, passes with no call."""
+    env = {"AITEAMS_DAEMON_URL": stub, "AITEAMS_PROJECT": "p1", "AITEAMS_TURN": "7", "AITEAMS_TURN_TOKEN": "tok", **GATED}
+    for skill in ("code-review", "project-notes:project-notes", "teamskills:x", "team-skills-extra:x", "team-skills"):
+        assert run_hook_env(repo, home, "Skill", {"skill": skill}, env) is None, skill
     assert run_hook_env(repo, home, "Skill", {"skill": "update-config", "args": "team-skills:x"}, env) is None
+    nothing_gated = {**env, "AITEAMS_ASK_PLUGINS": ""}
+    assert run_hook_env(repo, home, "Skill", {"skill": "team-skills:local-preview"}, nothing_gated) is None  # empty list
     assert _Stub.calls == []
     _Stub.response = {"ok": False}
     for skill in ("team-skills:local-preview", "Team-Skills:local-preview", "  team-skills: local-preview "):
         res = run_hook_env(repo, home, "Skill", {"skill": skill}, env)
-        assert denied(res) and "'Use team-skill: local-preview'" in res["permissionDecisionReason"], skill
-    assert [c[0] for c in _Stub.calls] == ["/internal/skill-approval?skill=local-preview"] * 3
+        assert denied(res) and "team-skills skills need" in res["permissionDecisionReason"], skill
+        assert "'Use skill: team-skills:local-preview'" in res["permissionDecisionReason"], skill
+    assert [c[0] for c in _Stub.calls] == ["/internal/skill-approval?skill=team-skills%3Alocal-preview"] * 3
     assert _Stub.calls[0][1]["x-aiteams-turn"] == "7" and _Stub.calls[0][1]["x-aiteams-token"] == "tok"
     _Stub.response = {"ok": True}
     assert run_hook_env(repo, home, "Skill", {"skill": "team-skills:local-preview"}, env) is None
     run_hook_env(repo, home, "Skill", {"skill": "team-skills:a b/c&d"}, env)
-    assert _Stub.calls[-1][0] == "/internal/skill-approval?skill=a%20b%2Fc%26d"
+    assert _Stub.calls[-1][0] == "/internal/skill-approval?skill=team-skills%3Aa%20b%2Fc%26d"
+
+
+def test_ask_me_first_gate_any_plugin_and_several(repo, home, stub):
+    """F-23: any plugin can be gated; the env list is comma-separated and matched case-insensitively."""
+    env = {"AITEAMS_DAEMON_URL": stub, "AITEAMS_PROJECT": "p1", "AITEAMS_TURN": "7", "AITEAMS_TURN_TOKEN": "tok",
+           "AITEAMS_ASK_PLUGINS": "project-notes, Acme"}
+    _Stub.response = {"ok": False}
+    res = run_hook_env(repo, home, "Skill", {"skill": "acme:deploy"}, env)
+    assert denied(res) and "'Use skill: acme:deploy'" in res["permissionDecisionReason"]
+    assert denied(run_hook_env(repo, home, "Skill", {"skill": "project-notes:project-notes"}, env))
+    assert run_hook_env(repo, home, "Skill", {"skill": "team-skills:local-preview"}, env) is None  # not in the list
+    assert [c[0] for c in _Stub.calls] == ["/internal/skill-approval?skill=acme%3Adeploy",
+                                           "/internal/skill-approval?skill=project-notes%3Aproject-notes"]
 
 
 @pytest.mark.parametrize("reply", [(500, b'{"ok": true}'), (200, b"not json"), (200, b"{}"), (200, b'{"ok": "yes"}'),
                                    (200, b"[true]")])
-def test_team_skills_gate_fails_closed_on_bad_answers(repo, home, stub, reply):
+def test_ask_me_first_gate_fails_closed_on_bad_answers(repo, home, stub, reply):
     _Stub.get_reply = reply
-    env = {"AITEAMS_DAEMON_URL": stub, "AITEAMS_PROJECT": "p1", "AITEAMS_TURN": "7", "AITEAMS_TURN_TOKEN": "tok"}
+    env = {"AITEAMS_DAEMON_URL": stub, "AITEAMS_PROJECT": "p1", "AITEAMS_TURN": "7", "AITEAMS_TURN_TOKEN": "tok", **GATED}
     assert denied(run_hook_env(repo, home, "Skill", {"skill": "team-skills:local-preview"}, env))
 
 
 @pytest.mark.parametrize("raw", [b"NOT-HTTP garbage\r\n\r\n",  # BadStatusLine
                                  b"HTTP/1.1 200 OK\r\nContent-Length: 50\r\n\r\n{\"ok\": true}"])  # IncompleteRead
-def test_team_skills_gate_fails_closed_on_broken_http(repo, home, raw):
+def test_ask_me_first_gate_fails_closed_on_broken_http(repo, home, raw):
     """QA finding on #20: http.client errors are not OSError; the hook must deny, not crash (a crash runs the tool)."""
     import socket
     srv = socket.socket()
@@ -197,7 +218,7 @@ def test_team_skills_gate_fails_closed_on_broken_http(repo, home, raw):
         conn.close()
     threading.Thread(target=serve, daemon=True).start()
     env = {"AITEAMS_DAEMON_URL": "http://127.0.0.1:%d" % srv.getsockname()[1], "AITEAMS_PROJECT": "p1",
-           "AITEAMS_TURN": "7", "AITEAMS_TURN_TOKEN": "tok"}
+           "AITEAMS_TURN": "7", "AITEAMS_TURN_TOKEN": "tok", **GATED}
     try:
         res = run_hook_env(repo, home, "Skill", {"skill": "team-skills:local-preview"}, env)  # asserts exit 0
     finally:
@@ -205,11 +226,11 @@ def test_team_skills_gate_fails_closed_on_broken_http(repo, home, raw):
     assert denied(res) and "did not answer" in res["permissionDecisionReason"]
 
 
-def test_team_skills_gate_fails_closed_without_daemon_but_not_outside_a_turn(repo, home):
-    env = {"AITEAMS_DAEMON_URL": "http://127.0.0.1:1", "AITEAMS_PROJECT": "p1", "AITEAMS_TURN": "7"}
+def test_ask_me_first_gate_fails_closed_without_daemon_but_not_outside_a_turn(repo, home):
+    env = {"AITEAMS_DAEMON_URL": "http://127.0.0.1:1", "AITEAMS_PROJECT": "p1", "AITEAMS_TURN": "7", **GATED}
     res = run_hook_env(repo, home, "Skill", {"skill": "team-skills:local-preview"}, env)
     assert denied(res) and "did not answer" in res["permissionDecisionReason"]
-    assert run_hook(repo, home, "Skill", {"skill": "team-skills:local-preview"}) is None  # no turn env: not a role turn
+    assert run_hook_env(repo, home, "Skill", {"skill": "team-skills:local-preview"}, GATED) is None  # no turn env
 
 
 def test_lock_check_fails_open_without_daemon(repo, home):

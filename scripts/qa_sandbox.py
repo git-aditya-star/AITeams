@@ -27,7 +27,7 @@ DEMO_ID = "demo"
 DEFAULT_TOKEN = "qa-sandbox-token"
 FIRE_KINDS = ("message", "question", "question_message", "blocker", "approval", "commit_request", "committed",
               "commit_failed", "standup", "stopped", "interrupted", "fresh_session", "rate_limit", "rate_clear",
-              "reaction", "card", "card_withdraw", "brainstorm", "commit_group")
+              "reaction", "card", "card_withdraw", "brainstorm", "commit_group", "plugin_missing")
 
 
 def isolate_env(home: Path, token: str) -> None:
@@ -209,7 +209,7 @@ LIVE_EVENTS = [
 
 async def fire(st, proj, body: dict) -> dict:
     """Emit one live event through the real code paths; returns the conversation the toast should open."""
-    from aiteams import workflow
+    from aiteams import config, plugins, workflow
     from aiteams.api.public import post_message
 
     db, hub, repo = proj.db, proj.hub, Path(proj.path)
@@ -321,6 +321,15 @@ async def fire(st, proj, body: dict) -> dict:
     elif kind == "rate_clear":
         await st.set_rate_limit({"status": "allowed"})
         out["conversation"] = None
+    elif kind == "plugin_missing":
+        # F-23: a plugin switched On that a turn did not load. {id, role, loaded: true} makes it load instead, which clears it.
+        pid = body.get("id") or "project-notes@project-notes"
+        if not any(r["id"] == pid and r["on"] for r in config.plugin_rows(st.settings)):
+            rows = [r for r in config.plugin_rows(st.settings) if r["id"] != pid]
+            st.settings = config.save_settings({"plugins": [*rows, {"id": pid, "on": True, "ask": False}]})
+        init = {"type": "system", "subtype": "init", "plugins": [{"name": config.plugin_name(pid), "source": pid}]
+                if body.get("loaded") else [{"name": "team-skills", "source": "team-skills@example"}]}
+        out.update(plugin=pid, flagged=await plugins.check_plugins(st, proj, role, init), conversation=None)
     return out
 
 
@@ -387,6 +396,8 @@ def build_app(port: int, workdir: Path, seed_kind: str):
     async def qa_reset(request: Request):
         st = request.app.state.app
         await st.set_rate_limit({"status": "allowed"})  # a fired rate_limit must not leak into the next test
+        st.plugin_status.clear()  # nor a fired plugin_missing or its row
+        st.settings = config.save_settings({"plugins": []})
         if seed_kind == "empty":
             for p in st.projects.values():
                 p.db.close()

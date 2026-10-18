@@ -186,3 +186,29 @@ def test_fire_message_as_lead_2(sandbox):
         r = c.post("/qa/fire", json={"kind": "message", "role": "lead-2", "text": "from Lead 2"}, headers=auth).json()
         msgs = c.get("/api/p/demo/messages", params={"conversation": r["conversation"]}, headers=auth).json()
         assert msgs[-1]["author"] == "lead-2" and msgs[-1]["text"] == "from Lead 2"
+
+
+def test_fire_plugin_missing_flags_a_row_and_reset_clears_it(sandbox):
+    """F-23: qa.fire('plugin_missing') adds an On row that no turn loaded: a WS frame, GET /api/settings/plugins status,
+    one toast per flip; {loaded: true} clears it; reset drops the row and the status."""
+    mod, work, _ = sandbox
+    app = mod.build_app(8790, work, "demo")
+    auth = {"Authorization": "Bearer sb-token"}
+    notes = "project-notes@project-notes"
+    with TestClient(app) as c:
+        assert c.get("/api/settings/plugins", headers=auth).json() == {"rows": [], "status": {}}
+        with c.websocket_connect("/ws/p/demo?token=sb-token") as ws:
+            r = c.post("/qa/fire", json={"kind": "plugin_missing", "role": "frontend"}, headers=auth).json()
+            assert r["plugin"] == notes and r["flagged"] == [notes]
+            frames = [ws.receive_json() for _ in range(2)]  # the socket's hello, then the event
+        assert frames[1] == {"event": "plugin_missing", "data": {"id": notes, "role": "frontend"}}
+        got = c.get("/api/settings/plugins", headers=auth).json()
+        assert got["rows"] == [{"id": notes, "on": True, "ask": False}]
+        assert got["status"][notes]["missing"] is True and got["status"][notes]["role"] == "frontend"
+        assert c.post("/qa/fire", json={"kind": "plugin_missing"}, headers=auth).json()["flagged"] == []  # once per flip
+        assert c.post("/qa/fire", json={"kind": "plugin_missing", "loaded": True}, headers=auth).json()["flagged"] == []
+        assert c.get("/api/settings/plugins", headers=auth).json()["status"][notes]["missing"] is False
+        c.post("/qa/fire", json={"kind": "plugin_missing", "id": "acme@market"}, headers=auth)
+        assert [r["id"] for r in c.get("/api/settings/plugins", headers=auth).json()["rows"]] == [notes, "acme@market"]
+        assert c.post("/qa/reset", headers=auth).json() == {"ok": True}
+        assert c.get("/api/settings/plugins", headers=auth).json() == {"rows": [], "status": {}}

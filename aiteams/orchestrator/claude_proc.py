@@ -9,19 +9,16 @@ import signal
 import sys
 from pathlib import Path
 
+from ..config import plugin_rows
+
 PKG = Path(__file__).resolve().parent.parent
 HOOK = str(PKG / "hooks" / "pretooluse.py")
 MCP_SERVER = str(PKG / "mcp_server.py")
 HOOK_TOOLS = "Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|Skill"
-# Plugins a role turn loads: the Master's keep/drop list (F-5 PRD). team-skills is gated by the hook (Master approval).
-# cc-plugin-sec-default is managed and stays loaded despite false (reported, F-5); the entry is harmless.
-PLUGINS = {"project-notes@project-notes": True, "team-skills@example": True,
-           "cc-plugin-sec-default@builtin": False, "cc-plugin-agents-md@builtin": False,
-           "cc-plugin-telemetry@builtin": False, "cc-plugin-plugin-authoring@builtin": False}
 
 
 def child_env(daemon_url: str, project_id: str, project_path: str, role: str, turn_id: int,
-              ask_timeout_s: int = 600, turn_token: str = "") -> dict:
+              ask_timeout_s: int = 600, turn_token: str = "", ask_plugins: list[str] | None = None) -> dict:
     env = dict(os.environ)
     env.pop("ANTHROPIC_API_KEY", None)
     env.pop("AITEAMS_TOKEN", None)  # the Master token never reaches a role
@@ -37,6 +34,8 @@ def child_env(daemon_url: str, project_id: str, project_path: str, role: str, tu
         "AITEAMS_TURN_TOKEN": turn_token,
         "AITEAMS_PROJECT_PATH": project_path,
         "AITEAMS_ASK_TIMEOUT_S": str(int(ask_timeout_s)),
+        # F-23: plugins marked "Ask me first" (the hook gates their skills); read once, so a change applies next turn
+        "AITEAMS_ASK_PLUGINS": ",".join(ask_plugins or []),
     })
     return env
 
@@ -55,10 +54,13 @@ def python_cmd() -> str:
 def build_cmd(settings: dict, role: str, env: dict, system_prompt_file: str, session_id: str,
               resume: bool, model: str, effort: str | None = None) -> list[str]:
     py = python_cmd()
-    hook_settings = {"hooks": {"PreToolUse": [{"matcher": HOOK_TOOLS, "hooks": [
-        {"type": "command", "command": f"{py} -B {HOOK}"}]}]},
-        # user-scope plugins still resolve under --setting-sources local (probed for F-4 and F-5)
-        "enabledPlugins": dict(PLUGINS)}
+    hook_settings: dict = {"hooks": {"PreToolUse": [{"matcher": HOOK_TOOLS, "hooks": [
+        {"type": "command", "command": f"{py} -B {HOOK}"}]}]}}
+    # F-23: exactly the Master's list (on = true, off = false); no key at all when it is empty, so Claude Code's own
+    # defaults apply. User-scope plugins still resolve under --setting-sources local (probed for F-4 and F-5).
+    rows = plugin_rows(settings)
+    if rows:
+        hook_settings["enabledPlugins"] = {r["id"]: r["on"] for r in rows}
     mcp = {"mcpServers": {"aiteams": {"command": py, "args": ["-B", MCP_SERVER], "env": aiteams_env(env)}}}
     cmd = ["claude", "-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose",
            "--include-partial-messages", "--include-hook-events",

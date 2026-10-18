@@ -7,7 +7,8 @@ import secrets
 import time
 import uuid
 
-from ..config import LEADS, effort_for, model_for
+from ..config import LEADS, ask_plugin_names, effort_for, model_for
+from ..plugins import check_plugins
 from . import receipts
 from .claude_proc import ClaudeProc, build_cmd, child_env, display_argv
 from .prompt import (build_brainstorm_compile_prompt, build_brainstorm_prompt, build_compile_prompt,
@@ -122,7 +123,7 @@ class TurnRunner:
         result, rc = None, None
         for attempt in (1, 2):
             env = child_env(self.state.daemon_url, self.project.id, self.project.path, role, tid,
-                            int(self.state.settings.get("ask_timeout_s", 600)), turn_token)
+                            int(self.state.settings.get("ask_timeout_s", 600)), turn_token, ask_plugin_names(settings))
             cmd = build_cmd(settings, role, env, sys_file, session_id, resume, self.model, self.effort)
             await self._on_event({"type": "aiteams_cmd", "model": self.model, "effort": self.effort,
                                   "argv": display_argv(cmd)})
@@ -226,8 +227,17 @@ class TurnRunner:
             self.db.add_rate_limit(info)
             await self.state.set_rate_limit(info)
             return
+        elif t == "system" and ev.get("subtype") == "init":
+            await self._check_plugins(ev)
         stored = self.db.add_turn_event(self.turn["id"], ev)
         await self.project.hub.broadcast("turn_event", stored)
+
+    async def _check_plugins(self, init: dict) -> None:
+        """F-23: flag On plugins the turn did not load. Best effort: it must never fail the turn."""
+        try:
+            await check_plugins(self.state, self.project, self.role, init)
+        except Exception:
+            pass
 
     async def _end(self, result: dict | None, rc: int | None, state: str, error: str | None) -> dict:
         assert self.turn

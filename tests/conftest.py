@@ -9,7 +9,7 @@ os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 # A role running pytest inside its turn carries that turn's daemon URL and secret; subprocesses built from
 # os.environ (hook, MCP server, fake claude) would then lock files and record edits on the live daemon.
 TURN_ENV = ("AITEAMS_DAEMON_URL", "AITEAMS_PROJECT", "AITEAMS_ROLE", "AITEAMS_TURN", "AITEAMS_TURN_TOKEN",
-            "AITEAMS_PROJECT_PATH", "AITEAMS_ASK_TIMEOUT_S")
+            "AITEAMS_PROJECT_PATH", "AITEAMS_ASK_TIMEOUT_S", "AITEAMS_ASK_PLUGINS")
 for _k in TURN_ENV:
     os.environ.pop(_k, None)
 
