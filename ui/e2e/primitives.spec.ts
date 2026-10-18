@@ -113,7 +113,7 @@ test('tabs switch feature Chat/Docs and DM Chat/Live session', async ({ page, qa
   await page.getByRole('button', { name: /prd\.md/ }).click()
   await expect(page.getByRole('heading', { name: 'F-1 PRD: Export orders to CSV' })).toBeVisible()
   await page.getByRole('tab', { name: 'Chat' }).click()
-  await expect(page.getByText('Lead approved commit #1; waiting on the Master.')).toBeVisible()
+  await expect(page.getByText('Lead 1 approved commit #1; waiting on the Master.')).toBeVisible()
 
   await page.goto('/p/demo?c=dm-frontend')
   await page.getByRole('tab', { name: 'Live session' }).click()
