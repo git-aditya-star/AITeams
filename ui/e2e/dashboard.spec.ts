@@ -74,6 +74,11 @@ test('layout: titled cards in a 12-column grid, edges and heights line up per ro
       near(b.height, boxes[0].height)
     }
     lefts.push(boxes.map((b) => b.x))
+    // card titles in a row sit on one line, whether or not a card has a headline (the KPI cards have none)
+    if (row[0].startsWith('[data-card')) {
+      const titles = await Promise.all(row.map(async (sel) => (await page.locator(`${sel} [data-slot="card-title"]`).boundingBox())!))
+      for (const t of titles) near(t.y, titles[0].y)
+    }
   }
   // The wide cards share their column edges, and the narrow ones line up with the last KPI card's right edge.
   near(lefts[1][1], lefts[2][1])
@@ -89,12 +94,32 @@ test('layout: titled cards in a 12-column grid, edges and heights line up per ro
   near(standup!.y, newTask!.y)
 })
 
-test('Activity: 24 hourly bars; a bar tooltip shows its counts, commit hours carry a dot', async ({ page, qa }) => {
+test('Activity: totals headline, hour axis, legend; empty hours draw nothing; a bar tooltip shows its counts', async ({ page, qa }) => {
   const hours = (await qa.api<any>('/dashboard')).activity_hourly as { start: number; messages: number; commits: number }[]
   expect(hours).toHaveLength(24)
   await qa.open('/p/demo')
+  const card = page.locator('[data-card="activity"]')
   const spark = page.locator('[data-spark]')
   await expect(spark.locator('[data-spark-hour]')).toHaveCount(24)
+
+  const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
+  const sum = (k: 'messages' | 'commits') => hours.reduce((n, h) => n + h[k], 0)
+  await expect(card.locator('[data-spark-headline]')).toHaveText(`${plural(sum('messages'), 'message')} · ${plural(sum('commits'), 'commit')}`)
+
+  // Axis: a label at every local hour divisible by 6 (unless it would crowd "now"), and "now" at the right end.
+  const hh = (ts: number) => `${String(new Date(ts * 1000).getHours()).padStart(2, '0')}:00`
+  const six = hours.filter((h, i) => new Date(h.start * 1000).getHours() % 6 === 0 && i < 22).map((h) => hh(h.start))
+  expect(six.length).toBeGreaterThanOrEqual(3)
+  await expect(spark.locator('[data-spark-tick]')).toHaveText([...six, 'now'])
+  for (const t of await spark.locator('[data-spark-tick]').all()) await expect(t).toBeVisible()
+  const legend = spark.locator('[data-spark-legend]')
+  await expect(legend).toBeVisible()
+  await expect(legend).toContainText('messages')
+  await expect(legend).toContainText('commits')
+
+  // An hour without messages draws no bar.
+  const idle = hours.findIndex((h) => !h.messages && !h.commits)
+  await expect(spark.locator(`[data-spark-hour="${idle}"] span`)).toHaveCount(0)
 
   const busy = hours.findIndex((h) => h.messages > 0)
   expect(busy).toBeGreaterThanOrEqual(0)
@@ -173,7 +198,9 @@ test('empty states: quiet sparkline, empty phase bar, nothing shipped in 14 days
     await route.fulfill({ response: r, json: d })
   })
   await qa.open('/p/demo')
-  await expect(page.locator('[data-spark-quiet]')).toBeVisible()
+  await expect(page.locator('[data-spark-quiet]')).toHaveText('No activity in 24h')
+  await expect(page.locator('[data-spark-headline]')).toHaveText('0 messages · 0 commits')
+  await expect(page.locator('[data-spark-tick]').last()).toHaveText('now')
   await expect(page.locator('[data-phase-empty]')).toBeVisible()
   await expect(page.locator('[data-ship-count]')).toHaveText('0')
   await expect(page.locator('[data-ship-dot]')).toHaveCount(0)

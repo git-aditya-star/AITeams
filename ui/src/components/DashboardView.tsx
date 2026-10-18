@@ -1,6 +1,6 @@
 import { useAppSelector } from '../store'
 import { selectTeamByRole } from '../store/selectors'
-import ActivitySpark from './dashboard/ActivitySpark'
+import ActivitySpark, { activityHeadline } from './dashboard/ActivitySpark'
 import NeedsYouTiles from './dashboard/NeedsYouTiles'
 import PhaseBar from './dashboard/PhaseBar'
 import ShippedTimeline from './dashboard/ShippedTimeline'
@@ -14,10 +14,22 @@ const KPI = 'col-span-12 lg:col-span-3'
 const WIDE = 'col-span-12 lg:col-span-8'
 const NARROW = 'col-span-12 lg:col-span-4'
 
-function Block({ id, title, className, children }: { id: string; title: string; className: string; children: React.ReactNode }) {
+function Block({
+  id,
+  title,
+  headline,
+  className,
+  children,
+}: {
+  id: string
+  title: string
+  headline?: React.ReactNode
+  className: string
+  children: React.ReactNode
+}) {
   return (
     <Card className={className} data-card={id}>
-      <CardHeader title={title} />
+      <CardHeader title={title} headline={headline} />
       <CardContent>{children}</CardContent>
     </Card>
   )
@@ -34,7 +46,12 @@ export default function DashboardView({ onSelect }: { onSelect: (id: string, mes
     <div className="flex-1 overflow-y-auto p-4 text-meta">
       <div className="grid grid-cols-12 gap-4" data-dashboard-grid>
         <NeedsYouTiles dash={dash} onSelect={onSelect} className={KPI} />
-        <Block id="activity" title="Activity · last 24h" className={WIDE}>
+        <Block
+          id="activity"
+          title="Activity · last 24h"
+          headline={dash.activity_hourly && <span data-spark-headline>{activityHeadline(dash.activity_hourly)}</span>}
+          className={WIDE}
+        >
           {dash.activity_hourly ? <ActivitySpark hours={dash.activity_hourly} /> : <Missing />}
         </Block>
         <Block id="features" title="Features by phase" className={NARROW}>

@@ -10,7 +10,7 @@ function Card({ className, ...props }: React.ComponentProps<'div'>) {
 
 function CardHeader({ title, headline, className, ...props }: Omit<React.ComponentProps<'div'>, 'title'> & { title: React.ReactNode; headline?: React.ReactNode }) {
   return (
-    <div data-slot="card-header" className={cn('flex min-h-5 items-baseline justify-between gap-3', className)} {...props}>
+    <div data-slot="card-header" className={cn('flex h-5 items-center justify-between gap-3', className)} {...props}>
       <CardTitle>{title}</CardTitle>
       {headline != null && <div data-slot="card-headline" className="text-meta text-gray-600">{headline}</div>}
     </div>
