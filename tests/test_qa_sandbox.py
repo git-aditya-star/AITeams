@@ -145,3 +145,16 @@ def test_seed_gives_the_dashboard_pictures_data(sandbox):
         assert sum(b["commits"] for b in d["activity_hourly"]) == 1
         tl = d["shipped"]["timeline"]
         assert [f["key"] for f in tl] == ["F-3", "F-2"] and tl[0]["summary"]
+
+
+def test_seed_f1_has_an_approved_design(sandbox):
+    """F-21: F-1's seeded commit request needs an approved `Design:` approval; the PRD approval stays #1 and the
+    design one is already resolved, so the Inbox still shows one approval."""
+    mod, work, _ = sandbox
+    app = mod.build_app(8790, work, "demo")
+    auth = {"Authorization": "Bearer sb-token"}
+    with TestClient(app) as c:
+        f1 = c.get("/api/p/demo/features/1", headers=auth).json()
+        assert f1["design"] == {"state": "approved", "approval_id": 2, "gated": True}
+        approvals = c.get("/api/p/demo/inbox", headers=auth).json()["approvals"]
+        assert [a["id"] for a in approvals] == [1]

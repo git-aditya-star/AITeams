@@ -69,10 +69,25 @@ def docs_list(db: ProjectDB, project_path: str, feat: dict) -> list[dict]:
     return out
 
 
+def design_state(db: ProjectDB, feat: dict) -> str:
+    """F-21: approved | pending | changes | none, from the feature's latest `Design:` approval."""
+    return db.design_info(feat["id"], feat["created_at"])["state"]
+
+
+DESIGN_WORDS = {"approved": "approved", "pending": "pending", "changes": "changes requested", "none": "not requested"}
+
+
+def design_line(db: ProjectDB, feat: dict) -> str:
+    d = db.design_info(feat["id"], feat["created_at"])
+    text = DESIGN_WORDS[d["state"]] + (f" (#{d['approval_id']})" if d["approval_id"] else "")
+    return "- design: " + text + (" · not gated" if not d["gated"] and d["state"] == "none" else "")
+
+
 def feature_header(db: ProjectDB, project_path: str, feat: dict, with_sizes: bool = False) -> str:
     lines = [f"# Feature {feat['key']}: {feat['title']}",
              f"- phase: {feat['phase']} · owner: {feat['owner'] or 'none'} · conversation id: {feat['conversation_id']}"
              + (" · ARCHIVED" if feat["archived"] else "")]
+    lines.append(design_line(db, feat))
     docs = docs_list(db, project_path, feat)
     rel = os.path.join(".aiteams", "features", feat["key"]) + "/"
     if docs:
@@ -439,6 +454,12 @@ async def request_commit(st, proj: Project, role: str, turn_id: int | None, feat
     if not message:
         raise HTTPException(400, "commit message required")
     feat = resolve_feature(proj.db, feature)
+    if feat:  # F-21: no code commits on a feature until the Master has approved its design
+        d = proj.db.design_info(feat["id"], feat["created_at"])
+        if d["gated"] and d["state"] != "approved":
+            raise HTTPException(409, f"{feat['key']}'s design isn't approved yet ({DESIGN_WORDS[d['state']]}). The Lead "
+                                     f"requests 'Design: {feat['title']}' with the design.md link; commit requests wait "
+                                     "until the Master approves it.")
     reqs: list[int] = []
     for n in requires or []:
         r = proj.db.commit(int(n)) if str(n).lstrip("#").isdigit() else None

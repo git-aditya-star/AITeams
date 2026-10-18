@@ -143,6 +143,10 @@ async def seed(st, proj) -> None:
     await workflow.request_approval(st, proj, "product", None, "F-1", "PRD ready: CSV export scope",
                                     "Button in the orders header, streamed CSV endpoint, current filter respected. "
                                     "Excel and scheduled exports are out of scope.")
+    # F-21: the daemon refuses commit requests on a feature until its design is approved. F-1's design was approved
+    # before the build; the row is made directly so no extra message shifts the seeded ids (the PRD approval is #1).
+    da = db.create_approval(f1["id"], "lead", None, "Design: Export orders to CSV", ".aiteams/features/F-1/design.md")
+    db.resolve_approval(da["id"], "approved", None)
     turn = db.create_turn("frontend", "sess-demo-frontend", "master", "dm-frontend", token="qa-question-turn")
     db.update_turn(turn["id"], state="done", started_at=time.time() - 50, ended_at=time.time() - 40)
     q = db.create_question(turn["id"], "frontend", "toolu_demo", {"questions": [{

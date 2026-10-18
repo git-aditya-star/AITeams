@@ -549,11 +549,25 @@ class ProjectDB:
         self.x("INSERT INTO rate_limits(ts, json) VALUES(?,?)", time.time(), json.dumps(info))
 
     # ---- features --------------------------------------------------------
-    def _feat_dict(self, r: sqlite3.Row) -> dict:
+    def _feat_dict(self, r: sqlite3.Row, gate_since=False) -> dict:
         d = dict(r)
         d["key"] = f"F-{d['id']}"
         d["archived"] = bool(d["archived"])
+        d["design"] = self.design_info(d["id"], d["created_at"], gate_since)
         return d
+
+    def design_info(self, fid: int, created_at: float | None, gate_since=False) -> dict:
+        """F-21: {state, approval_id, gated} from the feature's latest approval titled `Design:`. State is approved |
+        pending | changes | none. A feature is gated when it was created at/after kv design_gate_since (migration 8),
+        or has any Design approval (a redesign gates an older feature too). `gate_since` lets a loop fetch it once."""
+        a = self.one("SELECT id, state FROM approvals WHERE feature_id=? AND trim(title) LIKE 'design:%'"
+                     " ORDER BY id DESC LIMIT 1", fid)
+        if gate_since is False:
+            gate_since = self.get_kv("design_gate_since")
+        state = {"approved": "approved", "pending": "pending", "changes_requested": "changes"}.get(a["state"], "none") \
+            if a else "none"
+        gated = a is not None or (gate_since is not None and (created_at or 0) >= gate_since)
+        return {"state": state, "approval_id": a["id"] if a else None, "gated": gated}
 
     def feature(self, ident) -> dict | None:
         """Accepts 3, "3", "F-3", "feature-3" or a conversation id."""
@@ -578,8 +592,9 @@ class ProjectDB:
                          (SELECT COUNT(*) FROM commits c WHERE c.feature_id=f.id AND c.state IN ('lead_review','master_review')) AS open_commits
                          FROM features f ORDER BY f.id DESC""")
         out = []
+        gate_since = self.get_kv("design_gate_since")
         for r in rows:
-            d = self._feat_dict(r)
+            d = self._feat_dict(r, gate_since)
             d["last_activity"] = d["last_activity"] or d["created_at"]
             if include_history or (d["phase"] != "done" and not d["archived"]):
                 out.append(d)
@@ -834,6 +849,17 @@ def _migration_7(conn: sqlite3.Connection) -> None:
         conn.execute("UPDATE features SET done_at=? WHERE id=?", (m["at"] or f["updated_at"], f["id"]))
 
 
+def design_gate_start() -> float:
+    """When migration 8 starts the design gate (a function so tests can push it into the future)."""
+    return time.time()
+
+
+def _migration_8(conn: sqlite3.Connection) -> None:
+    """F-21: commit requests wait for an approved `Design:` approval, for features created from now on (and for any
+    feature that has a Design approval). Features already in flight when this ships aren't gated."""
+    conn.execute("INSERT OR REPLACE INTO kv(key, value) VALUES('design_gate_since', ?)", (json.dumps(design_gate_start()),))
+
+
 MIGRATIONS: list = [
     _migration_1,
     "ALTER TABLE turns ADD COLUMN token TEXT",
@@ -847,4 +873,5 @@ MIGRATIONS: list = [
     # F-11: commit groups (commits.requires = a JSON list of the request ids a request can't land without)
     "ALTER TABLE commits ADD COLUMN requires TEXT NULL",
     _migration_7,
+    _migration_8,
 ]

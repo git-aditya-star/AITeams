@@ -17,6 +17,13 @@ TOKEN = "test-master-token"
 AUTH = {"Authorization": "Bearer " + TOKEN}  # every TestClient sends it; /api needs the Master token since M2a
 
 
+@pytest.fixture(autouse=True)
+def design_gate_off(monkeypatch):
+    """F-21: migration 8 gates every feature created afterwards behind an approved `Design:`; most tests file commit
+    requests without one, so the gate starts in the far future. Modules that test the gate override this fixture."""
+    monkeypatch.setattr("aiteams.db.design_gate_start", lambda: 4e9)
+
+
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     """Isolated ~/.aiteams with the scheduler disabled (max_concurrent=0) and a fixed Master token."""
