@@ -2,7 +2,7 @@ import { Lightbulb, X } from 'lucide-react'
 import { useState } from 'react'
 import type { DesignState, Feature, FeatureDesign } from '../api'
 import BrainstormDialog from './BrainstormDialog'
-import { PHASES, ROLES, phaseChip, roleName } from '../roles'
+import { LEADS, PHASES, ROLES, phaseChip, roleName } from '../roles'
 import { useAppDispatch, useAppSelector } from '../store'
 import { freshStartFeature, patchFeature, releaseLock } from '../store/thunks'
 import { Badge } from './ui/badge'
@@ -14,6 +14,7 @@ import { Tip } from './ui/tooltip'
 export type FeatureTab = 'chat' | 'docs'
 
 const NO_OWNER = 'none' // Radix Select items cannot have an empty value
+const NO_LEAD = 'unassigned'
 
 // F-21: the design-approval chip. Hidden for a feature that predates the gate and never asked for a design.
 const DESIGN_CHIP: Record<DesignState, { text: string; cls: string }> = {
@@ -57,7 +58,7 @@ export default function FeatureHeader({ feature, tab, onTab }: { feature: Featur
   const dispatch = useAppDispatch()
   const locks = useAppSelector((s) => s.locks)
   const error = useAppSelector((s) => s.session.error)
-  const onPatch = (patch: { phase?: string; owner?: string | null; archived?: boolean }) => dispatch(patchFeature(feature.id, patch))
+  const onPatch = (patch: { phase?: string; owner?: string | null; lead?: string; archived?: boolean }) => dispatch(patchFeature(feature.id, patch))
   const onReleaseLock = (path: string) => dispatch(releaseLock(path))
   const onFreshStart = (mode: 'keep_docs' | 'start_over') => dispatch(freshStartFeature(feature, mode))
   const [busy, setBusy] = useState(false)
@@ -100,6 +101,24 @@ export default function FeatureHeader({ feature, tab, onTab }: { feature: Featur
             <SelectContent>
               <SelectItem value={NO_OWNER}>none</SelectItem>
               {ROLES.map((r) => (
+                <SelectItem key={r} value={r}>
+                  {roleName(r)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </label>
+        <label className="flex items-center gap-1 text-caption text-gray-500">
+          lead
+          <Select value={feature.lead || NO_LEAD} disabled={busy} onValueChange={(v) => run(onPatch({ lead: v }))}>
+            <SelectTrigger size="xs" aria-label="Lead">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={NO_LEAD} disabled>
+                not assigned
+              </SelectItem>
+              {LEADS.map((r) => (
                 <SelectItem key={r} value={r}>
                   {roleName(r)}
                 </SelectItem>

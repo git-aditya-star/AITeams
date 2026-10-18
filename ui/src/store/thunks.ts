@@ -190,7 +190,7 @@ export const resolveInboxMessage =
   }
 
 export const patchFeature =
-  (id: number, patch: { phase?: string; owner?: string | null; archived?: boolean }): AppThunk<Promise<void>> =>
+  (id: number, patch: { phase?: string; owner?: string | null; lead?: string; archived?: boolean }): AppThunk<Promise<void>> =>
   async (dispatch, getState) => {
     try {
       dispatch(ev.featureUpserted(await api.patchFeature(getState().session.pid, id, patch)))

@@ -1,4 +1,5 @@
 import type { Commit } from '../api'
+import { isLead } from '../roles'
 
 export type LeadReview = { label: string; tone: 'approved' | 'own' | 'waiting'; note: string | null }
 
@@ -7,7 +8,7 @@ export type LeadReview = { label: string; tone: 'approved' | 'own' | 'waiting'; 
 // overwrites it afterwards.
 export function leadReview(c: Commit): LeadReview | null {
   if (c.state === 'rejected') return null
-  if (c.role === 'lead') return { label: "Lead's own, not reviewed", tone: 'own', note: null }
+  if (isLead(c.role)) return { label: "Lead's own, not reviewed", tone: 'own', note: null }
   if (c.state === 'lead_review') return { label: 'Waiting on Lead', tone: 'waiting', note: null }
   if (c.state === 'master_review' || c.state === 'committed' || c.state === 'failed')
     return { label: 'Lead approved', tone: 'approved', note: c.state === 'master_review' ? c.note?.trim() || null : null }

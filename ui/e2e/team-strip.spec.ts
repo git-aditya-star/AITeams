@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures'
 
-const ROLES = ['Manager', 'Lead', 'Product', 'Frontend', 'Backend', 'Qa']
+const ROLES = ['Manager', 'Lead 1', 'Lead 2', 'Product', 'Frontend', 'Backend', 'Qa']
 
 // F-8: each role pill in the top bar shows its name and context %, and no per-role $ cost.
 test('top bar role pills show name and context %, no $', async ({ page, qa }) => {

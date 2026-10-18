@@ -2,11 +2,11 @@ import { expect, test } from './fixtures'
 
 // One case per /qa/fire kind: the toast text (from ui/src/toasts.ts) and the conversation a click opens.
 const CASES: { kind: string; body?: Record<string, unknown>; text: string | RegExp; conv: string | null }[] = [
-  { kind: 'question', body: { text: 'Which browser first?' }, text: 'Lead asks: Which browser first?', conv: 'dm-lead' },
-  { kind: 'question_message', body: { text: '@master Can I drop the old export?' }, text: 'Lead asks: Can I drop the old export?', conv: 'feature-1' },
-  { kind: 'blocker', body: { text: '@master CI is red on main' }, text: 'Blocker from Lead: CI is red on main', conv: 'feature-1' },
-  { kind: 'approval', body: { text: 'Design sign-off' }, text: 'Approval requested by Lead: Design sign-off', conv: 'feature-1' },
-  { kind: 'commit_request', body: { text: 'add importer' }, text: 'Commit request from Lead: F-1: add importer', conv: 'feature-1' },
+  { kind: 'question', body: { text: 'Which browser first?' }, text: 'Lead 1 asks: Which browser first?', conv: 'dm-lead' },
+  { kind: 'question_message', body: { text: '@master Can I drop the old export?' }, text: 'Lead 1 asks: Can I drop the old export?', conv: 'feature-1' },
+  { kind: 'blocker', body: { text: '@master CI is red on main' }, text: 'Blocker from Lead 1: CI is red on main', conv: 'feature-1' },
+  { kind: 'approval', body: { text: 'Design sign-off' }, text: 'Approval requested by Lead 1: Design sign-off', conv: 'feature-1' },
+  { kind: 'commit_request', body: { text: 'add importer' }, text: 'Commit request from Lead 1: F-1: add importer', conv: 'feature-1' },
   { kind: 'committed', body: { text: 'add importer' }, text: /^Committed [0-9a-f]{7} F-1: add importer$/, conv: 'feature-1' },
   { kind: 'commit_failed', body: { text: 'add importer' }, text: 'Commit failed: F-1: add importer', conv: 'feature-1' },
   { kind: 'standup', text: 'Standup report ready', conv: 'standup' },
@@ -36,7 +36,7 @@ test('a long toast keeps the full text (clamped on screen, full on hover)', asyn
   const words = Array.from({ length: 120 }, (_, i) => `word${i}`).join(' ')
   await qa.fire('question_message', { text: `@master ${words} END` })
   const body = page.locator('[data-toast="question"] button[title]')
-  await expect(body).toHaveAttribute('title', `Lead asks: ${words} END`)
+  await expect(body).toHaveAttribute('title', `Lead 1 asks: ${words} END`)
   await expect(body).toContainText('word119 END')
   const clamp = body.locator('.line-clamp-5')
   expect(await clamp.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true)

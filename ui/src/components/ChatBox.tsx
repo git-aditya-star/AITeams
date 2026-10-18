@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState } from 'react'
-import { ROLES, roleName } from '../roles'
+import { MENTIONABLE, mentionRole, roleName } from '../roles'
 import { Command, CommandItem, CommandList } from './ui/command'
 import { Popover, PopoverAnchor, PopoverContent } from './ui/popover'
 import { Textarea } from './ui/textarea'
@@ -14,10 +14,10 @@ export default function ChatBox({ onSend, placeholder }: { onSend: (text: string
   // Caret after an inserted mention, placed right after the commit so keys typed next land after it.
   const caretAfter = useRef<number | null>(null)
 
-  const candidates = mention ? ROLES.filter((r) => r.startsWith(mention.prefix.toLowerCase())) : []
+  const candidates = mention ? MENTIONABLE.filter((r) => r.startsWith(mention.prefix.toLowerCase())) : []
 
   const detectMention = (value: string, caret: number) => {
-    const m = /(^|\s)@(\w*)$/.exec(value.slice(0, caret))
+    const m = /(^|\s)@([\w-]*)$/.exec(value.slice(0, caret))
     if (m) {
       setMention({ start: caret - m[2].length - 1, prefix: m[2] })
       setSel(0)
@@ -101,7 +101,7 @@ export default function ChatBox({ onSend, placeholder }: { onSend: (text: string
             <CommandList>
               {candidates.map((r) => (
                 <CommandItem key={r} value={r} onSelect={() => pick(r)}>
-                  @{r} <span className="text-gray-400">{roleName(r)}</span>
+                  @{r} <span className="text-gray-400">{roleName(mentionRole(r))}</span>
                 </CommandItem>
               ))}
             </CommandList>

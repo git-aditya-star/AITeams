@@ -2,7 +2,10 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ROLES } from '../roles'
 
-const MENTION_RE = new RegExp(`(^|[^\\w\\[])@(${[...ROLES, 'master', 'all'].join('|')})\\b`, 'g')
+// Longest name first and no `-`/word char after it, like the daemon's MENTION_RE: `@lead-2` is Lead 2 whole, never
+// `@lead` followed by "-2".
+const NAMES = [...ROLES, 'lead-1', 'master', 'all'].sort((a, b) => b.length - a.length)
+const MENTION_RE = new RegExp(`(^|[^\\w\\[])@(${NAMES.join('|')})(?![\\w-])`, 'g')
 // Split out code fences/spans so mentions inside code are left untouched.
 const CODE_SPLIT = /(```[\s\S]*?```|`[^`\n]*`)/g
 

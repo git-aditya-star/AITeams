@@ -1,6 +1,6 @@
 // Fetch helpers + types for the AITeams daemon API (same-origin).
 
-export type Role = 'manager' | 'lead' | 'product' | 'frontend' | 'backend' | 'qa'
+export type Role = 'manager' | 'lead' | 'lead-2' | 'product' | 'frontend' | 'backend' | 'qa'
 export type RoleState = 'idle' | 'queued' | 'running'
 export type TurnState = 'queued' | 'running' | 'done' | 'failed' | 'interrupted'
 export type ReceiptState = 'queued' | 'seen' | 'acked'
@@ -83,6 +83,7 @@ export interface Feature {
   title: string
   phase: Phase | string
   owner: string | null
+  lead?: string | null // F-22: the Lead who acts in this feature (`lead` = Lead 1, `lead-2`); null until one is assigned
   conversation_id: string
   archived: boolean | number
   created_at: number
@@ -501,7 +502,7 @@ export const api = {
   patchFeature: (
     pid: string,
     id: number,
-    body: { phase?: string; owner?: string | null; title?: string; archived?: boolean },
+    body: { phase?: string; owner?: string | null; lead?: string; title?: string; archived?: boolean },
   ) => patch<Feature>(`/api/p/${pid}/features/${id}`, body),
   featureDocs: (pid: string, id: number) => req<FeatureDoc[]>(`/api/p/${pid}/features/${id}/docs`),
   featureDoc: (pid: string, id: number, name: string) =>

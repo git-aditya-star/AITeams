@@ -168,6 +168,8 @@ test('Features: at most 5 rows, attention first, then "+N more" opens the first 
   await page.route(/\/api\/p\/demo\/dashboard$/, async (route) => {
     const r = await route.fetch()
     const d = await r.json()
+    // F-22: the seed has a second active feature (F-4, Lead 2); keep only F-1 so this test's own rows are the count.
+    d.features = d.features.filter((f: any) => f.key === 'F-1')
     const base = d.features[0]
     const phases = ['intake', 'spec', 'design', 'qa', 'build', 'spec']
     const extra = phases.map((phase, i) => ({ ...base, id: 100 + i, key: `F-${10 + i}`, title: `Extra ${i}`, phase, conversation_id: `feature-${10 + i}`,
@@ -259,13 +261,13 @@ test('Shipped: more than 3 shows "+N more", which opens the first hidden one; do
   await expect(page).toHaveURL(/c=feature-2[0-9]/)
 })
 
-const ROLE_NAMES: Record<string, string> = { manager: 'Manager', lead: 'Lead', product: 'Product', frontend: 'Frontend', backend: 'Backend', qa: 'Qa' }
+const ROLE_NAMES: Record<string, string> = { manager: 'Manager', lead: 'Lead 1', 'lead-2': 'Lead 2', product: 'Product', frontend: 'Frontend', backend: 'Backend', qa: 'Qa' }
 
 test('Team: every role shows name, state word and "F-n · context"; hover shows the model, a click opens Stop / Fresh start', async ({ page, qa }) => {
   const team = (await qa.api<any>('/dashboard')).team as any[]
   await qa.open('/p/demo')
   const card = page.locator('[data-card="team"]')
-  await expect(card.locator('[data-ring]')).toHaveCount(6)
+  await expect(card.locator('[data-ring]')).toHaveCount(7)
   const queued = team.filter((t) => t.state === 'queued').length
   const running = team.filter((t) => t.state === 'running').length
   await expect(card.locator('[data-team-headline]')).toHaveText(running ? `${running} working` : queued ? `${queued} queued` : 'all idle')

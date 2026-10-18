@@ -1,21 +1,34 @@
 import type { Role } from './api'
 
-export const ROLES: Role[] = ['manager', 'lead', 'product', 'frontend', 'backend', 'qa']
+export const ROLES: Role[] = ['manager', 'lead', 'lead-2', 'product', 'frontend', 'backend', 'qa']
 
-export const roleName = (r: string) => (r === 'master' ? 'Master' : r.charAt(0).toUpperCase() + r.slice(1))
+// F-22: two Leads. Lead 1 keeps the internal id `lead`, so nothing in flight is renamed; people see "Lead 1" / "Lead 2".
+// A feature belongs to one of them (`Feature.lead`).
+export const LEADS: Role[] = ['lead', 'lead-2']
+export const isLead = (r: string) => (LEADS as string[]).includes(r)
+
+const NAMES: Record<string, string> = { master: 'Master', lead: 'Lead 1', 'lead-2': 'Lead 2' }
+export const roleName = (r: string) => NAMES[r] || r.charAt(0).toUpperCase() + r.slice(1)
+
+// What a person types after the @: `@lead-1` is an alias for `lead`, `@lead-2` is Lead 2 (the daemon's MENTION_RE
+// accepts `@name-<digit>`). A bare `@lead` still works; in a feature it reaches that feature's Lead.
+export const MENTIONABLE = ROLES.map((r) => (r === 'lead' ? 'lead-1' : r))
+export const mentionRole = (handle: string) => (handle === 'lead-1' ? 'lead' : handle)
 
 // Fixed pastel avatar colours per role; Master is dark blue.
 const AVATAR: Record<string, string> = {
   master: 'bg-blue-800 text-white',
   manager: 'bg-rose-200 text-rose-900',
   lead: 'bg-violet-200 text-violet-900',
+  'lead-2': 'bg-violet-300 text-violet-950',
   product: 'bg-amber-200 text-amber-900',
   frontend: 'bg-sky-200 text-sky-900',
   backend: 'bg-emerald-200 text-emerald-900',
   qa: 'bg-orange-200 text-orange-900',
 }
 export const avatarClass = (author: string) => AVATAR[author] || 'bg-gray-200 text-gray-800'
-export const avatarInitial = (author: string) => (author === 'master' ? 'M' : author.charAt(0).toUpperCase())
+const INITIAL: Record<string, string> = { master: 'M', lead: 'L1', 'lead-2': 'L2' }
+export const avatarInitial = (author: string) => INITIAL[author] || author.charAt(0).toUpperCase()
 
 export const TYPE_CHIP: Record<string, string> = {
   Question: 'bg-blue-50 text-blue-700',

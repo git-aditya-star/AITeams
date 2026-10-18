@@ -48,10 +48,10 @@ test('set QA to Sonnet 5.5 + low, it persists, and back to Default', async ({ pa
 test('Cancel discards the draft', async ({ page, qa }) => {
   await qa.open('/p/demo?c=general')
   await page.getByRole('button', { name: 'Role settings' }).click()
-  await pick(page, 'Lead model', 'Haiku (latest)')
+  await pick(page, 'Lead 1 model', 'Haiku (latest)')
   await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click()
   await page.getByRole('button', { name: 'Role settings' }).click()
-  await expect(page.getByRole('combobox', { name: 'Lead model' })).toHaveText(/^Default/)
+  await expect(page.getByRole('combobox', { name: 'Lead 1 model' })).toHaveText(/^Default/)
 })
 
 test('a level the row model does not support is disabled', async ({ page, qa }) => {
@@ -91,7 +91,7 @@ test('an alias shows as latest, and a saved ID that is no longer offered stays a
   await expect(page.getByRole('combobox', { name: 'Backend model' })).toHaveText('claude-opus-4')
 
   // Saving after an unrelated change sends the retired ID back as it was.
-  await pick(page, 'Lead effort', 'high')
+  await pick(page, 'Lead 1 effort', 'high')
   const put = page.waitForRequest((r) => r.method() === 'PUT' && r.url().endsWith('/api/settings'))
   await page.getByRole('dialog').getByRole('button', { name: 'Save' }).click()
   expect((await put).postDataJSON()).toMatchObject({ models: { qa: 'sonnet', backend: 'claude-opus-4' }, efforts: { lead: 'high' } })

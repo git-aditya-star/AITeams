@@ -20,14 +20,14 @@ const pctOf = (t: TeamRole | undefined) => Math.min(1, Math.max(0, t?.context_pc
 const hover = (t: TeamRole | undefined) => (t ? [t.model_label || t.model, `session #${t.session_seq ?? '—'}`, `fresh starts ${t.fresh_starts ?? 0}`].join(' · ') : '')
 
 // F-18: one block per role: the avatar in a ring (arc = context used, colour = state; red when the last turn was
-// cut short), the name, the state word in the ring colour, and "F-n · 34%" (the feature it is on, or "—", then its
-// context). The layout follows the card's own width (container queries): wide, 3 blocks per row with the text to
-// the right of the ring; the usual narrow card, 2 per row; very narrow, 3 per row with the text under the ring.
+// cut short), the name under it, the state word in the ring colour, and "F-n · 34%" (the feature it is on, or "—",
+// then its context). F-22: seven roles, so the grid follows the card's own width (container queries): 4 per row
+// (4 + 3) in the usual card, 3 per row (3 + 3 + 1) when it gets very narrow; whole blocks either way.
 // Hover shows model, session and fresh starts; a click opens Stop / Fresh start.
 export default function TeamRings({ byRole }: { byRole: Record<string, TeamRole> }) {
   return (
     <section aria-label="Team" className="@container">
-      <div className="grid grid-cols-3 gap-x-1 gap-y-3 @[18rem]:grid-cols-2 @[18rem]:gap-x-3 @[26rem]:grid-cols-3">
+      <div className="grid grid-cols-3 gap-x-1 gap-y-3 @[18rem]:grid-cols-4">
         {ROLES.map((r) => {
           const t = byRole[r]
           const pct = pctOf(t)
@@ -37,9 +37,9 @@ export default function TeamRings({ byRole }: { byRole: Record<string, TeamRole>
               key={r}
               role={r}
               trigger={
-                <button data-ring={r} data-ring-tone={tone} className="block min-w-0 cursor-pointer rounded-md p-0.5 @[18rem]:p-1 hover:bg-gray-50">
+                <button data-ring={r} data-ring-tone={tone} className="block min-w-0 cursor-pointer rounded-md p-0.5 hover:bg-gray-50">
                   <Tip content={hover(t)}>
-                    <span className="flex min-w-0 flex-col items-center gap-1 text-center @[18rem]:flex-row @[18rem]:gap-2.5 @[18rem]:text-left">
+                    <span className="flex min-w-0 flex-col items-center gap-1 text-center">
                       <span className="relative block shrink-0" style={{ width: SIZE, height: SIZE }}>
                         <svg width={SIZE} height={SIZE} className="absolute inset-0 -rotate-90">
                           <circle cx={SIZE / 2} cy={SIZE / 2} r={R} fill="none" strokeWidth={STROKE} className={`${RING_STROKE[tone]} opacity-25`} />

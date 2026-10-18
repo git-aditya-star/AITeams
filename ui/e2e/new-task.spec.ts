@@ -7,7 +7,7 @@ const SHOTS = process.env.SHOT_DIR || 'test-results/shots'
 const featureCount = async (qa: { api: (p: string) => Promise<any> }) => ((await qa.api('/features?history=1')) as any[]).length
 const modal = (page: Page) => page.getByRole('dialog', { name: 'What should the team build?' })
 
-test('from the sidebar: focus, empty guard, pick Lead, Start opens the new conversation', async ({ page, qa }) => {
+test('from the sidebar: focus, empty guard, pick Lead 1, Start opens the new conversation', async ({ page, qa }) => {
   await qa.open('/p/demo?c=general')
   const button = page.locator('aside').getByRole('button', { name: 'New task' })
   await expect(button).toHaveCSS('height', '40px')
@@ -27,8 +27,8 @@ test('from the sidebar: focus, empty guard, pick Lead, Start opens the new conve
   await expect(starter.getByRole('radio', { name: 'Product' })).toBeChecked()
   await starter.getByRole('radio', { name: 'Product' }).click()
   await expect(starter.getByRole('radio', { name: 'Product' })).toBeChecked()
-  await starter.getByRole('radio', { name: 'Lead' }).click()
-  await expect(starter.getByRole('radio', { name: 'Lead' })).toBeChecked()
+  await starter.getByRole('radio', { name: 'Lead 1' }).click()
+  await expect(starter.getByRole('radio', { name: 'Lead 1' })).toBeChecked()
 
   await brief.fill('Add a CSV import\nso ops can bulk-load customers.')
   await page.screenshot({ path: `${SHOTS}/new-task-modal.png`, animations: 'disabled' })

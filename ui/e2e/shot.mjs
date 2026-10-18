@@ -1,5 +1,5 @@
 // Screenshot app routes against a fresh QA sandbox (scripts/qa_sandbox.py, seeded project id `demo`).
-//   npm run shot -- <route> [<route>...] [--out <png>] [--width 1400] [--height 900] [--port N] (default: the role's port, else 8798)
+//   npm run shot -- <route> [<route>...] [--out <png>] [--width 1400] [--height 900] [--port N] (default: the role's port, else 8790)
 // Serves the working-tree build: run `npm run build` first. PNGs default to test-results/shots/<slug>.png.
 import { spawn } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
@@ -12,7 +12,7 @@ const UI = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const ROOT = resolve(UI, '..')
 const TOKEN = 'qa-sandbox-token'
 
-const opts = { routes: [], out: null, width: 1400, height: 900, port: rolePort(8798) } // a role's own port (one tool call at a time, so never alongside its e2e)
+const opts = { routes: [], out: null, width: 1400, height: 900, port: rolePort(8790) } // a role's own port (one tool call at a time, so never alongside its e2e)
 const argv = process.argv.slice(2)
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i]
