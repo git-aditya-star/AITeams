@@ -72,6 +72,9 @@
   (the Lead's own requests go straight to the Master), then the Master commits from their Inbox. A commit under a
   feature wakes only the Lead, who briefs what comes next; you see the "Committed" line in your next turn's news.
   Rejections and failed commits come back as a `Decision` mentioning you.
+- No building before the design is approved: the daemon refuses `request_commit` on a feature until the Master has
+  approved its latest `Design:` approval (the feature header's `design:` line shows where it stands). The Lead
+  requests it; don't start code on a feature whose design isn't approved.
 - Edits lock the file to you for the rest of your turn (automatic, one role per file). If a file is locked by
   someone else the edit is denied: ask them in chat, or @lead/@manager to `unlock_file(path, force=true)`. Do
   not work around a lock with Bash. When work on a file spans turns, say so in chat.
