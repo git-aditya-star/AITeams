@@ -1,4 +1,4 @@
-import { Bell, Check, Clock, MessageCircleQuestion, RotateCw, Square, TriangleAlert, X, type LucideIcon } from 'lucide-react'
+import { Bell, Check, Clock, MessageCircleQuestion, Puzzle, RotateCw, Square, TriangleAlert, X, type LucideIcon } from 'lucide-react'
 import { toast as sonner } from 'sonner'
 import { KINDS, type Kind, type Tone, type Toast } from '../toasts'
 import { Button } from './ui/button'
@@ -29,6 +29,7 @@ const ICON: Record<Kind, LucideIcon> = {
   interrupted: Square,
   fresh_session: RotateCw,
   rate_limit: Clock,
+  plugin_missing: Puzzle,
 }
 
 // The F-1 rev3 card, rendered by Sonner through toast.custom (Sonner owns stacking and the 15 s timer).

@@ -17,6 +17,7 @@ export type Kind =
   | 'interrupted'
   | 'fresh_session'
   | 'rate_limit'
+  | 'plugin_missing'
 
 // Label and tone per kind; the toast's look follows the tone.
 export const KINDS: Record<Kind, { label: string; tone: Tone }> = {
@@ -31,6 +32,7 @@ export const KINDS: Record<Kind, { label: string; tone: Tone }> = {
   interrupted: { label: 'Interrupted', tone: 'warning' },
   fresh_session: { label: 'Fresh session', tone: 'info' },
   rate_limit: { label: 'Rate limited', tone: 'warning' },
+  plugin_missing: { label: 'Plugin missing', tone: 'warning' },
 }
 
 export type Toast = {
@@ -53,6 +55,8 @@ const oneParagraph = (s: string | null | undefined) => (s || '').trim().replace(
 // Feature conversation for an approval/commit, else the requesting role's DM.
 const convFor = (featureId: number | null, role: string, features: Feature[]) =>
   features.find((f) => f.id === featureId)?.conversation_id || `dm-${role}`
+
+let pluginSeq = 0
 
 const ACTIVITY_KINDS: Kind[] = ['stopped', 'interrupted', 'fresh_session']
 
@@ -103,6 +107,13 @@ export function toastFor(f: WsFrame, ctx: ToastCtx): Toast | null {
         text = `${roleName(a.role)} started a fresh session${reason ? ` (${reason})` : ''}`
       }
       return make(a.kind as Kind, { key: `activity:${a.id}`, text, conversation: a.role ? `dm-${a.role}` : a.conversation_id || undefined })
+    }
+    case 'plugin_missing': {
+      // F-23: a plugin switched on in Role settings that a turn did not load. The daemon sends it once per flip;
+      // the counter keeps a later flip from being swallowed by the "seen" set.
+      const { id, role } = (f.data ?? {}) as { id?: string; role?: string }
+      if (!id) return null
+      return make('plugin_missing', { key: `plugin_missing:${id}:${++pluginSeq}`, text: `Plugin ${id} didn't load in ${role ? `${roleName(role)}'s` : 'a'} turn` })
     }
     case 'rate_limit': {
       const info = f.data?.info as RateLimitInfo | undefined

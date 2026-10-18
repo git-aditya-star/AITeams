@@ -456,7 +456,26 @@ export interface RoleSettings {
   default_effort: string | null
   models: Record<string, string>
   efforts: Record<string, string>
+  plugins?: PluginRow[] // F-23
   [k: string]: unknown
+}
+
+// F-23: the one plugin list for all roles (`name@marketplace` ids as `enabledPlugins` uses them). `ask` = roles must
+// get the Master's approval before using a skill of that plugin. `status` is what the last turns found: `missing`
+// = switched on but the turn did not load it (the daemon keeps it in memory, last turn wins).
+export interface PluginRow {
+  id: string
+  on: boolean
+  ask: boolean
+}
+export interface PluginStatus {
+  missing: boolean
+  checked_at: number
+  role: string
+}
+export interface PluginSettings {
+  rows: PluginRow[]
+  status: Record<string, PluginStatus>
 }
 
 export interface SettingsOptions {
@@ -470,6 +489,7 @@ export const api = {
   settings: () => req<RoleSettings>('/api/settings'),
   saveSettings: (body: Partial<RoleSettings>) => put<RoleSettings>('/api/settings', body),
   settingsOptions: () => req<SettingsOptions>('/api/settings/options'),
+  pluginSettings: () => req<PluginSettings>('/api/settings/plugins'),
   health: () => req<Health>('/api/health'),
   projects: () => req<ProjectSummary[]>('/api/projects'),
   project: (pid: string) => req<Project>(`/api/p/${pid}`),
