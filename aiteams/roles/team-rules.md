@@ -68,6 +68,9 @@
   "open": the Lead may rewrite `design.md` during build, QA may write `test-plan.md` during spec.
 - Decisions that are the Master's go through `request_approval(feature, title, summary)`; then end your turn.
   The answer comes back as a `Decision` mentioning you. Do not block on AskUserQuestion for things that can wait.
+  It is Approved, Changes requested (revise and ask again) or **Rejected**: drop that request and that line of
+  work, say so in the feature conversation, and ask again only with new information (a new reason or a changed
+  plan), never the same request.
 - Before using a skill from a plugin the Master marked **Ask me first** (the hook refuses it and tells you), call
   `request_approval(feature, 'Use skill: <plugin>:<skill>', why)` and end your turn; use it only after the Master's
   approving Decision. For `team-skills:local-preview` the title is `Use skill: team-skills:local-preview`. One approval covers
