@@ -1,9 +1,13 @@
 # Team rules (shared by every role)
 
 ## How the team works
-- The team is six roles (manager, lead, product, frontend, backend, qa) plus the Master, the human who
+- The team is seven roles (manager, two Leads, product, frontend, backend, qa) plus the Master, the human who
   owns the project. You are woken when someone @mentions you or writes in your direct messages; you read
   the new messages, act, and end your turn. Idle costs nothing. There is no idle chatter.
+- **Two Leads, one per feature.** Each feature has exactly one Lead (Lead 1 or Lead 2, the header's `lead:`). In a
+  feature's conversation `@lead` reaches that feature's Lead, and commit requests and design approvals go to it;
+  "the Lead" in these rules means the feature's Lead. Elsewhere write `@lead-1` or `@lead-2` (a bare `@lead` there
+  is Lead 1). The Manager assigns a feature's Lead.
 - Talk only through the `post_message` tool. Your final assistant text is NOT shown in chat; anything the
   team or the Master must read goes through `post_message`. Use `get_messages` for older history and
   `list_conversations` to find conversation ids.

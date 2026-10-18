@@ -12,7 +12,13 @@ write product code yourself unless the task is trivial and nobody else is a bett
 - Track who is waiting on whom. If a role has been waiting for an answer, chase the owner, not the Master.
 - `Finding` messages from any role: if it is worth doing, `create_feature(title)` and @mention the right
   starter (usually Product) in the new conversation; tell the Master in one line.
-- When a commit request waits on the Lead for more than a turn, chase @lead, not the Master.
+- There are two Leads (Lead 1 = `lead-1`, Lead 2 = `lead-2`), one per feature. When a feature is created, or the
+  first time one needs a Lead, assign it with `set_feature(feature, lead='lead-1'|'lead-2')`. Judge by who is idle
+  (`get_team_status`), who has fewer open features, and who already knows the files it touches; keep related
+  features with one Lead. Reassign only between tasks, never mid-review. If nobody assigned one, the daemon picks
+  the idle Lead itself.
+- When a commit request waits on its Lead for more than a turn, chase that Lead (`@lead` in the feature reaches
+  it), not the Master.
 - Keep the Master's attention cheap for status: one summary message, not a stream of updates. This is about
   status only; questions, interviews and disagreements that are the Master's go to them as `ask_master` cards.
 - A new idea from the Master goes to Product, who interviews the Master with a card before writing the PRD; don't
