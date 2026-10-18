@@ -1,74 +1,103 @@
 import type { DashboardFeature } from '../../api'
 import { fmtAgo } from '../../api'
-import { PHASES, PHASE_FILL, roleName } from '../../roles'
-import { HoverCard, HoverCardContent, HoverCardTrigger } from '../ui/hover-card'
+import { PHASES, PHASE_FILL, phaseChip } from '../../roles'
+import { Badge } from '../ui/badge'
 import { Tip } from '../ui/tooltip'
 
-// A feature needs the Master's eye when it waits on them or has gone stale.
-const attention = (f: DashboardFeature) =>
-  f.stale ? 'stale' : f.waits_on?.who === 'master' ? `waits on you: ${f.waits_on.kind}${f.waits_on.since ? ` since ${fmtAgo(f.waits_on.since)}` : ''}` : null
+const ACTIVE = PHASES.filter((p) => p !== 'done')
+const ROWS = 5
 
-// The ones needing attention first, then the most recently active.
+const waitsOnYou = (f: DashboardFeature) => f.waits_on?.who === 'master'
+const needsYou = (f: DashboardFeature) => waitsOnYou(f) || f.stale
+
+// The ones needing the Master first, then the most recently active.
 const sortFeatures = (fs: DashboardFeature[]) =>
   [...fs].sort((a, b) => {
-    const d = (attention(b) ? 1 : 0) - (attention(a) ? 1 : 0)
+    const d = (needsYou(b) ? 1 : 0) - (needsYou(a) ? 1 : 0)
     return d || (b.last_activity ?? b.updated_at) - (a.last_activity ?? a.updated_at)
   })
 
-// F-18: active features as one bar split by phase (width = share, count inside). Hovering a segment lists its
-// features; a red dot marks the ones that need the Master; a click opens the conversation.
+export const featuresHeadline = (features: DashboardFeature[]) => `${features.length} active`
+
+// F-18: active features as one bar split by phase (width = share; the count sits inside only when there are
+// several segments), a legend with every phase intake → qa and its count (zeros greyed, so it reads as a
+// pipeline), then up to 5 feature rows (attention first) with their phase and a "waits on you" / "stale" tag.
+// A row opens the conversation.
 export default function PhaseBar({ features, onSelect }: { features: DashboardFeature[]; onSelect: (id: string) => void }) {
-  const segs = PHASES.filter((p) => p !== 'done')
-    .map((p) => ({ phase: p, items: sortFeatures(features.filter((f) => f.phase === p)) }))
-    .filter((s) => s.items.length)
+  const counts = Object.fromEntries(ACTIVE.map((p) => [p, features.filter((f) => f.phase === p).length]))
+  const segs = ACTIVE.filter((p) => counts[p])
+  const sorted = sortFeatures(features)
+  const rows = sorted.slice(0, ROWS)
+  const hidden = sorted.slice(ROWS)
   return (
-    <section aria-label="Active features by phase" data-phase-bar>
+    <section aria-label="Active features by phase" data-phase-bar className="flex flex-col gap-3">
       {segs.length === 0 ? (
-        <Tip content="no active features">
-          <div data-phase-empty className="h-7 rounded-md bg-gray-100" />
-        </Tip>
+        <div data-phase-empty-bar className="h-7 rounded-md bg-gray-100" />
       ) : (
         <div className="flex h-7 gap-0.5 overflow-hidden rounded-md">
-          {segs.map(({ phase, items }) => (
-            <HoverCard key={phase}>
-              <HoverCardTrigger asChild>
-                <button
-                  data-phase-seg={phase}
-                  aria-label={`${items.length} ${phase}`}
-                  className={`relative flex min-w-7 cursor-default items-center justify-center text-caption font-semibold text-white ${PHASE_FILL[phase]}`}
-                  style={{ flexGrow: items.length, flexBasis: 0 }}
-                >
-                  {items.length}
-                  {items.some(attention) && <span className="absolute top-1 right-1 size-1.5 rounded-full bg-red-500 ring-1 ring-white" />}
-                </button>
-              </HoverCardTrigger>
-              <HoverCardContent align="start" className="w-80 p-1.5" data-phase-list={phase}>
-                <div className="px-1.5 pb-1 text-caption text-gray-500">
-                  {phase} · {items.length}
-                </div>
-                {items.map((f) => {
-                  const why = attention(f)
-                  return (
-                    <button
-                      key={f.id}
-                      data-phase-row={f.key}
-                      onClick={() => onSelect(f.conversation_id)}
-                      className="flex w-full cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-gray-50"
-                    >
-                      <span className={`size-2 shrink-0 rounded-full ${why ? 'bg-red-500' : 'bg-transparent'}`} data-attention={why ? '' : undefined} />
-                      <span className="font-mono text-caption text-gray-500 shrink-0">{f.key}</span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate">{f.title}</span>
-                        <span className="block truncate text-caption text-gray-500">
-                          {why ?? (f.owner ? roleName(f.owner) : '')}
-                        </span>
-                      </span>
-                    </button>
-                  )
-                })}
-              </HoverCardContent>
-            </HoverCard>
+          {segs.map((p) => (
+            <Tip key={p} content={`${p} · ${counts[p]}`}>
+              <div
+                data-phase-seg={p}
+                aria-label={`${counts[p]} ${p}`}
+                className={`flex min-w-7 items-center justify-center text-caption font-semibold text-white ${PHASE_FILL[p]}`}
+                style={{ flexGrow: counts[p], flexBasis: 0 }}
+              >
+                {segs.length > 1 ? counts[p] : null}
+              </div>
+            </Tip>
           ))}
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-x-2.5 gap-y-1 text-caption">
+        {ACTIVE.map((p) => (
+          <span key={p} data-phase-legend={p} className={`flex items-center gap-1 ${counts[p] ? 'text-gray-700' : 'text-gray-400'}`}>
+            <span className={`size-2.5 rounded-sm ${counts[p] ? PHASE_FILL[p] : 'bg-gray-200'}`} />
+            {p} <span className="font-semibold">{counts[p]}</span>
+          </span>
+        ))}
+      </div>
+
+      {features.length === 0 ? (
+        <div data-phase-empty className="text-meta text-gray-400">
+          No active features
+        </div>
+      ) : (
+        <div className="flex flex-col">
+          {rows.map((f) => (
+            <button
+              key={f.id}
+              data-phase-row={f.key}
+              onClick={() => onSelect(f.conversation_id)}
+              className="flex min-w-0 cursor-pointer items-center gap-2 rounded px-1 py-1 text-left hover:bg-gray-50"
+            >
+              <span className="shrink-0 font-mono text-caption text-gray-500">{f.key}</span>
+              <span className="min-w-0 flex-1 truncate text-meta">{f.title}</span>
+              <Badge className={`shrink-0 px-1.5 ${phaseChip(f.phase)}`}>{f.phase}</Badge>
+              {waitsOnYou(f) && (
+                <Tip content={`waits on you: ${f.waits_on!.kind}${f.waits_on!.since ? ` since ${fmtAgo(f.waits_on!.since)}` : ''}`}>
+                  <span data-waits className="shrink-0">
+                    <Badge className="bg-red-50 px-1.5 text-red-700">waits on you</Badge>
+                  </span>
+                </Tip>
+              )}
+              {f.stale && (
+                <Badge data-stale className="shrink-0 bg-gray-100 px-1.5 text-gray-600">
+                  stale
+                </Badge>
+              )}
+            </button>
+          ))}
+          {hidden.length > 0 && (
+            <button
+              data-phase-more
+              onClick={() => onSelect(hidden[0].conversation_id)}
+              className="cursor-pointer self-start px-1 py-1 text-caption text-gray-500 hover:underline"
+            >
+              +{hidden.length} more
+            </button>
+          )}
         </div>
       )}
     </section>

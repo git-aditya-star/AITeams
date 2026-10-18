@@ -2,7 +2,7 @@ import { useAppSelector } from '../store'
 import { selectTeamByRole } from '../store/selectors'
 import ActivitySpark, { activityHeadline } from './dashboard/ActivitySpark'
 import NeedsYouTiles from './dashboard/NeedsYouTiles'
-import PhaseBar from './dashboard/PhaseBar'
+import PhaseBar, { featuresHeadline } from './dashboard/PhaseBar'
 import ShippedTimeline from './dashboard/ShippedTimeline'
 import TeamRings from './dashboard/TeamRings'
 import { Card, CardContent, CardHeader } from './ui/card'
@@ -54,7 +54,12 @@ export default function DashboardView({ onSelect }: { onSelect: (id: string, mes
         >
           {dash.activity_hourly ? <ActivitySpark hours={dash.activity_hourly} /> : <Missing />}
         </Block>
-        <Block id="features" title="Features by phase" className={NARROW}>
+        <Block
+          id="features"
+          title="Features by phase"
+          headline={<span data-phase-headline>{featuresHeadline(dash.features)}</span>}
+          className={NARROW}
+        >
           <PhaseBar features={dash.features} onSelect={onSelect} />
         </Block>
         <Block id="shipped" title="Shipped · last 14 days" className={WIDE}>

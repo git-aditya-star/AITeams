@@ -133,23 +133,60 @@ test('Activity: totals headline, hour axis, legend; empty hours draw nothing; a 
   await expect(tooltip(page)).toContainText(`${hours[committed].commits} commit`)
 })
 
-test('Features: a phase segment lists its features with the red dot, a row opens the conversation', async ({ page, qa }) => {
+test('Features: headline, a legend with every phase, rows with phase and "waits on you", a row opens it', async ({ page, qa }) => {
   const dash = await qa.api<any>('/dashboard')
   const f1 = dash.features.find((f: any) => f.key === 'F-1')
   expect(f1.phase).toBe('build')
+  expect(f1.waits_on?.who).toBe('master')
   await qa.open('/p/demo')
-  const seg = page.locator('[data-phase-seg="build"]')
-  await expect(seg).toHaveText(String(dash.phase_counts.build))
-  await expect(page.locator('[data-phase-seg="done"]')).toHaveCount(0)
-  await seg.hover()
-  const row = page.locator('[data-phase-list="build"] [data-phase-row="F-1"]')
+  const card = page.locator('[data-card="features"]')
+  await expect(card.locator('[data-phase-headline]')).toHaveText(`${dash.features.length} active`)
+
+  // One segment only: no bare number inside it.
+  await expect(card.locator('[data-phase-seg="build"]')).toHaveText('')
+  await expect(card.locator('[data-phase-seg="done"]')).toHaveCount(0)
+  for (const p of ['intake', 'spec', 'design', 'build', 'qa']) {
+    const n = dash.features.filter((f: any) => f.phase === p).length
+    await expect(card.locator(`[data-phase-legend="${p}"]`)).toHaveText(`${p} ${n}`)
+    await expect(card.locator(`[data-phase-legend="${p}"]`)).toBeVisible()
+  }
+
+  const row = card.locator('[data-phase-row="F-1"]')
   await expect(row).toContainText(f1.title)
-  const needsMaster = f1.stale || f1.waits_on?.who === 'master'
-  await expect(row.locator('[data-attention]')).toHaveCount(needsMaster ? 1 : 0)
-  await page.screenshot({ path: `${SHOTS}/dashboard-phase.png`, animations: 'disabled' })
+  await expect(row).toContainText('build')
+  await expect(row.locator('[data-waits]')).toHaveText('waits on you')
+  await expect(card.locator('[data-phase-more]')).toHaveCount(0)
   await row.click()
   await expect(page).toHaveURL(new RegExp(`c=${f1.conversation_id}`))
   await expect(page.getByRole('heading', { name: f1.title })).toBeVisible()
+})
+
+test('Features: at most 5 rows, attention first, then "+N more" opens the first hidden one', async ({ page, qa }) => {
+  await page.route(/\/api\/p\/demo\/dashboard$/, async (route) => {
+    const r = await route.fetch()
+    const d = await r.json()
+    const base = d.features[0]
+    const phases = ['intake', 'spec', 'design', 'qa', 'build', 'spec']
+    const extra = phases.map((phase, i) => ({ ...base, id: 100 + i, key: `F-${10 + i}`, title: `Extra ${i}`, phase, conversation_id: `feature-${10 + i}`,
+      waits_on: null, stale: i === 5, last_activity: 1000 + i }))
+    d.features = [...d.features, ...extra]
+    await route.fulfill({ response: r, json: d })
+  })
+  await qa.open('/p/demo')
+  const card = page.locator('[data-card="features"]')
+  await expect(card.locator('[data-phase-headline]')).toHaveText('7 active')
+  await expect(card.locator('[data-phase-row]')).toHaveCount(5)
+  // F-1 waits on the Master and F-15 is stale: both come first, then the most recently active.
+  await expect(card.locator('[data-phase-row]').nth(0)).toHaveAttribute('data-phase-row', 'F-1')
+  await expect(card.locator('[data-phase-row]').nth(1)).toHaveAttribute('data-phase-row', 'F-15')
+  await expect(card.locator('[data-phase-row="F-15"] [data-stale]')).toHaveText('stale')
+  await expect(card.locator('[data-phase-seg]')).toHaveCount(5)
+  await expect(card.locator('[data-phase-seg="spec"]')).toHaveText('2')
+  const more = card.locator('[data-phase-more]')
+  await expect(more).toHaveText('+2 more')
+  await page.screenshot({ path: `${SHOTS}/dashboard-features-many.png`, animations: 'disabled' })
+  await more.click()
+  await expect(page).toHaveURL(/c=feature-11/)
 })
 
 test('Shipped: the count is the 14-day timeline, a dot shows its summary and opens the conversation', async ({ page, qa }) => {
@@ -201,12 +238,12 @@ test('empty states: quiet sparkline, empty phase bar, nothing shipped in 14 days
   await expect(page.locator('[data-spark-quiet]')).toHaveText('No activity in 24h')
   await expect(page.locator('[data-spark-headline]')).toHaveText('0 messages · 0 commits')
   await expect(page.locator('[data-spark-tick]').last()).toHaveText('now')
-  await expect(page.locator('[data-phase-empty]')).toBeVisible()
+  await expect(page.locator('[data-phase-empty]')).toHaveText('No active features')
+  await expect(page.locator('[data-phase-headline]')).toHaveText('0 active')
+  await expect(page.locator('[data-phase-legend="build"]')).toHaveText('build 0')
   await expect(page.locator('[data-ship-count]')).toHaveText('0')
   await expect(page.locator('[data-ship-dot]')).toHaveCount(0)
   await page.screenshot({ path: `${SHOTS}/dashboard-empty.png`, animations: 'disabled' })
-  await page.locator('[data-phase-empty]').hover()
-  await expect(tooltip(page)).toHaveText('no active features')
   await hoverTip(page, page.locator('[data-ship-count]'))
   await expect(tooltip(page)).toContainText('nothing shipped in 14 days')
 })
