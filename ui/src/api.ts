@@ -20,7 +20,7 @@ export type MessageType =
 export type WakeKind = 'normal' | 'handoff' | 'standup' | 'standup_compile' | 'brainstorm' | 'brainstorm_compile'
 
 export type Phase = 'intake' | 'spec' | 'design' | 'build' | 'qa' | 'done'
-export type ApprovalState = 'pending' | 'approved' | 'changes_requested'
+export type ApprovalState = 'pending' | 'approved' | 'changes_requested' | 'rejected' // F-25: `rejected` = the Master said no, drop it
 export type CommitState = 'lead_review' | 'master_review' | 'rejected' | 'committed' | 'failed'
 
 export interface ProjectSummary {
@@ -96,7 +96,7 @@ export interface Feature {
 
 // F-21: where the feature's design stands. It comes from the latest approval titled `Design:`; commit requests
 // on a `gated` feature are refused until it is approved. `approval_id` is that approval (null when none).
-export type DesignState = 'approved' | 'pending' | 'changes' | 'none'
+export type DesignState = 'approved' | 'pending' | 'changes' | 'rejected' | 'none'
 export interface FeatureDesign {
   state: DesignState
   approval_id: number | null
@@ -109,6 +109,9 @@ export interface FeatureDoc {
   updated_at: number | null
   editor: string | null
 }
+
+// F-25: what the Master can answer an approval card with.
+export type ApprovalDecision = 'approve' | 'changes' | 'reject'
 
 export interface Approval {
   id: number
@@ -532,7 +535,7 @@ export const api = {
   decideApproval: (
     pid: string,
     id: number,
-    body: { decision: 'approve' | 'changes'; note?: string; set_phase?: string },
+    body: { decision: ApprovalDecision; note?: string; set_phase?: string },
   ) => post<Approval>(`/api/p/${pid}/approvals/${id}/decide`, body),
   commits: (pid: string, state: CommitState | 'all' = 'master_review', feature?: number) => {
     const q = new URLSearchParams({ state })

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { Approval } from '../api'
+import type { Approval, ApprovalDecision } from '../api'
 import { api, fmtAgo } from '../api'
 import { PHASES, roleName, stateChip, stateLabel } from '../roles'
 import { useAppDispatch, useAppSelector } from '../store'
@@ -23,12 +23,12 @@ export default function ApprovalCard({ a, showFeature = false }: { a: Approval; 
   const [err, setErr] = useState<string | null>(null)
   const pending = a.state === 'pending'
 
-  const decide = async (decision: 'approve' | 'changes') => {
+  const decide = async (decision: ApprovalDecision) => {
     if (!pid) return
     setBusy(true)
     setErr(null)
     try {
-      const body: { decision: 'approve' | 'changes'; note?: string; set_phase?: string } = { decision }
+      const body: { decision: ApprovalDecision; note?: string; set_phase?: string } = { decision }
       if (note.trim()) body.note = note.trim()
       if (phase !== UNCHANGED) body.set_phase = phase
       const updated = await api.decideApproval(pid, a.id, body)
@@ -63,11 +63,14 @@ export default function ApprovalCard({ a, showFeature = false }: { a: Approval; 
         <div className="mt-2 flex flex-col gap-1.5">
           <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (optional)" />
           <div className="flex items-center gap-2 flex-wrap">
-            <Button size="sm" disabled={busy} onClick={() => decide('approve')}>
+            <Button size="sm" data-action="approve" disabled={busy} onClick={() => decide('approve')}>
               Approve
             </Button>
-            <Button variant="outline" size="sm" disabled={busy} onClick={() => decide('changes')}>
+            <Button variant="outline" size="sm" data-action="changes" disabled={busy} onClick={() => decide('changes')}>
               Request changes
+            </Button>
+            <Button variant="outline" size="sm" data-action="reject" disabled={busy} className="text-red-700 hover:text-red-800" onClick={() => decide('reject')}>
+              Reject
             </Button>
             <label className="flex items-center gap-1 text-caption text-gray-500 ml-1">
               set phase

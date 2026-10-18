@@ -20,7 +20,8 @@ const NO_LEAD = 'unassigned'
 const DESIGN_CHIP: Record<DesignState, { text: string; cls: string }> = {
   approved: { text: 'design approved', cls: 'bg-emerald-50 text-emerald-700' },
   pending: { text: 'design pending', cls: 'bg-amber-50 text-amber-800' },
-  changes: { text: 'design: changes', cls: 'bg-red-50 text-red-700' },
+  changes: { text: 'design: changes', cls: 'bg-amber-50 text-amber-800' },
+  rejected: { text: 'design rejected', cls: 'bg-red-50 text-red-700' },
   none: { text: 'no design', cls: 'bg-gray-100 text-gray-600' },
 }
 

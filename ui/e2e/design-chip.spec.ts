@@ -43,7 +43,8 @@ test('clicking the chip scrolls the chat to the design approval card', async ({ 
 
 for (const c of [
   { state: 'pending', text: 'design pending', cls: /amber/ },
-  { state: 'changes', text: 'design: changes', cls: /red/ },
+  { state: 'changes', text: 'design: changes', cls: /amber/ }, // F-25: asked to revise, not a no
+  { state: 'rejected', text: 'design rejected', cls: /red/ },
   { state: 'none', text: 'no design', cls: /gray/, approval_id: null },
 ]) {
   test(`a ${c.state} design reads "${c.text}"`, async ({ page, qa }) => {

@@ -112,7 +112,7 @@ export const RING_STROKE: Record<string, string> = {
 export const STATE_CHIP: Record<string, string> = {
   pending: 'bg-amber-50 text-amber-800',
   approved: 'bg-emerald-50 text-emerald-700',
-  changes_requested: 'bg-red-50 text-red-700',
+  changes_requested: 'bg-amber-50 text-amber-800', // F-25: asked to revise, not a no (rejected is the red one)
   lead_review: 'bg-gray-100 text-gray-600',
   master_review: 'bg-amber-50 text-amber-800',
   committed: 'bg-emerald-50 text-emerald-700',
