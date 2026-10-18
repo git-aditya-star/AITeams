@@ -189,21 +189,71 @@ test('Features: at most 5 rows, attention first, then "+N more" opens the first 
   await expect(page).toHaveURL(/c=feature-11/)
 })
 
-test('Shipped: the count is the 14-day timeline, a dot shows its summary and opens the conversation', async ({ page, qa }) => {
+test('Shipped: headline, date axis, dots and the latest rows (summary on hover); a click opens the conversation', async ({ page, qa }) => {
   const shipped = (await qa.api<any>('/dashboard')).shipped
-  const f3 = shipped.timeline.find((f: any) => f.key === 'F-3')
+  const tl = shipped.timeline as { key: string; title: string; summary: string | null; conversation_id: string }[]
+  const f3 = tl.find((f) => f.key === 'F-3')!
+  const f2 = tl.find((f) => f.key === 'F-2')!
   expect(f3.summary).toBeTruthy()
+  expect(f2.summary).toBeFalsy()
+  expect(tl.length).toBeLessThanOrEqual(3)
   await qa.open('/p/demo')
-  const ship = page.locator('[data-ship]')
-  await expect(ship.locator('[data-ship-count]')).toHaveText(String(shipped.timeline.length))
-  await expect(ship.locator('[data-ship-dot]')).toHaveCount(shipped.timeline.length)
-  const dot = ship.locator('[data-ship-dot="F-3"]')
-  await dot.hover()
-  await expect(tooltip(page)).toContainText(f3.summary)
+  const card = page.locator('[data-card="shipped"]')
+  await expect(card.locator('[data-ship-headline]')).toHaveText(`${tl.length} shipped · ${shipped.total} total`)
+  await expect(card.locator('[data-ship-dot]')).toHaveCount(tl.length)
+
+  // Axis: a local date every 3 days back from today, and "today" at the right end.
+  const expected = await page.evaluate(() =>
+    [3, 6, 9, 12].map((k) => {
+      const d = new Date()
+      d.setHours(0, 0, 0, 0)
+      d.setDate(d.getDate() - k)
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+    }),
+  )
+  await expect(card.locator('[data-ship-tick]')).toHaveText([...expected.reverse(), 'today'])
+  for (const t of await card.locator('[data-ship-tick]').all()) await expect(t).toBeVisible()
+
+  // Rows: key + title, newest first; the summary shows on hover (F-2 has none).
+  await expect(card.locator('[data-ship-row]')).toHaveCount(tl.length)
+  await expect(card.locator(`[data-ship-row="${f3.key}"]`)).toContainText(f3.title)
+  await expect(card.locator(`[data-ship-row="${f2.key}"]`)).toContainText(f2.title)
+  await expect(card.locator('[data-ship-more]')).toHaveCount(0)
+  await card.locator(`[data-ship-row="${f3.key}"]`).hover()
+  await expect(tooltip(page)).toContainText(f3.summary!)
+  await hoverTip(page, card.locator(`[data-ship-dot="${f3.key}"]`))
   await expect(tooltip(page)).toContainText(f3.title)
-  await dot.click()
+
+  await card.locator(`[data-ship-row="${f3.key}"]`).click()
   await expect(page).toHaveURL(new RegExp(`c=${f3.conversation_id}`))
   await expect(page.getByRole('heading', { name: f3.title })).toBeVisible()
+})
+
+test('Shipped: more than 3 shows "+N more", which opens the first hidden one; dots stack when they coincide', async ({ page, qa }) => {
+  await page.route(/\/api\/p\/demo\/dashboard$/, async (route) => {
+    const r = await route.fetch()
+    const d = await r.json()
+    const base = d.shipped.timeline[0]
+    const now = Date.now() / 1000
+    // five more, newest first; the last two done at the same moment, so their dots stack
+    const extra = [1, 2, 3, 50, 50].map((h, i) => ({ ...base, id: 200 + i, key: `F-${20 + i}`, title: `Shipped ${i}`, summary: null,
+      conversation_id: `feature-${20 + i}`, done_at: now - h * 3600 - 3600 * 24 }))
+    d.shipped.timeline = [...d.shipped.timeline, ...extra]
+    d.shipped.total += extra.length
+    await route.fulfill({ response: r, json: d })
+  })
+  await qa.open('/p/demo')
+  const card = page.locator('[data-card="shipped"]')
+  await expect(card.locator('[data-ship-headline]')).toContainText('7 shipped')
+  await expect(card.locator('[data-ship-row]')).toHaveCount(3)
+  await expect(card.locator('[data-ship-more]')).toHaveText('+4 more')
+  const [a, b] = await Promise.all([card.locator('[data-ship-dot="F-23"]').boundingBox(), card.locator('[data-ship-dot="F-24"]').boundingBox()])
+  expect(Math.abs(a!.x - b!.x)).toBeLessThanOrEqual(1)
+  expect(Math.abs(a!.y - b!.y)).toBeGreaterThanOrEqual(10)
+  await page.screenshot({ path: `${SHOTS}/dashboard-shipped-many.png`, animations: 'disabled' })
+  // newest first: F-3, F-2 and the newest extra are the rows; the first hidden one is next in order
+  await card.locator('[data-ship-more]').click()
+  await expect(page).toHaveURL(/c=feature-2[0-9]/)
 })
 
 test('Team: a ring shows the model and context on hover, a click opens Stop / Fresh start', async ({ page, qa }) => {
@@ -241,9 +291,9 @@ test('empty states: quiet sparkline, empty phase bar, nothing shipped in 14 days
   await expect(page.locator('[data-phase-empty]')).toHaveText('No active features')
   await expect(page.locator('[data-phase-headline]')).toHaveText('0 active')
   await expect(page.locator('[data-phase-legend="build"]')).toHaveText('build 0')
-  await expect(page.locator('[data-ship-count]')).toHaveText('0')
+  await expect(page.locator('[data-ship-headline]')).toContainText('0 shipped')
+  await expect(page.locator('[data-ship-empty]')).toHaveText('Nothing shipped in 14 days')
+  await expect(page.locator('[data-ship-tick]').last()).toHaveText('today')
   await expect(page.locator('[data-ship-dot]')).toHaveCount(0)
   await page.screenshot({ path: `${SHOTS}/dashboard-empty.png`, animations: 'disabled' })
-  await hoverTip(page, page.locator('[data-ship-count]'))
-  await expect(tooltip(page)).toContainText('nothing shipped in 14 days')
 })

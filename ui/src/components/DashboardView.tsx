@@ -3,7 +3,7 @@ import { selectTeamByRole } from '../store/selectors'
 import ActivitySpark, { activityHeadline } from './dashboard/ActivitySpark'
 import NeedsYouTiles from './dashboard/NeedsYouTiles'
 import PhaseBar, { featuresHeadline } from './dashboard/PhaseBar'
-import ShippedTimeline from './dashboard/ShippedTimeline'
+import ShippedTimeline, { shippedHeadline } from './dashboard/ShippedTimeline'
 import TeamRings from './dashboard/TeamRings'
 import { Card, CardContent, CardHeader } from './ui/card'
 
@@ -62,7 +62,12 @@ export default function DashboardView({ onSelect }: { onSelect: (id: string, mes
         >
           <PhaseBar features={dash.features} onSelect={onSelect} />
         </Block>
-        <Block id="shipped" title="Shipped · last 14 days" className={WIDE}>
+        <Block
+          id="shipped"
+          title="Shipped · last 14 days"
+          headline={dash.shipped?.timeline && <span data-ship-headline>{shippedHeadline(dash.shipped)}</span>}
+          className={WIDE}
+        >
           {dash.shipped?.timeline ? <ShippedTimeline shipped={dash.shipped} onSelect={onSelect} /> : <Missing />}
         </Block>
         <Block id="team" title="Team" className={NARROW}>
