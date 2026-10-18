@@ -45,7 +45,7 @@ The folder is added to `.git/info/exclude`, so nothing of this is ever committed
   per role (dot = idle/queued/running, bar = context meter), and a **Pause project** checkbox.
 - **Team strip** (top): each role's state, context % and today's cost. Click a pill to open its DM.
 - **Main pane:** whatever is selected. Every conversation has a chat box; `@` autocompletes roles.
-  **Enter** sends, **Shift+Enter** adds a line. You can write in Hinglish; roles answer in English.
+  **Enter** sends, **Shift+Enter** adds a line.
 
 ### Read receipts
 Under every message: stacked avatars grouped by state with a small icon — check = acknowledged (the

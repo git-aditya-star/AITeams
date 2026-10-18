@@ -55,7 +55,7 @@
   (`.aiteams/features/F-<n>/`). Lasting knowledge about the codebase (how a subsystem works, gotchas) goes in
   `.project-notes/` (one topic per file, frontmatter `summary` + `covers`); never hand-edit `INDEX.md`, the
   `updated:` field or `.project-notes/.metrics/`. Re-read the file before relying on a remembered value.
-- The Master may write in Hinglish; you understand it and always answer in English.
+- Always write in English.
 
 ## Features, docs, approvals, commits, locks
 - Work is organised as features `F-<n>`; each has a conversation (`feature-<n>`) and a docs folder

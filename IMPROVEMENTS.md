@@ -6,9 +6,21 @@ the rest. The team picks items from here, and the Master writes each task's text
 
 Tags: `[new req]` is new behaviour, `[improvement]` makes something that exists better, `[bug]` is a bug. Suggested order
 (what is left of the M2c plan): diff viewer, design-change broadcast, Live session redesign, mockups/screenshots, Inbox
-guidance, message types, upgrade System line, hook false positives. The other items have no order.
+guidance, message types, upgrade System line, hook false positives. The other items have no order, except the first one
+below: it blocks using AITeams on any repo other than its own.
 
 ## Review & commits
+
+**Lead review only works on the AITeams repo itself** `[bug]`
+- Found 2026-10-18 while preparing the open-source README. `aiteams/roles/lead.md:18-21` tells the Lead to test every
+  request with `.venv/bin/python -B scripts/review_tree.py <id>`. That script lives only in this checkout (the package
+  ships only `aiteams/`, `pyproject.toml:28`) and assumes this repo's layout: `--repo` defaults to the AITeams checkout,
+  it links `.venv` and `ui/node_modules`, runs pytest from `.venv` and `npm run e2e` in `ui/`
+  (`scripts/review_tree.py:29, 130-149, 162`).
+- In any other project the Lead is pointed at a missing script, or would test AITeams instead of the project.
+- Needed (approach not decided): ship the clean-tree review with the package (e.g. an MCP tool or an `aiteams` command),
+  run it against the feature's project, and take the test commands from per-project settings instead of hardcoding
+  pytest and the e2e suite. Until then `lead.md` should say how to test when the project has no review script.
 
 **Commit review diff → `@pierre/diffs`** `[improvement]`
 - Decided (M2c stack choice): replace the hand-rolled viewer with `@pierre/diffs` (Apache-2.0; npm 1.5.2 on

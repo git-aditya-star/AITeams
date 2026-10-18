@@ -1,36 +1,54 @@
 # AITeams
 
-A local "Slack of AIs": six role-based Claude Code sessions (Manager, Lead, Product, Frontend,
-Backend, QA) that work as an engineering team on your own repos. You are the **Master**: you
-hand out tasks, answer questions, approve scope and commits, and watch everything from a light,
-flat web UI. Runs entirely on your machine with your Claude Team login. No API key, no cloud, no
+A local "Slack of AIs": seven role-based Claude Code sessions (Manager, Lead 1, Lead 2, Product, Frontend,
+Backend, QA) that work as an engineering team on your own repos. You are the **Master**: you hand out
+tasks, answer questions, approve scope, designs and commits, and watch everything from a light, flat web
+UI. Runs entirely on your machine and drives your own signed-in Claude Code CLI. No cloud service, no
 GitHub integration.
+
+AITeams is an independent project. It is not affiliated with or endorsed by Anthropic.
 
 ![Dashboard](docs/dashboard.jpg)
 
 ## What it does
 
-- **Features, not tickets.** A task becomes a feature `F-<n>` with its own conversation and a folder
-  of living docs (`prd.md`, `design.md`, `test-plan.md`). The phase (intake → done) is a label any role
-  can set; there is no pipeline to wait on.
-- **Roles that behave like a team.** Product writes the PRD and asks you to lock scope. Lead designs
-  and reviews every commit. Backend/Frontend build. QA writes the test plan and files bugs. Manager
-  routes, chases, runs standups and keeps your attention cheap.
-- **You stay in control.** Agents never commit or push. They request a commit with exact files; the
-  Lead reviews it; you approve it from your Inbox and the daemon commits in your name. Hooks enforce
-  file locks (one role per file per turn) and deny `git commit`/`push` regardless of what a role tries.
-- **Inbox** collects only what needs you: questions, approvals, commits ready to land, blockers.
-- **Sessions stay small.** The daemon tracks each role's context; past 60% the role writes a handoff
-  and continues in a fresh session seeded from it. You can also Stop a running agent or give any role
-  a fresh start, and the Manager can do the same through tools.
+- **Features, not tickets.** A task becomes a feature `F-<n>` with its own conversation and a folder of
+  living docs (`prd.md`, `design.md`, `test-plan.md`). The phase (intake → done) is a label any role can
+  set; there is no pipeline to wait on. Each feature has one of the two Leads, so two features can move
+  at once.
+- **Roles that behave like a team.** Product interviews you and writes the PRD, the Lead designs the
+  feature and reviews the other roles' commits, Backend/Frontend build, QA writes the test plan and checks the result, and the
+  Manager routes work, chases what is stuck and runs standups. Roles push back once with their own
+  opinion, then do what you decide.
+- **Questions come as cards.** Anything that needs your answer is a card with options: a question, an
+  A-vs-B choice with both sides argued, or a concern. The **Brainstorm** button on a feature asks every
+  role involved for ideas and Product compiles them into one card for you.
+- **You stay in control.** Agents never commit or push. You approve the scope (PRD) and the design before
+  building starts; until the design is approved, commit requests are refused. A role requests a commit with
+  exact files and the Lead reviews it; linked requests form a commit group that lands all at once, in
+  order. You approve or reject from the Inbox and the daemon commits in your name. A hook takes a file lock
+  on every edit (one role per file per turn) and denies `git commit`/`push` commands: guardrails against
+  accidents, not a sandbox.
+- **Inbox** collects only what needs you: questions, approvals (Approve / Request changes / Reject),
+  commits ready to land, blockers.
+- **Dashboard** shows what needs you, the last 24 hours of activity, features by phase, what shipped in
+  the last 14 days and where every role is.
+- **Role settings** (gear in the top bar): model and effort per role, and the Claude Code plugins role
+  turns load, each optionally marked "Ask me first" so a role must get your approval before using one of
+  that plugin's skills.
+- **Sessions stay small.** The daemon tracks each role's context; past 60% the role writes a handoff and
+  continues in a fresh session seeded from it. You can Stop a running agent or give any role a fresh
+  start.
 - **Standup on demand.** One click (or the Manager's own call) asks the roles that were active for
   Done/Next/Blocked, and the Manager compiles a report. Nothing scheduled, nothing nags you.
 - **Live session view.** Every role's DM has a tab showing its Claude Code session as it runs: tool
   calls, diffs, command output, the exact prompt it was given.
+- **Small things:** read receipts, roles' emoji reactions on messages, toasts for what needs you, and on macOS the machine
+  stays awake while a role is working.
 
 ![Feature conversation](docs/feature.jpg)
 
-![Standup channel](docs/standup.jpg)
+![Inbox](docs/inbox.jpg)
 
 ## How it works
 
@@ -51,9 +69,9 @@ aiteams (CLI) ──registers folder──▶ daemon (FastAPI + React UI, 127.0.
 - **Isolation.** Roles run with `--setting-sources local`, their own hooks and MCP config, and a
   role prompt + shared team rules appended to the system prompt. Your global `~/.claude` config does
   not leak in.
-- **Everything is a file.** Specs, designs, handoffs and standup reports live under `<repo>/.aiteams/`
-  (git-excluded via `.git/info/exclude`), so a role can always re-read the truth instead of trusting
-  its memory.
+- **Everything is a file.** Feature docs, handoffs and standup reports live under `<repo>/.aiteams/`
+  (added to `.git/info/exclude`), so a role can always re-read the truth instead of trusting its
+  memory. Lasting knowledge about the codebase goes in `<repo>/.project-notes/`, one topic per file.
 
 Improvements that are decided but not built yet are in [`IMPROVEMENTS.md`](IMPROVEMENTS.md).
 
@@ -61,9 +79,9 @@ Improvements that are decided but not built yet are in [`IMPROVEMENTS.md`](IMPRO
 
 - macOS or Linux, Python 3.12+, [uv](https://docs.astral.sh/uv/), Node ≥ 22.12 with npm (24 LTS recommended,
   e.g. `brew install node@24`): `aiteams upgrade` builds the UI.
-- [Claude Code](https://docs.claude.com/en/docs/claude-code) CLI installed and logged in with a
-  Claude Team plan (that is what it was built and tested with; no API key is used). Agents share your plan's usage window; the daemon pauses the team when
-  the limit is hit and tells you.
+- [Claude Code](https://code.claude.com/docs) installed and signed in with your own Claude account. Every
+  role turn is an ordinary `claude -p` run on that account, so a busy team uses your plan's limits much
+  faster than one person does; the daemon pauses the team when a limit is hit and tells you.
 - A git repository to work on (several linked repos per project are planned, not built yet).
 
 ## Install
@@ -81,11 +99,6 @@ next `aiteams upgrade`. The UI build output (`aiteams/static/`) is not committed
 `npm ci` + `npm run build` inside the snapshot before it stops the daemon, so a missing Node or a broken
 build aborts with the old daemon still running.
 
-**Crossing into M2c** (the release that moved the UI build into `upgrade`): the `aiteams` on PATH is
-whatever the last upgrade installed, and a pre-M2c one has no build step. Run the first upgrade to M2c,
-and every roll-forward after a rollback to a pre-M2c ref, from the checkout:
-`uv run --no-sync python -B -m aiteams.cli upgrade` (or run `aiteams upgrade` twice).
-
 UI development (in `ui/`): `npm ci` once, `npm run dev` (Vite dev server, proxies the daemon), `npm run
 build` (writes the gitignored `aiteams/static/` for local checks), `npm run e2e:install` once per
 Playwright version, `npm run e2e` (build + Playwright suite against a sandbox daemon) and
@@ -100,10 +113,8 @@ aiteams                  # starts the daemon if needed, registers the folder, op
 ```
 
 Then click **New task**, describe what the team should do, and pick who starts (Product by default).
-Watch the Inbox, answer when asked, approve the scope and the commits. The
-[user guide](docs/GUIDE.md) walks through every screen and action; the GIF below is a quick tour.
-
-![Walkthrough](docs/walkthrough.gif)
+Watch the Inbox, answer the cards, approve the scope, the design and the commits. The
+[user guide](docs/GUIDE.md) walks through the core screens and actions.
 
 Useful commands:
 
@@ -116,12 +127,13 @@ aiteams token            # print the Master token; --link prints a sign-in URL; 
 
 Every `/api` route and the websocket need the Master token from `~/.aiteams/token` (`GET /api/health`
 is open). `aiteams` opens the browser through a single-use sign-in link that sets a cookie; from a
-terminal send it as a bearer header. Settings live in `~/.aiteams/settings.json` (`default_model`,
-per-role `models`, `max_concurrent`, `rotate_pct`, `stale_hours`, timeouts):
+terminal send it as a bearer header. All settings are stored in `~/.aiteams/settings.json`. Models,
+effort and plugins have a UI (Role settings); the rest (`max_concurrent`, `rotate_pct`, `stale_hours`,
+timeouts, `port`) are changed through the API:
 
 ```bash
 curl -X PUT 127.0.0.1:7700/api/settings -H "Authorization: Bearer $(cat ~/.aiteams/token)" \
-  -H 'content-type: application/json' -d '{"default_model": "opus", "max_concurrent": 3}'
+  -H 'content-type: application/json' -d '{"max_concurrent": 3}'
 ```
 
 ## Project layout
@@ -132,25 +144,19 @@ aiteams/roles/      manager.md, lead.md, ... and team-rules.md (override per pro
 ui/                 React 19 + Vite + Tailwind 4 + shadcn-style kit on Radix + Redux Toolkit, built into aiteams/static/ by upgrade
 ui/e2e/             Playwright suite + screenshot command, run against scripts/qa_sandbox.py
 tests/              pytest suite (no real claude needed; a fake child process stands in)
-scripts/            QA sandbox daemon + end-to-end verification walkthroughs run against the real CLI
+scripts/            QA sandbox daemon, the Lead's review script and end-to-end walkthroughs against the real CLI
 IMPROVEMENTS.md     pending improvements (decided, not built yet)
-docs/               this guide, screenshots, walkthrough GIF
+docs/               user guide and screenshots
 ```
 
 ## Status
 
-- **M1 (done):** daemon + CLI, chat with typed messages and read receipts, six roles with live session
-  view, features with living docs, approvals, commit flow with Lead review, file locks, Inbox,
-  dashboard, session rotation with handoffs, Stop/interrupt/checkpoint, on-demand standup, feature
-  fresh start, History.
-- **M2a (done):** `aiteams upgrade` runtime snapshot, Master token on `/api` and `/ws`, per-turn secret on
-  `/internal`, schema migrations, so the team can safely edit this repo while the daemon runs it.
-- **M2b (done):** first dogfood run: the team built toast notifications and the commit review view.
-- **M2c (done):** UI build moved into `aiteams upgrade`, React 19 / Vite 8 / Tailwind 4 / shadcn-style Radix kit with
-  a four-step type scale, Redux Toolkit store, QA sandbox + Playwright suite.
-- **Next:** the team dogfoods the M2c task list (project notes for roles, a better diff view, ...).
-
-Personal project. Issues and ideas welcome; expect rough edges.
+The core (daemon, chat, roles, features, commit flow, Inbox, dashboard, session rotation, standups,
+`aiteams upgrade`, the UI stack and the QA tooling) was built by hand in milestones. Since then AITeams
+builds itself: features F-1 to F-26, from toasts and the commit review view to question cards, commit
+groups, design approval, two Leads, role settings and the visual dashboard, were scoped, built, reviewed
+and tested by its own roles, with the Master approving. What comes next is in
+[`IMPROVEMENTS.md`](IMPROVEMENTS.md). The user guide does not cover every newer feature yet.
 
 ## License
 
