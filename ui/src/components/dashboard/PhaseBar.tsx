@@ -70,23 +70,28 @@ export default function PhaseBar({ features, onSelect }: { features: DashboardFe
               key={f.id}
               data-phase-row={f.key}
               onClick={() => onSelect(f.conversation_id)}
-              className="flex min-w-0 cursor-pointer items-center gap-2 rounded px-1 py-1 text-left hover:bg-gray-50"
+              className="flex min-w-0 cursor-pointer flex-wrap items-center gap-x-2 gap-y-0.5 rounded px-1 py-1 text-left hover:bg-gray-50"
             >
               <span className="shrink-0 font-mono text-caption text-gray-500">{f.key}</span>
-              <span className="min-w-0 flex-1 truncate text-meta">{f.title}</span>
-              <Badge className={`shrink-0 px-1.5 ${phaseChip(f.phase)}`}>{f.phase}</Badge>
-              {waitsOnYou(f) && (
-                <Tip content={`waits on you: ${f.waits_on!.kind}${f.waits_on!.since ? ` since ${fmtAgo(f.waits_on!.since)}` : ''}`}>
-                  <span data-waits className="shrink-0">
-                    <Badge className="bg-red-50 px-1.5 text-red-700">waits on you</Badge>
-                  </span>
-                </Tip>
-              )}
-              {f.stale && (
-                <Badge data-stale className="shrink-0 bg-gray-100 px-1.5 text-gray-600">
-                  stale
-                </Badge>
-              )}
+              {/* the title keeps at least 8rem; when the key, title and tags don't fit on one line the tags drop below */}
+              <span data-phase-title className="min-w-0 flex-[1_1_8rem] truncate text-meta">
+                {f.title}
+              </span>
+              <span data-phase-tags className="flex shrink-0 items-center gap-1.5">
+                <Badge className={`px-1.5 ${phaseChip(f.phase)}`}>{f.phase}</Badge>
+                {waitsOnYou(f) && (
+                  <Tip content={`waits on you: ${f.waits_on!.kind}${f.waits_on!.since ? ` since ${fmtAgo(f.waits_on!.since)}` : ''}`}>
+                    <span data-waits>
+                      <Badge className="bg-red-50 px-1.5 text-red-700">waits on you</Badge>
+                    </span>
+                  </Tip>
+                )}
+                {f.stale && (
+                  <Badge data-stale className="bg-gray-100 px-1.5 text-gray-600">
+                    stale
+                  </Badge>
+                )}
+              </span>
             </button>
           ))}
           {hidden.length > 0 && (

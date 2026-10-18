@@ -154,6 +154,9 @@ test('Features: headline, a legend with every phase, rows with phase and "waits 
   const row = card.locator('[data-phase-row="F-1"]')
   await expect(row).toContainText(f1.title)
   await expect(row).toContainText('build')
+  // at 1400px the key, title and tags share one line
+  const [title1400, tags1400] = await Promise.all([row.locator('[data-phase-title]').boundingBox(), row.locator('[data-phase-tags]').boundingBox()])
+  expect(Math.abs(title1400!.y + title1400!.height / 2 - (tags1400!.y + tags1400!.height / 2))).toBeLessThan(6)
   await expect(row.locator('[data-waits]')).toHaveText('waits on you')
   await expect(card.locator('[data-phase-more]')).toHaveCount(0)
   await row.click()
@@ -318,6 +321,18 @@ test('Team: working, handoff, standup, interrupted and idle read as words, with 
   await expect(state('frontend')).toHaveText('idle')
   await expect(state('qa')).toHaveText('queued')
   await page.screenshot({ path: `${SHOTS}/dashboard-team-states.png`, animations: 'disabled' })
+})
+
+test('Features: in a narrow card the tags drop to a second line and the title keeps its width', async ({ page, qa }) => {
+  await page.setViewportSize({ width: 1100, height: 800 })
+  await qa.open('/p/demo')
+  const row = page.locator('[data-card="features"] [data-phase-row="F-1"]')
+  const title = row.locator('[data-phase-title]')
+  const [tb, gb] = await Promise.all([title.boundingBox(), row.locator('[data-phase-tags]').boundingBox()])
+  expect(gb!.y).toBeGreaterThanOrEqual(tb!.y + tb!.height - 1) // the tags sit below the title
+  await expect(row.locator('[data-waits]')).toBeVisible()
+  expect(await title.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true) // the title isn't cut off
+  await page.screenshot({ path: `${SHOTS}/dashboard-features-narrow.png`, animations: 'disabled' })
 })
 
 test('Team: at about 1100px the narrow card wraps into whole blocks, nothing is cut off', async ({ page, qa }) => {
