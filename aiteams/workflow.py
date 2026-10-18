@@ -447,6 +447,12 @@ async def answer_card(st, proj: Project, q: dict, answers: dict[str, str]) -> di
 
 
 # ---- approvals ---------------------------------------------------------------
+async def _broadcast_design(proj: Project, a: dict) -> None:
+    """F-25: a `Design:` approval changes its feature's `design` chip, so send the feature (the UI reads it from there)."""
+    if a["feature_id"] and is_design_title(a["title"]):
+        await proj.hub.broadcast("feature", proj.db.feature(a["feature_id"]))
+
+
 async def request_approval(st, proj: Project, role: str, turn_id: int | None, feature, title: str, summary: str) -> dict:
     title = (title or "").strip()
     if not title:
@@ -459,6 +465,7 @@ async def request_approval(st, proj: Project, role: str, turn_id: int | None, fe
     proj.db.x("UPDATE approvals SET message_id=? WHERE id=?", msg["id"], a["id"])
     a = proj.db.approval(a["id"])
     await proj.hub.broadcast("approval", a)
+    await _broadcast_design(proj, a)
     await broadcast_inbox(proj)
     return a
 
@@ -479,8 +486,10 @@ async def decide_approval(st, proj: Project, aid: int, decision: str, note: str 
     extra = ""
     if decision == "approve" and set_phase and feat and set_phase != feat["phase"]:
         feat = proj.db.update_feature(feat["id"], phase=set_phase)
-        await proj.hub.broadcast("feature", feat)
+        await proj.hub.broadcast("feature", feat)  # its `design` is already the new one
         extra = f" (phase → {set_phase})"
+    else:
+        await _broadcast_design(proj, a)
     if decision == "approve":
         text = f"Approved: {a['title']}{extra}" + (f"\n\n{note}" if note else "")
     elif decision == "reject":  # F-25: "no, stop"; Changes requested means revise and ask again

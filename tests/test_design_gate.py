@@ -158,3 +158,46 @@ def test_header_line_and_feature_payload(client, pid):
     header = workflow.feature_header(db, "", db.feature(2)).splitlines()
     assert header[2] == "- design: not requested · not gated"  # right after the phase line
     assert header[1].startswith("- phase:")
+
+
+def test_design_approvals_send_the_feature_so_the_chip_updates_live(client, pid):
+    """F-25 (QA #1123): requesting and deciding a `Design:` approval broadcast its feature with the new design state."""
+    new_feature(client, pid)
+    proj = proj_of(client, pid)
+    proj.db.x("UPDATE features SET lead='lead' WHERE id=1")  # else the Lead's first act claims it (a feature frame too)
+    events = []
+    orig = proj.hub.broadcast
+
+    async def spy(event, data):
+        events.append((event, data))
+        await orig(event, data)
+    proj.hub.broadcast = spy
+    # Other feature frames may go out too (e.g. a new voice); the last one carries the current design state.
+    design_states = lambda: [d["design"]["state"] for e, d in events if e == "feature"]  # noqa: E731
+    first = design_approval(client, pid)
+    assert design_states()[-1] == "pending"
+    for decision, state in (("reject", "rejected"), ("changes", "changes"), ("approve", "approved")):
+        events.clear()
+        aid = first if decision == "reject" else design_approval(client, pid, f"Design: Export {decision}")
+        events.clear()
+        decide(client, pid, aid, decision)
+        assert design_states()[-1:] == [state]
+    events.clear()
+    other = design_approval(client, pid, "Scope lock: Export")  # not a design: no feature frame
+    events.clear()
+    decide(client, pid, other, "reject")
+    assert design_states() == []
+    # approving a Design with a phase change sends ONE feature frame, with the new phase and the new design state
+    events.clear()
+    last = design_approval(client, pid, "Design: Export final")
+    events.clear()
+    r = client.post(f"/api/p/{pid}/approvals/{last}/decide", json={"decision": "approve", "set_phase": "qa"})
+    assert r.status_code == 200
+    frames = [d for e, d in events if e == "feature"]
+    assert len(frames) == 1 and frames[0]["phase"] == "qa" and frames[0]["design"]["state"] == "approved"
+    # a no-op phase change still sends the design state once
+    events.clear()
+    again = design_approval(client, pid, "Design: Export again")
+    events.clear()
+    client.post(f"/api/p/{pid}/approvals/{again}/decide", json={"decision": "approve", "set_phase": "qa"})
+    assert design_states() == ["approved"]
