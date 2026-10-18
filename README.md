@@ -55,8 +55,7 @@ aiteams (CLI) ──registers folder──▶ daemon (FastAPI + React UI, 127.0.
   (git-excluded via `.git/info/exclude`), so a role can always re-read the truth instead of trusting
   its memory.
 
-The full decision log is in [`BRAINSTORM.md`](BRAINSTORM.md); the milestone specs are in
-[`SPEC.md`](SPEC.md) and [`specs/`](specs/).
+Improvements that are decided but not built yet are in [`IMPROVEMENTS.md`](IMPROVEMENTS.md).
 
 ## Requirements
 
@@ -134,7 +133,7 @@ ui/                 React 19 + Vite + Tailwind 4 + shadcn-style kit on Radix + R
 ui/e2e/             Playwright suite + screenshot command, run against scripts/qa_sandbox.py
 tests/              pytest suite (no real claude needed; a fake child process stands in)
 scripts/            QA sandbox daemon + end-to-end verification walkthroughs run against the real CLI
-specs/, SPEC.md     milestone specs; BRAINSTORM.md is the decision log
+IMPROVEMENTS.md     pending improvements (decided, not built yet)
 docs/               this guide, screenshots, walkthrough GIF
 ```
 

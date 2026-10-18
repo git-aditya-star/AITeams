@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""M0 runtime probes for AITeams (throwaway harness, see SPEC.md). Run: python3 -B spikes/m0/run_probes.py"""
+"""M0 runtime probes for AITeams (throwaway harness, findings in RESULTS.md). Run: python3 -B spikes/m0/run_probes.py"""
 import json
 import os
 import queue
