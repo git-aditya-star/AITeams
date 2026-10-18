@@ -82,9 +82,11 @@ def test_full_flow_backend_lead_master(client, pid, repo):
     assert git(repo, "diff", "--cached", "--name-only") == "" and git(repo, "diff", "--name-only") == "README.md"  # unlisted dirty file untouched
     assert "README.md" not in git(repo, "show", "--name-only", "--format=", "HEAD")
     last = client.get(f"/api/p/{pid}/messages", params={"conversation": "feature-1"}).json()[-1]
-    assert last["author"] == "master" and last["type"] == "Decision" and last["mentions"] == ["backend", "lead"]
-    assert last["text"] == f"@backend @lead Committed `{r['sha']}`: F-1: add export (edited)"
-    assert {"backend", "lead"} <= {w["role"] for w in proj.db.queued_wakes()}  # F-14: the Lead sequences the next step
+    assert last["author"] == "master" and last["type"] == "Decision" and last["mentions"] == ["lead"]
+    assert last["text"] == f"@lead Committed `{r['sha']}`: F-1: add export (edited)"
+    # F-20: a commit wakes only the Lead, who sequences the next step; backend sees the line in its next news
+    assert "lead" in {w["role"] for w in proj.db.queued_wakes()}
+    assert not any(w["role"] == "backend" and last["id"] in w["message_ids"] for w in proj.db.queued_wakes())
     assert client.get(f"/api/p/{pid}/inbox").json()["count"] == 0
     # prefix check respects the F-<n> boundary
     c12 = client.post("/internal/commits", json={"feature": "F-1", "files": ["api_export.py"], "message": "F-12: other"}, headers=backend).json()
@@ -184,6 +186,35 @@ def test_master_decision_on_a_role_request_wakes_the_lead_too(client, pid, repo,
     assert last["author"] == "master" and last["mentions"] == ["qa", "lead"]
     assert last["text"].startswith(f"@qa @lead Commit #{c['id']} {outcome}")
     assert sorted(w["role"] for w in proj.db.queued_wakes()) == ["lead", "qa"]
+
+
+@pytest.mark.parametrize("filer", ["backend", "lead"])
+def test_master_commit_wakes_only_the_lead(client, pid, repo, filer):
+    """F-20 (card #16): a successful commit mentions and wakes only the Lead, whoever filed it; a reject of the same
+    kind of request still wakes the filer and the Lead (F-14)."""
+    proj = client.app.state.app.projects[pid]
+    client.post(f"/api/p/{pid}/features", json={"text": "Export", "starter": "product"})
+    (repo / "w.py").write_text("x\n")
+    body = {"feature": "F-1", "files": ["w.py"], "message": "F-1: w"}
+    c = client.post("/internal/commits", json=body, headers=turn(client, pid, filer)).json()
+    if filer != "lead":
+        client.post(f"/internal/commits/{c['id']}/review", json={"decision": "approve"}, headers=turn(client, pid, "lead"))
+    proj.db.x("DELETE FROM wake_queue")
+    r = client.post(f"/api/p/{pid}/commits/{c['id']}/decide", json={"decision": "approve"}).json()
+    assert r["state"] == "committed"
+    last = client.get(f"/api/p/{pid}/messages", params={"conversation": "feature-1"}).json()[-1]
+    assert last["author"] == "master" and last["mentions"] == ["lead"]
+    assert last["text"] == f"@lead Committed `{r['sha']}`: F-1: w"
+    assert [w["role"] for w in proj.db.queued_wakes()] == ["lead"]
+    if filer == "lead":
+        return
+    (repo / "w2.py").write_text("y\n")
+    body = {"feature": "F-1", "files": ["w2.py"], "message": "F-1: w2"}
+    c2 = client.post("/internal/commits", json=body, headers=turn(client, pid, filer)).json()
+    client.post(f"/internal/commits/{c2['id']}/review", json={"decision": "approve"}, headers=turn(client, pid, "lead"))
+    proj.db.x("DELETE FROM wake_queue")
+    client.post(f"/api/p/{pid}/commits/{c2['id']}/decide", json={"decision": "reject", "note": "no"})
+    assert sorted(w["role"] for w in proj.db.queued_wakes()) == ["backend", "lead"]
 
 
 def test_diff_per_file_status_counts_and_totals(client, pid, repo):

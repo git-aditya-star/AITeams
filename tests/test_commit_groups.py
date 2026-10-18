@@ -106,8 +106,9 @@ def test_group_order_inbox_item_and_group_commit(client, pid, repo):
     assert git(repo, "log", "-2", "--format=%s").splitlines() == [f"F-1: add ui.ts", f"F-1: add api.py"]
     msgs = db.messages("feature-1", limit=5)
     assert msgs[-1]["text"] == f"Group #{base['id']} + #{ui['id']} committed." and msgs[-1]["author"] == "system"
-    assert [m["mentions"] for m in msgs[-3:-1]] == [["backend", "lead"], ["frontend", "lead"]]
-    assert sorted({w["role"] for w in db.queued_wakes()}) == ["backend", "frontend", "lead"]
+    assert [m["mentions"] for m in msgs[-3:-1]] == [["lead"], ["lead"]]  # F-20: each member line wakes only the Lead
+    assert msgs[-3]["text"].startswith("@lead Committed `") and msgs[-2]["text"].startswith("@lead Committed `")
+    assert sorted({w["role"] for w in db.queued_wakes()}) == ["lead"]
     inbox = client.get(f"/api/p/{pid}/inbox").json()
     assert inbox["groups"] == [] and inbox["count"] == 1
     assert decide(client, pid, lone["id"]).status_code == 200  # singles unchanged

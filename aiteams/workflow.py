@@ -674,6 +674,11 @@ def _commit_sync(project_path: str, files: list[str], message: str) -> tuple[boo
     return True, sha
 
 
+# F-20 (Master's card #16): a successful commit wakes only the Lead, who briefs the next step; the filer sees its
+# "Committed" line in its next turn's news. Rejections and failures still wake the filer too (_decision_mentions).
+COMMITTED_MENTIONS = ["lead"]
+
+
 def _decision_mentions(requester: str) -> list[str]:
     """F-14: the Master's commit decisions wake the requester and the Lead, who sequences the next step."""
     return [requester] if requester == "lead" else [requester, "lead"]
@@ -717,7 +722,7 @@ async def decide_commit(st, proj: Project, cid: int, decision: str, message: str
         if ok:
             c = proj.db.update_commit(cid, state="committed", sha=out, message=msg_text, note=note or None)
             subject = msg_text.splitlines()[0]
-            await _post(st, proj, conv, "master", f"{at} Committed `{out}`: {subject}", "Decision", who)
+            await _post(st, proj, conv, "master", f"@lead Committed `{out}`: {subject}", "Decision", list(COMMITTED_MENTIONS))
             await _activity(proj, "commit", f"Committed {out}: {subject}", c["role"], c["feature_id"], conv, f"commit:{cid}")
         else:
             c = proj.db.update_commit(cid, state="failed", note=out, message=msg_text)
@@ -771,10 +776,8 @@ async def _commit_group(st, proj: Project, members: list[dict], note: str | None
         for m, sha in zip(members, shas):
             m = db.update_commit(m["id"], state="committed", sha=sha, note=note or None)
             mconv = db.feature(m["feature_id"])["conversation_id"] if m["feature_id"] else f"dm-{m['role']}"
-            who = _decision_mentions(m["role"])
             subject = m["message"].splitlines()[0]
-            await _post(st, proj, mconv, "master", " ".join("@" + r for r in who) + f" Committed `{sha}`: {subject}",
-                        "Decision", who)
+            await _post(st, proj, mconv, "master", f"@lead Committed `{sha}`: {subject}", "Decision", list(COMMITTED_MENTIONS))
             await _activity(proj, "commit", f"Committed {sha}: {subject}", m["role"], m["feature_id"], mconv,
                             f"commit:{m['id']}")
         await _post(st, proj, conv, "system", f"Group {label} committed.", "System", [],
