@@ -58,7 +58,10 @@ def test_full_flow_backend_lead_master(client, pid, repo):
     row = proj.db.commit(c["id"])
     assert row["message"] == "F-1: add export\n\nbody" and len(row["hashes"]["api_export.py"]) == 64
     msgs = client.get(f"/api/p/{pid}/messages", params={"conversation": "feature-1"}).json()
-    m = msgs[-1]
+    # F-22: the feature had no Lead, so "@lead" picked one (Lead 1, the default), announced right after the card
+    assert msgs[-1]["author"] == "system" and msgs[-1]["text"] == "Lead 1 picked automatically (default)."
+    assert proj.db.feature(1)["lead"] == "lead"
+    m = msgs[-2]
     assert m["type"] == "Commit" and m["ref"] == f"commit:{c['id']}" and m["mentions"] == ["lead"]
     assert m["commit"]["state"] == "lead_review" and "**Commit request #1** (1 file)" in m["text"]
     assert [w["role"] for w in proj.db.queued_wakes()] == ["lead"]
@@ -71,7 +74,7 @@ def test_full_flow_backend_lead_master(client, pid, repo):
     lead = turn(client, pid, "lead")
     assert client.post(f"/internal/commits/{c['id']}/review", json={"decision": "approve", "note": "lgtm"}, headers=lead).json()["state"] == "master_review"
     sysm = client.get(f"/api/p/{pid}/messages", params={"conversation": "feature-1"}).json()[-1]
-    assert sysm["type"] == "System" and "Lead approved commit #1" in sysm["text"]
+    assert sysm["type"] == "System" and "Lead 1 approved commit #1" in sysm["text"]
     inbox = client.get(f"/api/p/{pid}/inbox").json()
     assert [x["id"] for x in inbox["commits"]] == [c["id"]] and inbox["commits"][0]["feature"] == "F-1" and inbox["count"] == 1
     d = client.get(f"/api/p/{pid}/commits/{c['id']}/diff").json()
@@ -194,6 +197,7 @@ def test_master_commit_wakes_only_the_lead(client, pid, repo, filer):
     kind of request still wakes the filer and the Lead (F-14)."""
     proj = client.app.state.app.projects[pid]
     client.post(f"/api/p/{pid}/features", json={"text": "Export", "starter": "product"})
+    proj.db.update_feature(1, lead="lead")  # a feature has its Lead; "@lead" in it means that Lead (F-22)
     (repo / "w.py").write_text("x\n")
     body = {"feature": "F-1", "files": ["w.py"], "message": "F-1: w"}
     c = client.post("/internal/commits", json=body, headers=turn(client, pid, filer)).json()

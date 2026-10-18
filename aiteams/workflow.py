@@ -208,10 +208,18 @@ async def feature_lead(st, proj: Project, feat: dict) -> str:
     """F-22: the Lead of a feature. A feature with no Lead yet (the Manager hasn't assigned one) gets one now, so
     nothing waits on the Manager's turn: an idle Lead if there is one, else whichever has fewer open features,
     then Lead 1. The pick is stored and announced in the feature."""
+    pick, line = await _pick_lead(st, proj, feat)
+    if line:
+        await _post(st, proj, feat["conversation_id"], "system", line, "System", [])
+    return pick
+
+
+async def _pick_lead(st, proj: Project, feat: dict) -> tuple[str, str | None]:
+    """feature_lead without the announcement: (the Lead, the System line to post or None if it was already set)."""
     db = proj.db
     fresh = db.feature(feat["id"]) or feat
     if fresh.get("lead") in LEADS:
-        return fresh["lead"]
+        return fresh["lead"], None
     busy = {r: _lead_busy(st, proj, r) for r in LEADS}
     pool = [r for r in LEADS if not busy[r]] or list(LEADS)
     load = {r: len(lead_open_features(db, r)) for r in LEADS}
@@ -220,10 +228,54 @@ async def feature_lead(st, proj: Project, feat: dict) -> str:
     why = (f"{role_name(other)} was busy" if not busy[pick] and busy[other]
            else "fewer open features" if load[pick] != load[other] else "default")
     feat = db.update_feature(fresh["id"], lead=pick)
-    await _post(st, proj, feat["conversation_id"], "system", f"{role_name(pick)} picked automatically ({why}).",
-                "System", [])
     await proj.hub.broadcast("feature", feat)
-    return pick
+    return pick, f"{role_name(pick)} picked automatically ({why})."
+
+
+def feature_of_conversation(db: ProjectDB, conversation_id: str | None) -> dict | None:
+    """The feature whose conversation this is (None for DMs, channels and unknown ids)."""
+    conv = db.conversation(conversation_id) if conversation_id else None
+    return db.feature(conv["id"]) if conv and conv["kind"] == "feature" else None
+
+
+async def resolve_lead_mentions(st, proj: Project, feat: dict | None, mentions: list[str]) -> tuple[list[str], str | None]:
+    """F-22: in a feature, any Lead mention (@lead, @lead-1, @lead-2) means the feature's Lead. The resolved role is
+    what gets stored and woken, so the UI and the router agree. Elsewhere mentions are left as they are. Returns
+    (mentions, the System line announcing an automatic pick or None): the caller posts it after the message itself,
+    so a new feature's first line is the Master's request."""
+    if feat is None or not any(m in LEADS for m in mentions):
+        return mentions, None
+    lead, line = await _pick_lead(st, proj, feat)
+    out: list[str] = []
+    for m in mentions:
+        m = lead if m in LEADS else m
+        if m not in out:
+            out.append(m)
+    return out, line
+
+
+async def guard_lead(st, proj: Project, role: str, feat: dict | None, claim: bool = True) -> None:
+    """F-22: a Lead acts only in its own features. 409 for a feature whose Lead is the other one (reading is never
+    guarded); a feature with no Lead yet is claimed by the first Lead that acts in it, with a System line. Call it
+    with claim=False first where a refusal must change nothing (before the F-16 guard), then again to claim."""
+    if role not in LEADS or feat is None:
+        return
+    fresh = proj.db.feature(feat["id"]) or feat
+    if fresh.get("lead") is None:
+        if not claim:
+            return
+        fresh = proj.db.update_feature(fresh["id"], lead=role)
+        await _post(st, proj, fresh["conversation_id"], "system",
+                    f"{role_name(role)} claimed {fresh['key']} (it had no Lead yet).", "System", [])
+        await proj.hub.broadcast("feature", fresh)
+    elif fresh["lead"] != role:
+        raise HTTPException(409, f"{fresh['key']} belongs to {role_name(fresh['lead'])}; you can read it but not act "
+                                 "in it. Ask @manager to reassign it if needed.")
+
+
+def is_design_title(title: str | None) -> bool:
+    """A design approval's title starts with `Design:` (trimmed, case-insensitive), like db.design_info."""
+    return (title or "").strip().lower().startswith("design:")
 
 
 def resolve_feature(db: ProjectDB, ident) -> dict | None:
@@ -241,8 +293,8 @@ CARD_PURPOSES = ("ask", "interview", "concern", "a_vs_b", "brainstorm")
 
 def voices(db: ProjectDB, feat: dict) -> list[str]:
     """Roles with a voice on a feature: authors of / mentioned in its conversation (non-system), plus Product and
-    Lead; in ROLES order."""
-    who = {"product", "lead"}
+    the feature's Lead; in ROLES order."""
+    who = {"product", feat.get("lead") or "lead"}
     for r in db.q("SELECT author, mentions FROM messages WHERE conversation_id=? AND author != 'system'",
                   feat["conversation_id"]):
         who.add(r["author"])
@@ -313,7 +365,8 @@ async def ask_master(st, proj: Project, role: str, turn_id: int | None, feature,
         if role not in voices(db, feat):
             raise HTTPException(403, f"{role} has no voice on {feat['key']} (voices: {', '.join(voices(db, feat))})")
     if purpose == "a_vs_b":
-        owners = ["lead", "product"] + ([feat["owner"]] if feat and feat["owner"] not in (None, "lead", "product") else [])
+        lead = (feat.get("lead") if feat else None) or "lead"  # F-22: the feature's Lead
+        owners = [lead, "product"] + ([feat["owner"]] if feat and feat["owner"] not in (None, "product", *LEADS) else [])
         if role not in owners:
             raise HTTPException(403, f"only the owner ({', '.join(owners[:-1])} or {owners[-1]}) sends an A vs B card; "
                                      "post the owner a Concern saying you still disagree")
@@ -536,7 +589,7 @@ async def request_commit(st, proj: Project, role: str, turn_id: int | None, feat
         hashes[rel] = _sha(proj.path, rel)
     if feat and not (message.startswith(feat["key"] + ":") or message.startswith(feat["key"] + " ")):
         message = f"{feat['key']}: {message}"
-    state = "master_review" if role == "lead" else "lead_review"
+    state = "master_review" if role in LEADS else "lead_review"
     db = proj.db
     # a re-file supersedes the same role's pending requests in this feature whose files it covers, and (F-11) a
     # rejected one that open requests still require; it takes their place in the group
@@ -627,13 +680,31 @@ def group_files(db: ProjectDB, cid: int) -> dict:
     files = []
     for m in g:
         files += [f for f in m["files"] if f not in files]
-    return {"ids": [m["id"] for m in g], "files": files}
+    ids = [m["id"] for m in g]
+    return {"ids": ids, "files": files, "overlap": group_overlap(db, set(ids), files)}
+
+
+def group_overlap(db: ProjectDB, ids: set[int], files: list[str]) -> list[dict]:
+    """F-22: the other open requests (Lead or Master review) that list a file of this request or group, one item per
+    request, naming its feature and that feature's Lead, for review_tree.py's `overlap:` lines."""
+    mine, out = set(files), []
+    for state in PENDING_COMMIT_STATES:
+        for o in db.commits(state):
+            shared = [f for f in o["files"] if f in mine]
+            if o["id"] in ids or not shared:
+                continue
+            feat = db.feature(o["feature_id"]) if o["feature_id"] else None
+            out.append({"commit_id": o["id"], "role": o["role"], "state": o["state"], "files": shared,
+                        "feature": feat["key"] if feat else None,
+                        "lead": feat["lead"] if feat else None,
+                        "lead_name": role_name(feat["lead"]) if feat and feat["lead"] else None})
+    return sorted(out, key=lambda x: x["commit_id"])
 
 
 async def review_commit(st, proj: Project, role: str, cid: int, decision: str, note: str | None,
                         turn_id: int | None = None) -> dict:
-    if role != "lead":
-        raise HTTPException(403, "only the Lead reviews commits")
+    if role not in LEADS:
+        raise HTTPException(403, "only a Lead reviews commits")
     c = proj.db.commit(cid)
     if c is None:
         raise HTTPException(404, "unknown commit")
@@ -645,12 +716,13 @@ async def review_commit(st, proj: Project, role: str, cid: int, decision: str, n
     conv = feat["conversation_id"] if feat else f"dm-{c['role']}"
     if decision == "approve":
         c = proj.db.update_commit(cid, state="master_review", note=note or None)
-        await _post(st, proj, conv, "system", f"Lead approved commit #{cid}; waiting on the Master.", "System", [],
+        await _post(st, proj, conv, "system", f"{role_name(role)} approved commit #{cid}; waiting on the Master.", "System", [],
                     turn_id, ref=f"{COMMIT_EVENT}{cid}")
     else:
         c = proj.db.update_commit(cid, state="rejected", note=note or None)
-        await _post(st, proj, conv, "lead", f"@{c['role']} Commit #{cid} rejected: {note or '(no note)'}", "Decision", [c["role"]])
-        await _activity(proj, "commit", f"Commit #{cid} rejected by the Lead", c["role"], c["feature_id"], conv, f"commit:{cid}")
+        await _post(st, proj, conv, role, f"@{c['role']} Commit #{cid} rejected: {note or '(no note)'}", "Decision", [c["role"]])
+        await _activity(proj, "commit", f"Commit #{cid} rejected by {role_name(role)}", c["role"], c["feature_id"], conv,
+                        f"commit:{cid}")
     await proj.hub.broadcast("commit", c)
     await broadcast_inbox(proj)
     return c
@@ -744,14 +816,15 @@ def _commit_sync(project_path: str, files: list[str], message: str) -> tuple[boo
     return True, sha
 
 
-# F-20 (Master's card #16): a successful commit wakes only the Lead, who briefs the next step; the filer sees its
+# F-20 (Master's card #16): a successful commit wakes only the Lead (in a feature: that feature's Lead, F-22), who
+# briefs the next step; the filer sees its
 # "Committed" line in its next turn's news. Rejections and failures still wake the filer too (_decision_mentions).
 COMMITTED_MENTIONS = ["lead"]
 
 
 def _decision_mentions(requester: str) -> list[str]:
     """F-14: the Master's commit decisions wake the requester and the Lead, who sequences the next step."""
-    return [requester] if requester == "lead" else [requester, "lead"]
+    return [requester] if requester in LEADS else [requester, "lead"]  # in a feature, "lead" means its Lead
 
 
 async def decide_commit(st, proj: Project, cid: int, decision: str, message: str | None, note: str | None,
@@ -894,13 +967,13 @@ async def release_lock(st, proj: Project, role: str, path: str, force: bool) -> 
     holder = dict(holder)
     if holder["role"] == role:
         proj.db.release_lock(rel)
-    elif force and role in ("lead", "manager"):
+    elif force and role in (*LEADS, "manager"):
         proj.db.release_lock(rel)
         when = time.strftime("%H:%M", time.localtime(holder["created_at"]))
         await _post(st, proj, f"dm-{holder['role']}", role,
                     f"I force-unlocked `{rel}` (it was yours since {when}).", "Message", [holder["role"]])
     else:
-        raise HTTPException(403, f"{rel} is locked by {holder['role']}; only lead/manager may force-unlock it")
+        raise HTTPException(403, f"{rel} is locked by {holder['role']}; only a Lead or the manager may force-unlock it")
     await broadcast_locks(proj)
     return {"ok": True, "path": rel, "released": True}
 
@@ -949,7 +1022,9 @@ def _news(db: ProjectDB, role: str, after: int, turn_id: int) -> tuple[list[dict
             voiced[cid] = bool(feat and role in voices(db, feat))
         n = _commit_ref(m) if m["author"] == "system" else None
         c = db.commit(n) if n is not None else None
-        mine = c is not None and (c["role"] == role or role == "lead")
+        # F-22: a Lead follows the commit events of its own features and of featureless requests
+        cfeat = db.feature(c["feature_id"]) if c is not None and c["feature_id"] else None
+        mine = c is not None and (c["role"] == role or (role in LEADS and (cfeat is None or cfeat["lead"] in (None, role))))
         if role in m["mentions"] or cid == f"dm-{role}" or voiced[cid] or mine:
             relevant.append(m)
         else:
@@ -1094,7 +1169,7 @@ def _waits_on(st, proj: Project, feat: dict, running_convs: dict[str, str], queu
     for c in db.commits("master_review", feat["id"]):
         return {"kind": "commit", "who": "master", "since": c["created_at"]}
     for c in db.commits("lead_review", feat["id"]):
-        return {"kind": "review", "who": "lead", "since": c["created_at"]}
+        return {"kind": "review", "who": feat.get("lead") or "lead", "since": c["created_at"]}
     if cid in running_convs:
         return {"kind": "running", "who": running_convs[cid], "since": None}
     if cid in queued_convs:

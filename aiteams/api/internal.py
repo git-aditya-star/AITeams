@@ -7,7 +7,7 @@ import hmac
 from fastapi import APIRouter, HTTPException, Request
 
 from .. import workflow
-from ..config import ROLES, role_name
+from ..config import LEADS, ROLES, role_name
 from ..db import EMOJI
 from ..models import (AskMasterBody, CheckpointBody, HandoffBody, InternalApprovalBody, InternalBrainstormBody,
                       InternalCommitBody, InternalFeatureBody, InternalFeaturePatchBody, InternalMessageBody,
@@ -51,9 +51,12 @@ async def post(request: Request, body: InternalMessageBody):
     role = turn["role"]
     mentions = routing.parse_mentions(body.text, body.mentions)
     type_ = body.type if body.type in MESSAGE_TYPES else "Message"
+    pfeat = workflow.feature_of_conversation(proj.db, body.conversation)
+    await workflow.guard_lead(st, proj, role, pfeat, claim=False)  # F-22: not the other Lead's feature
     if type_ == "Decision":  # F-16: refuse once if the conversation moved on since the role last looked
         conv = proj.db.conversation(body.conversation)
         await workflow.guard(proj, turn, {conv["id"] if conv else body.conversation}, set())
+    await workflow.guard_lead(st, proj, role, pfeat)  # F-22: a feature with no Lead is claimed by the acting Lead
     msg = await post_message(st, proj, body.conversation, role, body.text, type_, mentions, turn["id"])
     wake = proj.db.wake(turn["wake_id"]) if turn.get("wake_id") else None
     if wake:
@@ -156,7 +159,10 @@ async def set_feature(request: Request, ident: str, body: InternalFeaturePatchBo
     feat = workflow.resolve_feature(proj.db, ident)
     if feat is None:
         raise HTTPException(404, "unknown feature")
-    feat = await workflow.set_feature(st, proj, feat, body.model_dump(exclude_unset=True), turn["role"])
+    fields = body.model_dump(exclude_unset=True)
+    if "lead" not in fields:  # F-22: a Lead acts only in its own features (a `lead` field is the Manager's: 403 below)
+        await workflow.guard_lead(st, proj, turn["role"], feat)
+    feat = await workflow.set_feature(st, proj, feat, fields, turn["role"])
     return {"header": workflow.feature_header(proj.db, proj.path, feat)}
 
 
@@ -164,9 +170,11 @@ async def set_feature(request: Request, ident: str, body: InternalFeaturePatchBo
 async def ask_master(request: Request, body: AskMasterBody):
     """F-10: a non-blocking question card to the Master (the role ends its turn; the answer wakes it)."""
     st, proj, turn = _auth(request)
+    feat = workflow.resolve_feature(proj.db, body.feature)
+    await workflow.guard_lead(st, proj, turn["role"], feat, claim=False)  # F-22: not the other Lead's feature
     if body.purpose == "a_vs_b":  # F-16 guard: the A vs B framing must reflect the latest exchange
-        feat = workflow.resolve_feature(proj.db, body.feature)
         await workflow.guard(proj, turn, {feat["conversation_id"]} if feat else set(), set())
+    await workflow.guard_lead(st, proj, turn["role"], feat)  # F-22: a feature with no Lead is claimed
     q = await workflow.ask_master(st, proj, turn["role"], turn["id"], body.feature, body.questions, body.intro,
                                   body.purpose)
     return {"id": q["id"], "conversation_id": q["conversation_id"], "message_id": q["message_id"]}
@@ -195,6 +203,8 @@ async def start_brainstorm(request: Request, body: InternalBrainstormBody):
 @internal.post("/approvals")
 async def request_approval(request: Request, body: InternalApprovalBody):
     st, proj, turn = _auth(request)
+    if workflow.is_design_title(body.title):  # F-22: only the feature's Lead requests its design approval
+        await workflow.guard_lead(st, proj, turn["role"], workflow.resolve_feature(proj.db, body.feature))
     a = await workflow.request_approval(st, proj, turn["role"], turn["id"], body.feature, body.title, body.summary)
     return {"id": a["id"], "state": a["state"]}
 
@@ -219,8 +229,13 @@ def commit_files(request: Request, cid: int):
 @internal.post("/commits/{cid}/review")
 async def review_commit(request: Request, cid: int, body: InternalReviewBody):
     st, proj, turn = _auth(request)
-    if turn["role"] == "lead":  # F-16 guard: N's conversation and N's own commit events (e.g. "superseded")
+    if turn["role"] in LEADS:
+        c0 = proj.db.commit(cid)  # F-22: review the requests of your own features only
+        cfeat = proj.db.feature(c0["feature_id"]) if c0 and c0["feature_id"] else None
+        await workflow.guard_lead(st, proj, turn["role"], cfeat, claim=False)
+        # F-16 guard: N's conversation and N's own commit events (e.g. "superseded")
         await workflow.guard(proj, turn, *workflow.commit_targets(proj.db, cid))
+        await workflow.guard_lead(st, proj, turn["role"], cfeat)
     c = await workflow.review_commit(st, proj, turn["role"], cid, body.decision, body.note, turn["id"])
     return {"id": c["id"], "state": c["state"]}
 

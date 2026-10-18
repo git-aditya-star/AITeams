@@ -8,7 +8,8 @@ request's (or its open commit group's) files, then pytest, plus `npm run e2e` wh
 The commit-id form uses the role turn's own environment (the same per-turn token the MCP server uses). A listed file
 that is missing from the working tree is deleted in the worktree. `.venv` and `ui/node_modules` are symlinked from
 the repo, so nothing is installed. The worktree is removed afterwards unless --keep. Exit code 0 only if every run
-passed. Prints `pytest: …` and `e2e: …` summary lines to quote in a review note.
+passed. Prints `pytest: …` and `e2e: …` summary lines to quote in a review note, and (commit-id form) one
+`overlap: …` line per other open request that shares a file with the request or group.
 """
 from __future__ import annotations
 
@@ -26,7 +27,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def group_files(cid: int) -> tuple[list[int], list[str]]:
+def group_files(cid: int) -> tuple[list[int], list[str], list[dict]]:
     env = os.environ
     need = ("AITEAMS_DAEMON_URL", "AITEAMS_PROJECT", "AITEAMS_TURN", "AITEAMS_TURN_TOKEN")
     if not all(env.get(k) for k in need):
@@ -45,7 +46,17 @@ def group_files(cid: int) -> tuple[list[int], list[str]]:
         sys.exit(f"review_tree: commit #{cid}: daemon said {e.code}: {detail}")
     except (urllib.error.URLError, OSError) as e:
         sys.exit(f"review_tree: daemon unreachable: {e}")
-    return res["ids"], res["files"]
+    return res["ids"], res["files"], res.get("overlap") or []
+
+
+def overlap_lines(overlap: list[dict]) -> list[str]:
+    """F-22: one line per other open request that shares a file with this one, naming its feature and Lead, for the
+    Lead to quote in the review note: `overlap: aiteams/db.py also in #81 (F-23, Lead 2, lead_review)`."""
+    out = []
+    for o in overlap:
+        who = (f"{o['feature']}, {o.get('lead_name') or 'no Lead yet'}" if o.get("feature") else "no feature")
+        out.append(f"overlap: {', '.join(o['files'])} also in #{o['commit_id']} ({who}, {o['state']})")
+    return out
 
 
 def git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -99,10 +110,12 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if (args.commit is None) == (args.files is None):
         ap.error("give a commit id or --files")
-    ids, files = group_files(args.commit) if args.commit is not None else ([], args.files)
+    ids, files, overlap = group_files(args.commit) if args.commit is not None else ([], args.files, [])
     repo = Path(args.repo)
     tree = Path(tempfile.mkdtemp(prefix="aiteams-review-")) / "tree"
     print(f"review    {'#' + ' + #'.join(map(str, ids)) if ids else 'files'}: {len(files)} file(s) on HEAD in {tree}")
+    for line in overlap_lines(overlap):
+        print(line)
     ok = True
     try:
         prepare(repo, tree, files)

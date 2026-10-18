@@ -206,7 +206,7 @@ def test_rejected_requirement_blocks_alone_and_in_a_group(client, pid, repo):
     assert db.commit(b["id"])["state"] == "master_review"
     # the review script's view of the group: open members in order, their files
     r = client.get(f"/internal/commits/{c['id']}/files", headers=hdr(client, pid, "lead")).json()
-    assert r == {"ids": [b["id"], c["id"]], "files": ["b.ts", "c.py"]}
+    assert r == {"ids": [b["id"], c["id"]], "files": ["b.ts", "c.py"], "overlap": []}
     r = client.get(f"/internal/commits/{a['id']}/files", headers=hdr(client, pid, "lead")).json()
-    assert r == {"ids": [a["id"]], "files": ["a.py"]}  # a rejected request alone
+    assert r == {"ids": [a["id"]], "files": ["a.py"], "overlap": []}  # a rejected request alone
     assert client.get("/internal/commits/999/files", headers=hdr(client, pid, "lead")).status_code == 404

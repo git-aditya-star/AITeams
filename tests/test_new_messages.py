@@ -103,11 +103,11 @@ def test_commit_event_lines_are_delivered(client, pid, repo):
     client.post(f"/internal/commits/{c['id']}/review", json={"decision": "approve"}, headers=lead)
     line = proj.db.messages("feature-1", limit=1)[-1]
     assert line["ref"] == f"commit_event:{c['id']}" and line["commit"] is None  # no second commit card in the UI
-    assert f"Lead approved commit #{c['id']}" in news(client, hdr)
+    assert f"Lead 1 approved commit #{c['id']}" in news(client, hdr)
 
 
 def test_own_action_system_lines_are_not_news(client, pid, repo):
-    """The "Lead approved" line of the Lead's own review and the "superseded" line of a role's own re-file carry
+    """The "Lead 1 approved" line of the Lead's own review and the "superseded" line of a role's own re-file carry
     the caller's turn, so that turn isn't shown them; other turns still are."""
     proj = proj_of(client, pid)
     (repo / "a.py").write_text("1\n")
@@ -121,9 +121,9 @@ def test_own_action_system_lines_are_not_news(client, pid, repo):
     assert client.post(f"/internal/commits/{new['id']}/review", json={"decision": "approve"},
                        headers=lead).status_code == 200
     line = proj.db.messages("feature-1", limit=1)[-1]
-    assert line["text"].startswith(f"Lead approved commit #{new['id']}") and line["turn_id"] == lt["id"]
-    assert f"Lead approved commit #{new['id']}" not in news(client, lead)
-    assert f"Lead approved commit #{new['id']}" in news(client, backend)  # the requester still gets it
+    assert line["text"].startswith(f"Lead 1 approved commit #{new['id']}") and line["turn_id"] == lt["id"]
+    assert f"Lead 1 approved commit #{new['id']}" not in news(client, lead)
+    assert f"Lead 1 approved commit #{new['id']}" in news(client, backend)  # the requester still gets it
 
 
 def test_guard_refuses_a_decision_once(client, pid):

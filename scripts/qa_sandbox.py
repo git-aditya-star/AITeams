@@ -128,6 +128,9 @@ async def seed(st, proj) -> None:
     f1 = await workflow.new_feature(st, proj, "Export orders to CSV", "build", "lead",
                                     text="Support wants a CSV export of the orders table. Scope it, please.", starter="product")
     conv = f1["conversation_id"]
+    # F-22: F-1 has its Lead before the chat below, so "@lead" in it routes to Lead 1 with no "picked automatically"
+    # line in between (that line would break the folded "3 replies" run). Direct SQL: no message, updated_at stays.
+    db.x("UPDATE features SET lead='lead' WHERE id=?", f1["id"])
     docs = Path(workflow.docs_dir(proj.path, f1))
     (docs / "prd.md").write_text(PRD_MD)
     (docs / "design.md").write_text(DESIGN_MD)

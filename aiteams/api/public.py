@@ -196,6 +196,9 @@ async def post_message(st, proj: Project, conversation: str, author: str, text: 
     conv = proj.db.conversation(conversation)
     if conv is None:
         raise HTTPException(404, f"unknown conversation: {conversation}")
+    pick_line = None
+    if conv["kind"] == "feature":  # F-22: a Lead mention in a feature means that feature's Lead
+        mentions, pick_line = await workflow.resolve_lead_mentions(st, proj, proj.db.feature(conv["id"]), mentions)
     msg = proj.db.add_message(conv["id"], author, type_, text, mentions, turn_id, ref)
     wakes = routing.route(proj.db, msg, conv)
     for w in wakes:
@@ -204,6 +207,8 @@ async def post_message(st, proj: Project, conversation: str, author: str, text: 
     await proj.hub.broadcast("message", msg)
     if wakes and st.scheduler:
         st.scheduler.notify()
+    if pick_line:  # after the message itself
+        await workflow._post(st, proj, conv["id"], "system", pick_line, "System", [])
     return msg
 
 

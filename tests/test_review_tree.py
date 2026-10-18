@@ -110,3 +110,53 @@ def test_commit_id_needs_a_role_turn(rt, monkeypatch):
     with pytest.raises(SystemExit) as e:
         rt.main(["7"])
     assert "role turn" in str(e.value)
+
+
+def test_overlap_lines_name_the_other_request_its_feature_and_lead(rt):
+    lines = rt.overlap_lines([
+        {"commit_id": 81, "feature": "F-23", "lead_name": "Lead 2", "state": "lead_review", "files": ["aiteams/db.py"]},
+        {"commit_id": 82, "feature": "F-9", "lead_name": "Lead 1", "state": "master_review",
+         "files": ["aiteams/workflow.py", "tests/test_x.py"]},
+        {"commit_id": 83, "feature": "F-24", "lead_name": None, "state": "lead_review", "files": ["a.py"]},
+        {"commit_id": 84, "feature": None, "lead_name": None, "state": "lead_review", "files": ["b.py"]}])
+    assert lines == [
+        "overlap: aiteams/db.py also in #81 (F-23, Lead 2, lead_review)",
+        "overlap: aiteams/workflow.py, tests/test_x.py also in #82 (F-9, Lead 1, master_review)",
+        "overlap: a.py also in #83 (F-24, no Lead yet, lead_review)",
+        "overlap: b.py also in #84 (no feature, lead_review)"]
+    assert rt.overlap_lines([]) == []
+
+
+def test_commit_id_form_prints_the_overlap_lines_first(rt, repo, monkeypatch, capsys):
+    """The daemon's files answer carries the overlap; the script prints one line each before the test summaries.
+    An answer without it (an older daemon) prints none."""
+    monkeypatch.setattr(rt, "run_pytest", lambda tree: (True, "pytest: 1 passed"))
+    ov = [{"commit_id": 81, "feature": "F-23", "lead_name": "Lead 2", "state": "lead_review", "files": ["a.py"]}]
+    monkeypatch.setattr(rt, "group_files", lambda cid: ([cid], ["a.py"], ov))
+    assert rt.main(["5", "--repo", str(repo)]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].startswith("review    #5: 1 file(s) on HEAD in")
+    assert out[1] == "overlap: a.py also in #81 (F-23, Lead 2, lead_review)" and out[2] == "pytest: 1 passed"
+    monkeypatch.setattr(rt, "group_files", lambda cid: ([cid], ["a.py"], []))
+    assert rt.main(["5", "--repo", str(repo)]) == 0
+    assert "overlap:" not in capsys.readouterr().out
+
+
+def test_group_files_reads_the_overlap_and_defaults_to_none(rt, monkeypatch):
+    import io
+    import json
+    for k, v in (("AITEAMS_DAEMON_URL", "http://127.0.0.1:1"), ("AITEAMS_PROJECT", "p"), ("AITEAMS_TURN", "1"),
+                 ("AITEAMS_TURN_TOKEN", "t")):
+        monkeypatch.setenv(k, v)
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+    answer = {"ids": [5], "files": ["a.py"], "overlap": [{"commit_id": 8, "files": ["a.py"], "state": "lead_review"}]}
+    monkeypatch.setattr(rt.urllib.request, "urlopen", lambda req, timeout: Resp(json.dumps(answer).encode()))
+    assert rt.group_files(5) == ([5], ["a.py"], answer["overlap"])
+    monkeypatch.setattr(rt.urllib.request, "urlopen", lambda req, timeout: Resp(b'{"ids": [5], "files": ["a.py"]}'))
+    assert rt.group_files(5) == ([5], ["a.py"], [])
