@@ -1,10 +1,11 @@
 import { Lightbulb, X } from 'lucide-react'
 import { useState } from 'react'
-import type { Feature } from '../api'
+import type { DesignState, Feature, FeatureDesign } from '../api'
 import BrainstormDialog from './BrainstormDialog'
 import { PHASES, ROLES, phaseChip, roleName } from '../roles'
 import { useAppDispatch, useAppSelector } from '../store'
 import { freshStartFeature, patchFeature, releaseLock } from '../store/thunks'
+import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
@@ -13,6 +14,44 @@ import { Tip } from './ui/tooltip'
 export type FeatureTab = 'chat' | 'docs'
 
 const NO_OWNER = 'none' // Radix Select items cannot have an empty value
+
+// F-21: the design-approval chip. Hidden for a feature that predates the gate and never asked for a design.
+const DESIGN_CHIP: Record<DesignState, { text: string; cls: string }> = {
+  approved: { text: 'design approved', cls: 'bg-emerald-50 text-emerald-700' },
+  pending: { text: 'design pending', cls: 'bg-amber-50 text-amber-800' },
+  changes: { text: 'design: changes', cls: 'bg-red-50 text-red-700' },
+  none: { text: 'no design', cls: 'bg-gray-100 text-gray-600' },
+}
+
+function DesignChip({ design, scrollable }: { design: FeatureDesign; scrollable: boolean }) {
+  if (design.state === 'none' && !design.gated) return null
+  const chip = DESIGN_CHIP[design.state]
+  const id = design.approval_id
+  const tip = id ? `Design approval #${id}${scrollable ? ' (click to find it in the chat)' : ''}` : "No 'Design:' approval requested yet"
+  const badge = (
+    <Badge data-design-chip={design.state} className={`px-2 ${chip.cls}`}>
+      {chip.text}
+    </Badge>
+  )
+  if (id && scrollable)
+    return (
+      <Tip content={tip}>
+        <button
+          type="button"
+          data-design-link
+          className="cursor-pointer rounded-full"
+          onClick={() => document.querySelector(`[data-card="approval-${id}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })}
+        >
+          {badge}
+        </button>
+      </Tip>
+    )
+  return (
+    <Tip content={tip}>
+      <span>{badge}</span>
+    </Tip>
+  )
+}
 
 export default function FeatureHeader({ feature, tab, onTab }: { feature: Feature; tab: FeatureTab; onTab: (t: FeatureTab) => void }) {
   const dispatch = useAppDispatch()
@@ -51,6 +90,7 @@ export default function FeatureHeader({ feature, tab, onTab }: { feature: Featur
             </SelectContent>
           </Select>
         </label>
+        {feature.design && <DesignChip design={feature.design} scrollable={tab === 'chat'} />}
         <label className="flex items-center gap-1 text-caption text-gray-500">
           owner
           <Select value={feature.owner || NO_OWNER} disabled={busy} onValueChange={(v) => run(onPatch({ owner: v === NO_OWNER ? null : v }))}>

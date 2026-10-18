@@ -90,6 +90,16 @@ export interface Feature {
   last_activity: number | null
   open_approvals: number
   open_commits: number
+  design?: FeatureDesign // F-21
+}
+
+// F-21: where the feature's design stands. It comes from the latest approval titled `Design:`; commit requests
+// on a `gated` feature are refused until it is approved. `approval_id` is that approval (null when none).
+export type DesignState = 'approved' | 'pending' | 'changes' | 'none'
+export interface FeatureDesign {
+  state: DesignState
+  approval_id: number | null
+  gated: boolean
 }
 
 export interface FeatureDoc {
