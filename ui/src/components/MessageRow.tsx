@@ -5,6 +5,7 @@ import ApprovalCard from './ApprovalCard'
 import Avatar from './Avatar'
 import CommitCard from './CommitCard'
 import Markdown from './Markdown'
+import MockPreviews from './MockPreviews'
 import QuestionCard from './QuestionCard'
 import Reactions from './Reactions'
 import Receipts from './Receipts'
@@ -26,6 +27,7 @@ export default function MessageRow({ m, highlight = false }: { m: Message; highl
         </div>
         {/* F-10: a card message's text is the same questions in plain Markdown (for roles); the card replaces it. */}
         {!question && <Markdown text={m.text} />}
+        {!question && <MockPreviews text={m.text} />}
         {card}
         <Reactions reactions={m.reactions} />
         <Receipts receipts={m.receipts} />

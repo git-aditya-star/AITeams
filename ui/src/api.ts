@@ -103,8 +103,13 @@ export interface FeatureDesign {
   gated: boolean
 }
 
+// F-29: a feature's docs are its .md files plus its mocks (html pages and images, served raw by `fileUrl`).
+// An older daemon sends no `kind`; that means md.
+export type DocKind = 'md' | 'html' | 'image'
+
 export interface FeatureDoc {
   name: string
+  kind?: DocKind
   size: number
   updated_at: number | null
   editor: string | null
@@ -487,6 +492,9 @@ export interface SettingsOptions {
   efforts: string[]
   effort_support: Record<string, string[]>
 }
+
+// F-29: the raw bytes of a mock. The daemon sends it with a CSP `sandbox`, and the UI frames html in a sandboxed iframe.
+export const fileUrl = (pid: string, fid: number, name: string) => `/api/p/${pid}/features/${fid}/files/${encodeURIComponent(name)}`
 
 export const api = {
   settings: () => req<RoleSettings>('/api/settings'),
