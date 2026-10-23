@@ -81,11 +81,7 @@ def docs(request: Request, pid: str, fid: int):
 def doc(request: Request, pid: str, fid: int, name: str):
     proj = _project(request, pid)
     feat = _feature(proj, fid)
-    if "/" in name or not name.endswith(".md"):
-        raise HTTPException(400, "bad doc name")
-    p = os.path.join(workflow.docs_dir(proj.path, feat), name)
-    if not os.path.isfile(p):
-        raise HTTPException(404, "no such doc")
+    p, _ = workflow.docs_file(proj.path, feat, name, lambda n: n.endswith(".md"), "bad doc name")
     with open(p, encoding="utf-8", errors="replace") as f:
         return {"name": name, "text": f.read()}
 

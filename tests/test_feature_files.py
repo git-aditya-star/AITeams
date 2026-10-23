@@ -202,3 +202,88 @@ def test_refusals_carry_no_file_content_and_the_listing_matches_what_is_served(c
         if d["kind"] != "md":
             r = client.get(url(pid, d["name"]))
             assert r.status_code == 200 and len(r.content) == d["size"], d["name"]
+
+
+# ---- F-30: the docs text endpoint and the listing refuse symlinks too ------------------------------------------------
+def read_doc(client, pid, name, fid=1):
+    return client.get(f"/api/p/{pid}/features/{fid}/docs/{name}")
+
+
+def test_doc_text_endpoint_refuses_a_symlink_to_a_file_outside_the_project(client, pid, docs, tmp_path):
+    secret = tmp_path / "secret.md"
+    secret.write_text("top secret outside the project")
+    os.symlink(secret, docs / "leak.md")
+    r = read_doc(client, pid, "leak.md")
+    assert r.status_code == 400 and "top secret" not in r.text and r.json()["detail"] == "symlinks are not served"
+
+
+def test_doc_text_endpoint_refuses_a_symlink_to_a_file_inside_the_folder_and_a_dangling_one(client, pid, docs):
+    (docs / "real.md").write_text("# real\n")
+    os.symlink(docs / "real.md", docs / "inside.md")
+    os.symlink(docs / "missing.md", docs / "dangling.md")
+    assert read_doc(client, pid, "inside.md").status_code == 400
+    assert read_doc(client, pid, "dangling.md").status_code == 400
+    assert read_doc(client, pid, "real.md").json() == {"name": "real.md", "text": "# real\n"}  # the target still reads
+
+
+def test_doc_text_endpoint_still_reads_a_normal_md_and_keeps_its_other_refusals(client, pid, docs):
+    (docs / "prd.md").write_text("# PRD\nhello ✓\n", encoding="utf-8")
+    assert read_doc(client, pid, "prd.md").json() == {"name": "prd.md", "text": "# PRD\nhello ✓\n"}
+    assert read_doc(client, pid, "nope.md").status_code == 404
+    (docs / "folder.md").mkdir()
+    assert read_doc(client, pid, "folder.md").status_code == 404  # a directory is not a doc
+    for bad in ("x.txt", "x.html", "a%5Cb.md", "x"):
+        assert read_doc(client, pid, bad).status_code == 400, bad
+    assert read_doc(client, pid, "..%2Fx.md").status_code in (400, 404)  # the route takes no slash: the router says 404
+    assert read_doc(client, pid, "prd.md", fid=99).status_code == 404
+    assert client.get(f"/api/p/{pid}/features/1/docs/prd.md", headers={"Authorization": "Bearer nope"}).status_code == 401
+
+
+def test_a_symlinked_docs_folder_reads_and_lists_nothing(client, pid, repo, docs, tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "outside.md").write_text("from elsewhere")
+    (elsewhere / "m.png").write_bytes(PNG)
+    client.post(f"/api/p/{pid}/features", json={"text": "Linked", "starter": "product"})
+    folder = repo / ".aiteams" / "features" / "F-2"
+    if folder.is_dir() and not folder.is_symlink():
+        folder.rmdir()
+    os.symlink(elsewhere, folder)
+    r = read_doc(client, pid, "outside.md", fid=2)
+    assert r.status_code == 400 and "from elsewhere" not in r.text
+    assert client.get(f"/api/p/{pid}/features/2/docs").json() == []
+    assert client.get(url(pid, "m.png", 2)).status_code == 400
+
+
+def test_docs_list_skips_symlinked_md_too_and_the_role_header_does_not_name_them(client, pid, repo, docs, tmp_path):
+    (docs / "design.md").write_text("# d\n")
+    outside = tmp_path / "outside.md"
+    outside.write_text("x")
+    os.symlink(outside, docs / "leak.md")
+    os.symlink(docs / "design.md", docs / "alias.md")
+    assert [d["name"] for d in listing(client, pid)] == ["design.md"]
+    proj = client.app.state.app.projects[pid]
+    header = workflow.feature_header(proj.db, str(repo), proj.db.feature(1))
+    assert "design.md" in header and "leak.md" not in header and "alias.md" not in header
+    (docs / "folder.md").mkdir()
+    assert [d["name"] for d in listing(client, pid)] == ["design.md"]  # a directory named x.md is not a doc either
+
+
+def test_docs_file_is_the_one_resolver_for_both_endpoints(repo):
+    """The text endpoint and the raw endpoint answer a bad name, a symlink and a folder escape the same way."""
+    feat = {"key": "F-1"}
+    docs_dir = repo / ".aiteams" / "features" / "F-1"
+    docs_dir.mkdir(parents=True)
+    (docs_dir / "a.md").write_text("a")
+    (docs_dir / "b.png").write_bytes(PNG)
+    md = lambda n: n.endswith(".md")  # noqa: E731
+    p, st = workflow.docs_file(str(repo), feat, "a.md", md, "bad doc name")
+    assert p == str(docs_dir / "a.md") and st.st_size == 1
+    assert workflow.mock_path(str(repo), feat, "b.png") == str(docs_dir / "b.png")
+    for bad in ("", ".", "..", "x/y.md", "x\\y.md"):
+        with pytest.raises(workflow.HTTPException) as e:
+            workflow.docs_file(str(repo), feat, bad, md, "bad doc name")
+        assert e.value.status_code == 400
+    with pytest.raises(workflow.HTTPException) as e:
+        workflow.docs_file(str(repo), feat, "b.png", md, "bad doc name")
+    assert (e.value.status_code, e.value.detail) == (400, "bad doc name")
