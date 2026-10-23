@@ -65,6 +65,8 @@
   --text-caption--line-height: 16px;
   --text-code: 12.5px;
   --text-code--line-height: 18px;
+  --text-micro: 10px;
+  --text-micro--line-height: 13px;
 
   /* F-1 toasts: attention ring on the icon (uses currentColor), dismiss countdown bar. */
   --animate-ring-pulse: ring-pulse 1.2s ease-out 2;

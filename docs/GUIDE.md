@@ -188,8 +188,8 @@ checks; it is gitignored and never committed (`aiteams upgrade` builds its own),
 that lists it is refused.
 
 The UI is built from the shadcn/ui kit in `ui/src/components/ui/` (Radix primitives; add one with
-`npx shadcn add <name>`, then move its text sizes onto the type tokens), lucide icons and five text
-sizes: `text-title`, `text-body`, `text-meta`, `text-caption`, `text-code`.
+`npx shadcn add <name>`, then move its text sizes onto the type tokens), lucide icons and six text
+sizes: `text-title`, `text-body`, `text-meta`, `text-caption`, `text-code`, `text-micro` (10px, tiny meta such as message numbers).
 
 QA never uses the live daemon. `scripts/qa_sandbox.py` starts a throwaway one:
 

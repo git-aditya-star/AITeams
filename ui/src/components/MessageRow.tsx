@@ -21,11 +21,16 @@ export default function MessageRow({ m, highlight = false }: { m: Message; highl
       <Avatar author={m.author} className="mt-0.5" />
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
-          <span className="font-bold">{roleName(m.author)}</span>
-          <span className="text-caption text-gray-400">{fmtTime(m.created_at)}</span>
+          {/* F-31: the name truncates before the time, the chip or the number ever wrap or get pushed out */}
+          <span className="min-w-0 truncate font-bold">{roleName(m.author)}</span>
+          <span className="shrink-0 text-caption text-gray-400">{fmtTime(m.created_at)}</span>
           {m.type && m.type !== 'Message' && (
             <Badge className={TYPE_CHIP[m.type] || TYPE_CHIP.System}>{m.type}</Badge>
           )}
+          {/* the number roles cite (#1268, ...): always visible, at the right end of the header line */}
+          <span data-msg-id className="ml-auto shrink-0 self-center text-micro text-gray-400 tabular-nums select-text">
+            #{m.id}
+          </span>
         </div>
         {/* F-10: a card message's text is the same questions in plain Markdown (for roles); the card replaces it. */}
         {!question && <Markdown text={m.text} />}
