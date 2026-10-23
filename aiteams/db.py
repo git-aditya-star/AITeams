@@ -181,7 +181,7 @@ class ProjectDB:
     def _msg_dict(self, r: sqlite3.Row) -> dict:
         d = dict(r)
         d["mentions"] = json.loads(d["mentions"] or "[]")
-        d["approval"] = d["commit"] = d["question"] = d["brainstorm"] = None
+        d["approval"] = d["commit"] = d["question"] = d["brainstorm"] = d["artifact"] = None
         ref = d.get("ref")
         if ref and ":" in ref:
             kind, _, num = ref.partition(":")
@@ -193,6 +193,8 @@ class ProjectDB:
                 d["question"] = self.question(int(num))
             elif kind == "brainstorm" and num.isdigit():
                 d["brainstorm"] = self.brainstorm(int(num))
+            elif kind == "artifact" and num.isdigit():
+                d["artifact"] = self.artifact(int(num))
         return d
 
     def max_message_id(self) -> int:
@@ -679,6 +681,48 @@ class ProjectDB:
                state, note, time.time(), aid)
         return self.approval(aid)
 
+    # ---- artifacts (F-29 Part B) ------------------------------------------
+    def artifact(self, aid: int) -> dict | None:
+        r = self.one("SELECT * FROM artifacts WHERE id=?", aid)
+        return dict(r) if r else None
+
+    def artifact_by_url(self, url: str) -> dict | None:
+        r = self.one("SELECT * FROM artifacts WHERE url=?", url)
+        return dict(r) if r else None
+
+    def artifact_by_path(self, feature_id: int, path: str) -> dict | None:
+        """The newest row for a docs file: published (url set) or pending (url NULL)."""
+        r = self.one("SELECT * FROM artifacts WHERE feature_id=? AND path=? ORDER BY id DESC LIMIT 1", feature_id, path)
+        return dict(r) if r else None
+
+    def artifacts(self, feature_id: int) -> list[dict]:
+        """A feature's published artifacts (a pending row has no page yet), oldest first."""
+        return [dict(r) for r in self.q("SELECT * FROM artifacts WHERE feature_id=? AND url IS NOT NULL ORDER BY id",
+                                        feature_id)]
+
+    def create_artifact(self, feature_id: int, path: str, role: str, approval_id: int | None, turn_id: int | None,
+                        url: str | None = None, title: str | None = None, version: int = 1) -> dict:
+        now = time.time()
+        aid = self.x("INSERT INTO artifacts(feature_id, path, url, title, version, role, approval_id, turn_id,"
+                     " created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                     feature_id, path, url, title, version, role, approval_id, turn_id, now, now)
+        return self.artifact(aid)
+
+    def update_artifact(self, aid: int, **fields) -> dict:
+        fields["updated_at"] = time.time()
+        cols = ", ".join(f"{k}=?" for k in fields)
+        self.x(f"UPDATE artifacts SET {cols} WHERE id=?", *fields.values(), aid)
+        return self.artifact(aid)
+
+    def drop_pending_artifacts(self, turn_id: int) -> int:
+        """A turn that ended without its publish being captured gives its pending rows back (the page can be retried)."""
+        with self.lock:
+            cur = self.conn.execute("DELETE FROM artifacts WHERE url IS NULL AND turn_id=?", (turn_id,))
+            return cur.rowcount
+
+    def delete_artifact(self, aid: int) -> None:
+        self.x("DELETE FROM artifacts WHERE id=?", aid)
+
     # ---- commits ---------------------------------------------------------
     def _commit_dict(self, r: sqlite3.Row) -> dict:
         d = dict(r)
@@ -868,6 +912,14 @@ def _migration_9(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE features SET lead='lead'")
 
 
+def _migration_10(conn: sqlite3.Connection) -> None:
+    """F-29 Part B: claude.ai artifacts published from role turns. `url` is NULL while a publish is allowed but not yet
+    captured (a "pending" row: one approval, one artifact); the capture fills it in. `path` is project-relative."""
+    conn.execute("CREATE TABLE artifacts(id INTEGER PRIMARY KEY, feature_id INTEGER NOT NULL, path TEXT NOT NULL,"
+                 " url TEXT NULL UNIQUE, title TEXT NULL, version INTEGER NOT NULL DEFAULT 1, role TEXT NOT NULL,"
+                 " approval_id INTEGER NULL, turn_id INTEGER NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL)")
+
+
 MIGRATIONS: list = [
     _migration_1,
     "ALTER TABLE turns ADD COLUMN token TEXT",
@@ -883,4 +935,5 @@ MIGRATIONS: list = [
     _migration_7,
     _migration_8,
     _migration_9,
+    _migration_10,
 ]

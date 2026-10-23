@@ -370,3 +370,90 @@ def test_read_tools_normal_paths_allowed(repo, home):
     assert run_hook(repo, home, "Read", {"file_path": str(home / "settings.json")}) is None
     assert run_hook(repo, home, "Grep", {"pattern": "aiteams upgrade", "path": str(repo)}) is None
     assert run_hook(repo, home, "Glob", {"pattern": "**/*.md"}) is None
+
+
+# ---- F-29 Part B: the Artifact tool is gated ----------------------------------------------------------------------
+def artifact_env(stub):
+    return {"AITEAMS_DAEMON_URL": stub, "AITEAMS_PROJECT": "p1", "AITEAMS_TURN": "7", "AITEAMS_TURN_TOKEN": "tok"}
+
+
+@pytest.mark.parametrize("inp", [
+    {"action": "delete", "url": "https://claude.ai/artifact/a"}, {"action": "list"}, {"action": "open", "url": "u"},
+    {"action": "pin"}, {"action": "unpin"}, {"action": "quickstart"}, {"action": "DELETE"}, {"action": " Share "}])
+def test_artifact_hook_denies_the_masters_actions_without_asking_the_daemon(repo, home, stub, inp):
+    res = run_hook_env(repo, home, "Artifact", inp, artifact_env(stub))
+    assert denied(res) and "the Master manages artifacts on claude.ai" in res["permissionDecisionReason"], inp
+    assert _Stub.calls == []
+    assert denied(run_hook(repo, home, "Artifact", inp))  # the static rules hold outside a role turn too
+
+
+@pytest.mark.parametrize("inp,keys", [
+    ({"action": "publish", "file_path": "a.html", "type_url": "https://x"}, ["type_url"]),
+    ({"file_path": "a.html", "from_url": "https://x"}, ["from_url"]),
+    ({"file_path": "a.html", "files": ["a.html", "b.html"]}, ["files"]), ({"file_paths": ["a.html"]}, ["file_paths"]),
+    ({"file_path": "a.html", "paths": ["b.html"]}, ["paths"]), ({"file_path": "a.html", "root": "/"}, ["root"]),
+    ({"file_path": "a.html", "path": "b.html"}, ["path"]), ({"file_path": "a.html", "asset_ids": ["x"]}, ["asset_ids"]),
+    ({"file_path": "a.html", "asset": "x"}, ["asset"]), ({"file_path": "a.html", "out_dir": "/tmp"}, ["out_dir"]),
+    ({"file_path": "a.html", "capabilities": ["data"]}, ["capabilities"]), ({"file_path": "a.html", "contract": {"a": 1}}, ["contract"]),
+    ({"file_path": "a.html", "design_systems": ["x"]}, ["design_systems"]), ({"file_path": "a.html", "scope": "org"}, ["scope"]),
+    ({"file_path": "a.html", "prompt": "p", "intent": "i"}, ["prompt", "intent"]),
+    ({"file_path": "a.html", "force": True}, ["force"]), ({"file_path": "a.html", "overwrite_unread": True}, ["overwrite_unread"]),
+    ({"file_path": "a.html", "unknown_new_param": 1}, ["unknown_new_param"]),
+    ({"action": "read", "url": "https://claude.ai/artifact/a", "file_path": "a.html"}, ["file_path"]),
+    ({"action": "read", "url": "https://claude.ai/artifact/a", "force": True}, ["force"])])
+def test_artifact_hook_allows_only_the_listed_params_and_names_the_extra_key(repo, home, stub, inp, keys):
+    res = run_hook_env(repo, home, "Artifact", inp, artifact_env(stub))
+    assert denied(res) and f"remove {', '.join(keys)}." in res["permissionDecisionReason"], inp
+    assert _Stub.calls == []
+    assert denied(run_hook(repo, home, "Artifact", inp))  # the static rules hold outside a role turn too
+
+
+def test_artifact_hook_ignores_empty_extra_params_and_passes_the_listed_ones(repo, home, stub):
+    env = artifact_env(stub)
+    _Stub.response = {"ok": True, "reason": ""}
+    full = {"action": "publish", "file_path": "a.html", "url": "", "title": "T", "description": "d", "icon": "i", "label": "l"}
+    assert run_hook_env(repo, home, "Artifact", full, env) is None
+    assert run_hook_env(repo, home, "Artifact", {**full, "force": False, "paths": [], "root": "", "capabilities": None}, env) is None
+    assert run_hook_env(repo, home, "Artifact", {"action": "read", "url": "https://claude.ai/artifact/a", "page": 2}, env) is None
+    assert len(_Stub.calls) == 3
+
+
+def test_artifact_hook_asks_the_daemon_for_a_publish_and_denies_with_its_reason(repo, home, stub):
+    from urllib.parse import parse_qs, urlsplit
+    env = artifact_env(stub)
+    why = "the Master hasn't approved publishing x.html: request_approval(feature, 'Artifact: x.html', 'p'), end your turn"
+    _Stub.response = {"ok": False, "reason": why}
+    res = run_hook_env(repo, home, "Artifact", {"file_path": ".aiteams/features/F-1/x.html", "icon": "i"}, env)
+    assert denied(res) and why in res["permissionDecisionReason"]
+    path, headers, _ = _Stub.calls[-1]
+    q = {k: v[0] for k, v in parse_qs(urlsplit(path).query, keep_blank_values=True).items()}
+    assert urlsplit(path).path == "/internal/artifact-check"
+    assert q == {"action": "publish", "path": str(repo.resolve() / ".aiteams/features/F-1/x.html"), "url": ""}  # made absolute
+    assert headers["x-aiteams-turn"] == "7" and headers["x-aiteams-token"] == "tok" and headers["x-aiteams-project"] == "p1"
+    _Stub.response = {"ok": True, "reason": ""}
+    assert run_hook_env(repo, home, "Artifact", {"file_path": str(repo / ".aiteams/features/F-1/x.html")}, env) is None
+    q = parse_qs(urlsplit(_Stub.calls[-1][0]).query)
+    assert q["path"] == [str(repo / ".aiteams/features/F-1/x.html")]  # an absolute path goes as it is
+    # an update passes the url, a read passes the action and the url
+    run_hook_env(repo, home, "Artifact", {"file_path": "x.html", "url": "https://claude.ai/artifact/a"}, env)
+    assert parse_qs(urlsplit(_Stub.calls[-1][0]).query)["url"] == ["https://claude.ai/artifact/a"]
+    run_hook_env(repo, home, "Artifact", {"action": "read", "url": "https://claude.ai/artifact/a"}, env)
+    q = parse_qs(urlsplit(_Stub.calls[-1][0]).query, keep_blank_values=True)
+    assert q["action"] == ["read"] and q["url"] == ["https://claude.ai/artifact/a"] and q["path"] == [""]
+    run_hook_env(repo, home, "Artifact", {}, env)  # no action means publish
+    assert parse_qs(urlsplit(_Stub.calls[-1][0]).query)["action"] == ["publish"]
+
+
+@pytest.mark.parametrize("reply", [(500, b'{"ok": true}'), (200, b"not json"), (200, b"{}"), (200, b'{"ok": "yes"}'),
+                                   (200, b"[true]"), (200, b'{"ok": false}'), (200, b'{"ok": false, "reason": 5}')])
+def test_artifact_hook_fails_closed_on_bad_answers(repo, home, stub, reply):
+    _Stub.get_reply = reply
+    res = run_hook_env(repo, home, "Artifact", {"file_path": "x.html"}, artifact_env(stub))
+    assert denied(res) and res["permissionDecisionReason"].strip() != "AITEAMS_DENY:"
+
+
+def test_artifact_hook_fails_closed_without_a_daemon_but_allows_a_publish_outside_a_turn(repo, home):
+    env = {"AITEAMS_DAEMON_URL": "http://127.0.0.1:1", "AITEAMS_PROJECT": "p1", "AITEAMS_TURN": "7"}
+    res = run_hook_env(repo, home, "Artifact", {"file_path": "x.html"}, env)
+    assert denied(res) and "did not answer" in res["permissionDecisionReason"]
+    assert run_hook(repo, home, "Artifact", {"file_path": "x.html"}) is None  # no turn env: not a role turn

@@ -62,6 +62,7 @@ class TurnRunner:
         self.interrupt_note: str | None = None
         self.kind: str = wake.get("kind") or "normal"
         self.context_tokens: int | None = None
+        self.artifact_calls: dict[str, dict] = {}  # F-29 B: Artifact tool_use id -> its input, to read the result's path
         self.model = model_for(state.settings, self.role)
         self.effort = effort_for(state.settings, self.role)
         self.task: asyncio.Task | None = None
@@ -229,8 +230,54 @@ class TurnRunner:
             return
         elif t == "system" and ev.get("subtype") == "init":
             await self._check_plugins(ev)
+            await self._check_artifact_tool(ev)
+        if t == "assistant":
+            self._note_artifact_calls(ev)
+        elif t == "user":
+            await self._capture_artifacts(ev)
         stored = self.db.add_turn_event(self.turn["id"], ev)
         await self.project.hub.broadcast("turn_event", stored)
+
+    async def _check_artifact_tool(self, init: dict) -> None:
+        """F-29 B: the switch that gives role turns the Artifact tool is undocumented. If it is set and the tool is still
+        missing from init, say so once per daemon run in `general` (local mocks still work). Never fails the turn."""
+        from ..workflow import ARTIFACT_MISSING  # late import: workflow imports this package
+        try:
+            tools = init.get("tools")
+            if (self.proc and self.proc.env.get("CLAUDE_CODE_ARTIFACT") and isinstance(tools, list)
+                    and "Artifact" not in tools and not self.state.artifact_missing_notified):
+                self.state.artifact_missing_notified = True
+                msg = self.db.add_message("general", "system", "System", ARTIFACT_MISSING, [], None)
+                await self.project.hub.broadcast("message", msg)
+        except Exception:
+            pass
+
+    def _note_artifact_calls(self, ev: dict) -> None:
+        for block in (ev.get("message") or {}).get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Artifact":
+                inp = block.get("input")
+                self.artifact_calls[str(block.get("id"))] = inp if isinstance(inp, dict) else {}
+
+    async def _capture_artifacts(self, ev: dict) -> None:
+        """F-29 B: a `Published <path> at https://claude.ai/artifact/<id> (Version n` tool result of an Artifact call is
+        recorded (pending row filled, or the page's row bumped) and answered with a link card. Best effort."""
+        from ..workflow import ARTIFACT_RESULT_RE, record_artifact  # late import: workflow imports this package
+        try:
+            for block in (ev.get("message") or {}).get("content") or []:
+                if not (isinstance(block, dict) and block.get("type") == "tool_result"):
+                    continue
+                call_id = str(block.get("tool_use_id"))
+                if call_id not in self.artifact_calls:
+                    continue
+                content = block.get("content")
+                text = content if isinstance(content, str) else " ".join(
+                    c.get("text", "") for c in content or [] if isinstance(c, dict))
+                m = ARTIFACT_RESULT_RE.match(text)
+                if m:
+                    await record_artifact(self.state, self.project, self.role, self.turn["id"] if self.turn else None,
+                                          self.artifact_calls.pop(call_id), m.group(1), m.group(2), int(m.group(3)))
+        except Exception:
+            pass
 
     async def _check_plugins(self, init: dict) -> None:
         """F-23: flag On plugins the turn did not load. Best effort: it must never fail the turn."""
@@ -248,6 +295,10 @@ class TurnRunner:
             fields["result_json"] = json.dumps(result)
             fields["cost_usd"] = result.get("total_cost_usd")
         self.turn = self.db.update_turn(tid, **fields)
+        try:
+            self.db.drop_pending_artifacts(tid)  # F-29 B: an allowed publish whose capture never came is given back
+        except Exception:
+            pass
         await self.project.hub.broadcast("turn_state", self.turn)
         return self.turn
 

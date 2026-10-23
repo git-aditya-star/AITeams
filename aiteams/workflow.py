@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -91,9 +93,23 @@ def docs_root(project_path: str, feat: dict) -> str:
 
 def docs_list(db: ProjectDB, project_path: str, feat: dict) -> list[dict]:
     """The feature's docs: its `.md` files, then its mocks (F-29: html and images, kind `html` / `image`), each group
-    sorted by name. Only regular files count: a symlink (F-30: `.md` too), a directory or a file in a subfolder is never
-    listed, and a docs folder that is itself a symlink out of the project lists nothing, because docs_file refuses all
-    of them."""
+    sorted by name, then its published claude.ai artifacts (kind `artifact`, with `url`, `version` and the local
+    `path`). Only regular files count as files: a symlink (F-30: `.md` too), a directory or a file in a subfolder is
+    never listed, and a docs folder that is itself a symlink out of the project lists no files, because docs_file
+    refuses all of them."""
+    out = _docs_files(db, project_path, feat)
+    for ar in db.artifacts(feat["id"]):
+        try:
+            size = os.stat(os.path.join(project_path, ar["path"])).st_size
+        except OSError:
+            size = 0
+        out.append({"name": ar["title"] or os.path.basename(ar["path"]), "kind": "artifact", "size": size,
+                    "updated_at": ar["updated_at"], "editor": ar["role"], "url": ar["url"], "version": ar["version"],
+                    "path": ar["path"], "id": ar["id"]})
+    return out
+
+
+def _docs_files(db: ProjectDB, project_path: str, feat: dict) -> list[dict]:
     d = docs_dir(project_path, feat)
     rel_prefix = os.path.join(".aiteams", "features", feat["key"]) + os.sep
     edits = db.file_edits_for(rel_prefix)
@@ -127,6 +143,152 @@ def mock_path(project_path: str, feat: dict, name: str) -> str:
     if stt.st_size > MOCK_MAX_BYTES:
         raise HTTPException(413, f"the file is over {MOCK_MAX_BYTES // (1024 * 1024)} MB")
     return p
+
+
+# ---- claude.ai artifacts (F-29 Part B) ---------------------------------------------------------------------
+# A role turn has the real Artifact tool (CLAUDE_CODE_ARTIFACT=1). The hook asks artifact_gate before every call: a NEW
+# page needs the Master's approved `Artifact: <file>` approval (one approval, one artifact), an UPDATE must pass the
+# recorded url, a recorded page may be read back, and everything else (delete, list, open, pin, sharing) is the Master's.
+ARTIFACT_DENIED = ("the Master manages artifacts on claude.ai: you can publish a page they approved, update it by its url, "
+                   "or read a recorded page back. Delete, list, open, pin and sharing are theirs.")
+# An allowlist, not a denylist: the tool takes many more params (paths, root, asset_ids, capabilities, force ...), and any of
+# them could send more than the Master approved or give the page runtime access to their data. Same table in the hook.
+ARTIFACT_PARAMS = {"publish": ("file_path", "url", "title", "description", "icon", "label"), "read": ("url", "page")}
+ARTIFACT_RESULT_RE = re.compile(r"^\s*Published (.+?) at (https://claude\.ai/artifact/\S+) \(Version (\d+)")
+ARTIFACT_MISSING = ("Claude artifacts are unavailable: this Claude Code version doesn't offer the Artifact tool in "
+                    "headless runs. Local mocks still work.")
+
+
+def artifact_action(inp: dict) -> str:
+    return str(inp.get("action") or "publish").strip().lower()
+
+
+def artifact_static_denial(inp: dict) -> str | None:
+    """The part of the gate that needs no state: only `publish` and `read`, and only their allowlisted params (a key with a
+    truthy value outside the list is denied by name; an empty value counts as unused)."""
+    action = artifact_action(inp)
+    allowed = ARTIFACT_PARAMS.get(action)
+    if allowed is None:
+        return ARTIFACT_DENIED
+    extra = [k for k, v in inp.items() if v and k != "action" and k not in allowed]
+    if extra:
+        return f"the Artifact {action} may pass only {', '.join(allowed)}: remove {', '.join(extra)}."
+    return None
+
+
+def artifact_target(proj: Project, file_path) -> tuple[dict, str, str]:
+    """(feature, file name, project-relative path) of the page a call names, or ValueError(reason): one `.html` regular
+    file, not a symlink, directly in an existing feature's docs folder (docs_file's rules)."""
+    if not isinstance(file_path, str) or not file_path.strip():
+        raise ValueError("pass the page's file_path: one .html file in the feature's docs folder (.aiteams/features/F-n/)")
+    ap = os.path.normpath(file_path if os.path.isabs(file_path) else os.path.join(proj.path, file_path))
+    key, name = os.path.basename(os.path.dirname(ap)), os.path.basename(ap)
+    feat = proj.db.feature(key) if re.fullmatch(r"F-\d+", key) else None
+    if os.path.islink(ap):
+        raise ValueError("a symlink can't be published")
+    if feat is None or os.path.realpath(ap) != os.path.join(docs_root(proj.path, feat), name):
+        raise ValueError("only an .html page directly in a feature's docs folder (.aiteams/features/F-n/) can be published")
+    try:
+        docs_file(proj.path, feat, name, lambda n: n.lower().endswith(".html"), "only an .html page can be published")
+    except HTTPException as e:
+        raise ValueError(str(e.detail))
+    return feat, name, f".aiteams/features/{feat['key']}/{name}"
+
+
+def artifact_gate(proj: Project, turn: dict, inp: dict) -> dict:
+    """{ok, reason} for one Artifact call from `turn`'s role. A publish that is allowed as NEW writes a pending row (url
+    NULL, this turn) in the same step, so a second new publish of the page is refused until the capture fills it in; a
+    turn that ends without its capture gives the row back (and a pending row of a turn that is no longer running is stale)."""
+    db = proj.db
+    why = artifact_static_denial(inp)
+    if why:
+        return {"ok": False, "reason": why}
+    url = str(inp.get("url") or "").strip()
+    if artifact_action(inp) == "read":
+        if url and db.artifact_by_url(url):
+            return {"ok": True, "reason": ""}
+        return {"ok": False, "reason": "read only a page AITeams recorded: pass the url of one of this team's artifacts."}
+    try:
+        feat, name, rel = artifact_target(proj, inp.get("file_path"))
+    except ValueError as e:
+        return {"ok": False, "reason": str(e)}
+    with db.lock:
+        rec = db.artifact_by_path(feat["id"], rel)
+        if rec and rec["url"] is None:
+            t = db.turn(rec["turn_id"]) if rec["turn_id"] else None
+            if t and t["state"] == "running":
+                return {"ok": False, "reason": f"a publish of {name} is already in progress; wait for its result."}
+            db.delete_artifact(rec["id"])  # its turn ended or died without a capture: give it back
+            rec = db.artifact_by_path(feat["id"], rel)
+        if url:
+            if rec and rec["url"] == url:
+                return {"ok": True, "reason": ""}  # an update of the page the Master approved
+            hint = f"pass url: {rec['url']} to update it." if rec else \
+                f"publish it without url once the Master approves 'Artifact: {name}'."
+            return {"ok": False, "reason": f"that url isn't the artifact of {name}: {hint}"}
+        if rec:
+            return {"ok": False, "reason": f"{name} is already published at {rec['url']}: pass url: {rec['url']} to update "
+                                           "it. A second new artifact needs a new page and a new approval."}
+        norm = lambda t: " ".join((t or "").lower().split())  # noqa: E731  (case and spacing don't matter, like F-21's titles)
+        approved = [a for a in db.approvals("approved", feat["id"]) if norm(a["title"]) == norm(f"artifact: {name}")]
+        step = (f"request_approval(feature, 'Artifact: {name}', '{rel}'), end your turn, and publish after the approving "
+                "Decision.")
+        if not approved:
+            return {"ok": False, "reason": f"the Master hasn't approved publishing {name}: {step}"}
+        now_sha = _sha(proj.path, rel)
+        match = next((a for a in approved if now_sha and db.get_kv(f"artifact_sha:{a['id']}") == now_sha), None)
+        if match is None:
+            return {"ok": False, "reason": f"{name} changed after the Master approved it (or the approval pinned no page): "
+                                           f"ask again with the page as it is now: {step}"}
+        db.create_artifact(feat["id"], rel, turn["role"], match["id"], turn["id"])
+    return {"ok": True, "reason": ""}
+
+
+def html_title(path: str) -> str | None:
+    """The page's <title>, if it has a readable one."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            head = f.read(65536)
+    except OSError:
+        return None
+    m = re.search(r"<title[^>]*>(.*?)</title>", head, re.I | re.S)
+    title = " ".join(html.unescape(m.group(1)).split())[:120] if m else ""
+    return title or None
+
+
+async def record_artifact(st, proj: Project, role: str, turn_id: int | None, inp: dict | None, result_path: str,
+                          url: str, version: int) -> dict | None:
+    """Capture one `Published <path> at <url> (Version n` tool result: fill the pending row (a new page) or bump the
+    row with that url (an update), then post the link card in the feature conversation. None when the path isn't one of
+    our pages (nothing is recorded)."""
+    db = proj.db
+    target = None
+    for fp in ((inp or {}).get("file_path"), result_path):
+        try:
+            target = artifact_target(proj, fp)
+            break
+        except ValueError:
+            continue
+    if target is None:
+        return None
+    feat, name, rel = target
+    title = html_title(os.path.join(proj.path, rel)) or name
+    with db.lock:
+        row = db.artifact_by_url(url)
+        if row:
+            if row["version"] == version and row["turn_id"] == turn_id:
+                return row  # the same result seen twice
+            row, word = db.update_artifact(row["id"], version=version, title=title, role=role, turn_id=turn_id), "Updated"
+        else:
+            pend = db.artifact_by_path(feat["id"], rel)
+            if pend and pend["url"] is None:
+                row = db.update_artifact(pend["id"], url=url, title=title, version=version, turn_id=turn_id)
+            else:
+                row = db.create_artifact(feat["id"], rel, role, None, turn_id, url, title, version)
+            word = "Published"
+    text = f"{word} {title}" + (f" (v{version})" if word == "Updated" else "") + f"\n\n{url}"
+    await _post(st, proj, feat["conversation_id"], role, text, "Message", [], turn_id, f"artifact:{row['id']}")
+    return row
 
 
 def design_state(db: ProjectDB, feat: dict) -> str:
@@ -519,6 +681,10 @@ async def request_approval(st, proj: Project, role: str, turn_id: int | None, fe
         raise HTTPException(400, "title required")
     feat = resolve_feature(proj.db, feature)
     a = proj.db.create_approval(feat["id"] if feat else None, role, turn_id, title[:200], summary or "")
+    if feat and title.lower().startswith("artifact:"):  # F-29 B: the Master approves THIS page; pin its content
+        name = " ".join(title[len("artifact:"):].split())
+        if name and "/" not in name and "\\" not in name:
+            proj.db.set_kv(f"artifact_sha:{a['id']}", _sha(proj.path, f".aiteams/features/{feat['key']}/{name}"))
     conv = feat["conversation_id"] if feat else f"dm-{role}"
     text = f"**Approval requested: {title}**\n\n{summary or ''}".rstrip()
     msg = await _post(st, proj, conv, role, text, "Approval", ["master"], turn_id, f"approval:{a['id']}")

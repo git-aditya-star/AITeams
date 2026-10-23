@@ -190,6 +190,43 @@ def check_skill(inp):
         deny(reason)
 
 
+ARTIFACT_DENIED = ("the Master manages artifacts on claude.ai: you can publish a page they approved, update it by its url, "
+                   "or read a recorded page back. Delete, list, open, pin and sharing are theirs.")
+ARTIFACT_PARAMS = {"publish": ("file_path", "url", "title", "description", "icon", "label"), "read": ("url", "page")}  # allowlist
+
+
+def check_artifact(inp):
+    """F-29 Part B: the real Artifact tool is gated. Only `publish` and `read`, only their allowlisted params; the daemon
+    decides the rest (a new page needs the Master's approved `Artifact: <file>`, an update must pass the recorded url, a
+    read only a recorded url). Fails closed on any error during a turn, like check_skill."""
+    action = str(inp.get("action") or "publish").strip().lower()
+    allowed = ARTIFACT_PARAMS.get(action)
+    if allowed is None:
+        deny(ARTIFACT_DENIED)
+    extra = [k for k, v in inp.items() if v and k != "action" and k not in allowed]
+    if extra:
+        deny("the Artifact %s may pass only %s: remove %s." % (action, ", ".join(allowed), ", ".join(extra)))
+    url, project, turn = (os.environ.get("AITEAMS_DAEMON_URL"), os.environ.get("AITEAMS_PROJECT"),
+                          os.environ.get("AITEAMS_TURN"))
+    if not (url and project and turn):
+        return  # not a role turn (tests, the Master's own session)
+    path = inp.get("file_path")
+    path = (path if os.path.isabs(path) else os.path.join(PROJECT, path)) if isinstance(path, str) and path else ""
+    query = urllib.parse.urlencode({"action": action, "path": path, "url": str(inp.get("url") or "")})
+    req = urllib.request.Request(url.rstrip("/") + "/internal/artifact-check?" + query,
+                                 headers={"X-AITeams-Project": project, "X-AITeams-Turn": turn,
+                                          "X-AITeams-Token": os.environ.get("AITEAMS_TURN_TOKEN", "")})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            res = json.loads(r.read().decode() or "{}")
+    except Exception as e:  # anything must deny, not crash open
+        log_input("artifact check failed closed: %r" % e)
+        deny("the Artifact check failed: the daemon did not answer. Try again, or ask the Master.")
+    if not (isinstance(res, dict) and res.get("ok") is True):
+        reason = res.get("reason") if isinstance(res, dict) else None
+        deny(reason if isinstance(reason, str) and reason else ARTIFACT_DENIED)
+
+
 def check_read(inp):
     """Read/Grep/Glob: the token and runtime files are off limits (Bash has the same rule)."""
     for key in ("file_path", "path", "pattern"):
@@ -221,6 +258,8 @@ def main():
         check_read(inp)
     elif tool == "Skill":
         check_skill(inp)
+    elif tool == "Artifact":
+        check_artifact(inp)
 
 
 if __name__ == "__main__":

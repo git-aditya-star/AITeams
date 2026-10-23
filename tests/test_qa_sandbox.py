@@ -244,7 +244,8 @@ def test_seed_has_mocks_a_diagram_and_the_two_chat_messages_that_show_them(sandb
     with TestClient(app) as c:
         docs = c.get("/api/p/demo/features/1/docs", headers=auth).json()
         assert [(d["name"], d["kind"]) for d in docs] == [
-            ("design.md", "md"), ("prd.md", "md"), ("flow.svg", "image"), ("mock-export.html", "html"), ("shot.png", "image")]
+            ("design.md", "md"), ("prd.md", "md"), ("flow.svg", "image"), ("mock-export.html", "html"), ("shot.png", "image"),
+            ("Export orders mock", "artifact")]  # F-29 B: the seeded artifact comes after the files
         html = c.get("/api/p/demo/features/1/files/mock-export.html", headers=auth)
         assert html.status_code == 200 and "sandbox" in html.headers["content-security-policy"]
         # the probe is offline (no CDN) and writes its verdict into its own body
@@ -257,12 +258,33 @@ def test_seed_has_mocks_a_diagram_and_the_two_chat_messages_that_show_them(sandb
         assert design.startswith("# F-1 design") and "| piece | owner | notes |" in design
         assert design.rstrip().endswith("```") and "```mermaid\nflowchart LR" in design
         msgs = c.get("/api/p/demo/messages", params={"conversation": "feature-1"}, headers=auth).json()
-        link, flow = msgs[-2], msgs[-1]
+        link, flow = msgs[-3], msgs[-2]  # (the last message is the artifact link card, see the next test)
         assert link["author"] == "frontend" and link["mentions"] == []
         assert ".aiteams/features/F-1/mock-export.html" in link["text"] and ".aiteams/features/F-1/shot.png" in link["text"]
         assert flow["author"] == "backend" and "```mermaid\nsequenceDiagram" in flow["text"] and flow["mentions"] == []
-        assert msgs[-3]["id"] < link["id"] < flow["id"]
+        assert msgs[-4]["id"] < link["id"] < flow["id"]
         # nothing earlier moved: PRD approval is #1, the approved design #2, the first commit request #1
         inbox = c.get("/api/p/demo/inbox", headers=auth).json()
         assert [a["id"] for a in inbox["approvals"]] == [1] and [x["id"] for x in inbox["commits"]] == [1]
         assert c.post("/qa/fire", json={"kind": "message"}, headers=auth).json()["conversation"] == "feature-1"
+
+
+def test_seed_has_one_published_artifact_with_its_link_card(sandbox):
+    """F-29 Part B: F-1 has one artifact (a fake url, version 2, source = the seeded mock) and its link-card message, the
+    last F-1 message; nothing is pending and nobody was woken."""
+    mod, work, _ = sandbox
+    app = mod.build_app(8790, work, "demo")
+    auth = {"Authorization": "Bearer sb-token"}
+    with TestClient(app) as c:
+        docs = c.get("/api/p/demo/features/1/docs", headers=auth).json()
+        art = docs[-1]
+        assert (art["kind"], art["name"], art["url"], art["version"]) == (
+            "artifact", "Export orders mock", "https://claude.ai/artifact/demo", 2)
+        assert art["path"] == ".aiteams/features/F-1/mock-export.html" and art["editor"] == "frontend" and art["size"] > 0
+        card = c.get("/api/p/demo/messages", params={"conversation": "feature-1"}, headers=auth).json()[-1]
+        assert card["ref"] == f"artifact:{art['id']}" and card["author"] == "frontend" and card["mentions"] == []
+        assert card["artifact"]["url"] == "https://claude.ai/artifact/demo" and card["artifact"]["version"] == 2
+        assert "Updated Export orders mock (v2)" in card["text"] and "https://claude.ai/artifact/demo" in card["text"]
+        proj = c.app.state.app.projects["demo"]
+        assert proj.db.q("SELECT COUNT(*) AS n FROM artifacts WHERE url IS NULL")[0]["n"] == 0
+        assert all(card["id"] not in w["message_ids"] for w in proj.db.queued_wakes())  # the card woke nobody

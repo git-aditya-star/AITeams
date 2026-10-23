@@ -1,9 +1,10 @@
-"""Internal: the "Ask me first" skill approval gate (F-5, generalised by F-23). Its own router so it stays apart from the
-rest of /internal."""
+"""Internal: the "Ask me first" skill approval gate (F-5, generalised by F-23) and the Artifact gate (F-29 Part B). Its own
+router so it stays apart from the rest of /internal."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
+from .. import workflow
 from .internal import _auth
 
 skills = APIRouter(prefix="/internal")
@@ -21,3 +22,11 @@ def skill_approval(request: Request, skill: str):
         titles.add("use team-skill: " + name.strip())
     ok = any(a["role"] == turn["role"] and (a["title"] or "").strip().lower() in titles for a in proj.db.approvals("approved"))
     return {"ok": ok}
+
+
+@skills.get("/artifact-check")
+def artifact_check(request: Request, action: str = "publish", path: str = "", url: str = ""):
+    """F-29 B: may this turn's role make this Artifact call? `{ok, reason}`; the hook denies with `reason`. The turn's own
+    token says who is asking; see workflow.artifact_gate for the rules (it may write a pending row when it allows a publish)."""
+    _, proj, turn = _auth(request)
+    return workflow.artifact_gate(proj, turn, {"action": action, "file_path": path or None, "url": url or None})

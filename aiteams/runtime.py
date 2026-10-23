@@ -53,6 +53,7 @@ class AppState:
         self.auth_codes: dict[str, float] = {}  # single-use sign-in codes -> expiry
         self.projects: dict[str, Project] = {}
         self.rate_limited: dict | None = None
+        self.artifact_missing_notified = False  # F-29 B: the "artifacts unavailable" System line, once per daemon run
         self.plugin_status: dict[str, dict] = {}  # F-23: {plugin id: {missing, checked_at, role}}, last turn wins
         self.started_at = time.time()
         self.scheduler = None  # set by daemon

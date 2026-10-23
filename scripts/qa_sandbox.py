@@ -205,6 +205,12 @@ async def seed(st, proj) -> None:
               "`.aiteams/features/F-1/mock-export.html` and `.aiteams/features/F-1/shot.png`", [])
     await say(conv, "backend", "The export flow:\n\n```mermaid\nsequenceDiagram\n  Master->>UI: Export CSV\n"
               "  UI->>API: GET export.csv\n  API-->>UI: stream rows\n```", [])
+    # F-29 B: one published artifact on F-1 (a fake url, version 2) and its link card, after every other seeded message.
+    # Its source is the mock above. The row and the message go straight to the db: nothing is published, nobody is woken.
+    art = db.create_artifact(f1["id"], ".aiteams/features/F-1/mock-export.html", "frontend", None, None,
+                             "https://claude.ai/artifact/demo", "Export orders mock", 2)
+    db.add_message(conv, "frontend", "Message", "Updated Export orders mock (v2)\n\nhttps://claude.ai/artifact/demo", [],
+                   None, f"artifact:{art['id']}")
 
 
 MOCK_EXPORT_HTML = """<!doctype html>

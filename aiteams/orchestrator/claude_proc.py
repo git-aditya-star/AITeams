@@ -14,7 +14,7 @@ from ..config import plugin_rows
 PKG = Path(__file__).resolve().parent.parent
 HOOK = str(PKG / "hooks" / "pretooluse.py")
 MCP_SERVER = str(PKG / "mcp_server.py")
-HOOK_TOOLS = "Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|Skill"
+HOOK_TOOLS = "Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|Skill|Artifact"
 
 
 def child_env(daemon_url: str, project_id: str, project_path: str, role: str, turn_id: int,
@@ -34,6 +34,10 @@ def child_env(daemon_url: str, project_id: str, project_path: str, role: str, tu
         "AITEAMS_TURN_TOKEN": turn_token,
         "AITEAMS_PROJECT_PATH": project_path,
         "AITEAMS_ASK_TIMEOUT_S": str(int(ask_timeout_s)),
+        # F-29 B: the real Artifact tool is off in headless runs unless this (undocumented) switch is set; the hook gates
+        # every call, and the page never opens a browser on the Master's machine
+        "CLAUDE_CODE_ARTIFACT": "1",
+        "CLAUDE_CODE_ARTIFACT_AUTO_OPEN": "0",
         # F-23: plugins marked "Ask me first" (the hook gates their skills); read once, so a change applies next turn
         "AITEAMS_ASK_PLUGINS": ",".join(ask_plugins or []),
     })
@@ -69,7 +73,7 @@ def build_cmd(settings: dict, role: str, env: dict, system_prompt_file: str, ses
            "--settings", json.dumps(hook_settings),
            "--mcp-config", json.dumps(mcp), "--strict-mcp-config",
            "--append-system-prompt-file", system_prompt_file, "--system-prompt-snapshot", "off",
-           "--disallowedTools", "SendMessage", "ListAgents",
+           "--disallowedTools", "SendMessage", "ListAgents", "ArtifactComments", "ArtifactData",
            "--model", model, *(["--effort", effort] if effort else []),
            "--max-turns", str(settings.get("max_turns", 40))]
     cmd += ["--resume", session_id] if resume else ["--session-id", session_id]

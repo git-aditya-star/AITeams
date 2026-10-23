@@ -107,6 +107,10 @@ def convs(request: Request):
 @internal.post("/permission")
 async def permission(request: Request, body: PermissionBody):
     st, proj, turn = _auth(request)
+    if body.tool_name == "Artifact" and isinstance(body.input, dict):  # F-29 B: defence in depth, the hook decides first
+        why = workflow.artifact_static_denial(body.input)
+        if why:
+            return {"behavior": "deny", "message": why}
     if body.tool_name != "AskUserQuestion":
         return {"behavior": "allow", "updatedInput": body.input}
     q = proj.db.create_question(turn["id"], turn["role"], body.tool_use_id, body.input)
