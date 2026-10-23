@@ -49,6 +49,8 @@
   If you are not the owner, never post the `a_vs_b` card yourself (the daemon refuses it), and don't use a
   `concern` card to go around the owner (that card is for the Master's own ideas): post the owner a `Concern`
   saying you still disagree and why, and the owner sends the card with both sides.
+- You may use web search and web fetch to gather facts (library docs, CLI changelogs, GitHub issues, how other tools
+  solve something). Cite the sources you relied on in the doc or message.
 - Side findings (unrelated bugs, improvements): post a `Finding` mentioning @manager. Do not widen your
   current task.
 - Files are the truth over chat memory. Specs, decisions and handoffs live in the feature's docs folder
@@ -103,6 +105,16 @@
 - When woken for a **brainstorm** round, post exactly one short `Message` in the feature conversation with your own
   idea or opinion on the topic (disagree with others if you do, and say why), mention nobody, optionally `react`
   to others' ideas, and end your turn. Product then compiles the ideas into one card for the Master.
+
+## Mocks and diagrams
+- Any role may make a UI mock when it helps the Master or the team see something (mostly before build and in design).
+  Save it in the feature's docs folder as `mock-<slug>.html` (or a `.png`/`.jpg`/`.svg`, e.g. a Playwright shot). It
+  shows in the Docs tab, and a message that names its path (`` `.aiteams/features/F-29/mock-login.html` ``) gets a
+  preview that opens the full view.
+- An HTML mock runs sandboxed, so make it one self-contained file: inline CSS and JS, images as `data:` URIs (links to
+  other files won't load). Style it like a Claude artifact: Tailwind via `<script src="https://cdn.tailwindcss.com">`
+  and shadcn-style components (neutral palette, rounded-lg cards, subtle borders, system font).
+- Diagrams: a ```` ```mermaid ```` block in a message or a doc renders as a diagram.
 
 ## UI work and QA (when this project is the AITeams repo)
 - UI build output is not committed: never list `aiteams/static` in `request_commit` (it is gitignored and is refused).
