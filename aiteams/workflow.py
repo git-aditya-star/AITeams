@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -48,25 +49,67 @@ def docs_dir(project_path: str, feat: dict) -> str:
     return os.path.join(project_path, ".aiteams", "features", feat["key"])
 
 
+# F-29: a mock is a file sitting directly in the feature's docs folder. Only these extensions are served raw.
+MOCK_KINDS = {".html": "html", ".png": "image", ".jpg": "image", ".jpeg": "image", ".svg": "image"}
+MOCK_TYPES = {".html": "text/html; charset=utf-8", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+              ".svg": "image/svg+xml"}
+MOCK_MAX_BYTES = 10 * 1024 * 1024
+
+
+def mock_kind(name: str) -> str | None:
+    return MOCK_KINDS.get(os.path.splitext(name)[1].lower())
+
+
 def docs_list(db: ProjectDB, project_path: str, feat: dict) -> list[dict]:
+    """The feature's docs: its `.md` files, then its mocks (F-29: html and images, kind `html` / `image`), each group
+    sorted by name. A symlink is never listed as a mock, since the raw endpoint refuses it."""
     d = docs_dir(project_path, feat)
     rel_prefix = os.path.join(".aiteams", "features", feat["key"]) + os.sep
     edits = db.file_edits_for(rel_prefix)
     out = []
     try:
-        names = sorted(n for n in os.listdir(d) if n.endswith(".md"))
+        all_names = os.listdir(d)
     except OSError:
         return out
-    for n in names:
+    names = [(n, "md") for n in sorted(n for n in all_names if n.endswith(".md"))]
+    names += [(n, mock_kind(n)) for n in sorted(all_names) if not n.endswith(".md") and mock_kind(n)]
+    for n, kind in names:
         p = os.path.join(d, n)
         try:
-            stt = os.stat(p)
+            stt = os.lstat(p) if kind != "md" else os.stat(p)
         except OSError:
             continue
+        if kind != "md" and not stat.S_ISREG(stt.st_mode):
+            continue
         e = edits.get(rel_prefix + n)
-        out.append({"name": n, "size": stt.st_size, "updated_at": e["updated_at"] if e else stt.st_mtime,
+        out.append({"name": n, "kind": kind, "size": stt.st_size, "updated_at": e["updated_at"] if e else stt.st_mtime,
                     "editor": e["role"] if e else None})
     return out
+
+
+def mock_path(project_path: str, feat: dict, name: str) -> str:
+    """F-29: the file behind GET .../files/{name}, or the HTTPException to answer. 400: a name with a path in it, an
+    extension that isn't a mock, a symlink, or anything whose real path isn't exactly <project>/.aiteams/features/F-n/<name>
+    (a symlinked folder included). 404: no such regular file. 413: over MOCK_MAX_BYTES."""
+    if not name or name in (".", "..") or "/" in name or "\\" in name or "\x00" in name:
+        raise HTTPException(400, "bad file name")
+    if mock_kind(name) is None:
+        raise HTTPException(400, "only html, png, jpg, jpeg and svg files are served")
+    p = os.path.join(docs_dir(project_path, feat), name)
+    try:
+        stt = os.lstat(p)
+    except OSError:
+        raise HTTPException(404, "no such file")
+    if stat.S_ISLNK(stt.st_mode):
+        raise HTTPException(400, "symlinks are not served")
+    if not stat.S_ISREG(stt.st_mode):
+        raise HTTPException(404, "no such file")
+    expected = os.path.join(os.path.realpath(project_path), ".aiteams", "features", feat["key"], name)
+    if os.path.realpath(p) != expected:
+        raise HTTPException(400, "the file is outside the feature's docs folder")
+    if stt.st_size > MOCK_MAX_BYTES:
+        raise HTTPException(413, f"the file is over {MOCK_MAX_BYTES // (1024 * 1024)} MB")
+    return p
 
 
 def design_state(db: ProjectDB, feat: dict) -> str:

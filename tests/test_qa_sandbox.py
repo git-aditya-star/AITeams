@@ -232,3 +232,37 @@ def test_seed_has_a_changes_requested_and_a_rejected_approval_on_f3(sandbox):
         assert len(c.get("/api/p/demo/inbox", headers=auth).json()["approvals"]) == 1  # still only the PRD card
         new = c.post("/qa/fire", json={"kind": "approval"}, headers=auth).json()["approval"]
         assert new == 5  # fired approvals follow the seeded ones
+
+
+def test_seed_has_mocks_a_diagram_and_the_two_chat_messages_that_show_them(sandbox):
+    """F-29: F-1's docs hold a mock page, a generated PNG and an SVG, design.md ends with a mermaid block, and the last two
+    F-1 messages link the mock and carry a diagram. The seeded ids before them are unchanged."""
+    import struct
+    mod, work, _ = sandbox
+    app = mod.build_app(8790, work, "demo")
+    auth = {"Authorization": "Bearer sb-token"}
+    with TestClient(app) as c:
+        docs = c.get("/api/p/demo/features/1/docs", headers=auth).json()
+        assert [(d["name"], d["kind"]) for d in docs] == [
+            ("design.md", "md"), ("prd.md", "md"), ("flow.svg", "image"), ("mock-export.html", "html"), ("shot.png", "image")]
+        html = c.get("/api/p/demo/features/1/files/mock-export.html", headers=auth)
+        assert html.status_code == 200 and "sandbox" in html.headers["content-security-policy"]
+        # the probe is offline (no CDN) and writes its verdict into its own body
+        assert "http" not in html.text.replace("http://www.w3.org", "") and "parent.document" in html.text
+        assert "fetch('/api/projects')" in html.text and "parent: blocked" in html.text and "fetch: blocked" in html.text
+        png = c.get("/api/p/demo/features/1/files/shot.png", headers=auth).content
+        assert png[:8] == b"\x89PNG\r\n\x1a\n" and struct.unpack(">II", png[16:24]) == (160, 100)
+        assert c.get("/api/p/demo/features/1/files/flow.svg", headers=auth).text.startswith("<svg")
+        design = c.get("/api/p/demo/features/1/docs/design.md", headers=auth).json()["text"]
+        assert design.startswith("# F-1 design") and "| piece | owner | notes |" in design
+        assert design.rstrip().endswith("```") and "```mermaid\nflowchart LR" in design
+        msgs = c.get("/api/p/demo/messages", params={"conversation": "feature-1"}, headers=auth).json()
+        link, flow = msgs[-2], msgs[-1]
+        assert link["author"] == "frontend" and link["mentions"] == []
+        assert ".aiteams/features/F-1/mock-export.html" in link["text"] and ".aiteams/features/F-1/shot.png" in link["text"]
+        assert flow["author"] == "backend" and "```mermaid\nsequenceDiagram" in flow["text"] and flow["mentions"] == []
+        assert msgs[-3]["id"] < link["id"] < flow["id"]
+        # nothing earlier moved: PRD approval is #1, the approved design #2, the first commit request #1
+        inbox = c.get("/api/p/demo/inbox", headers=auth).json()
+        assert [a["id"] for a in inbox["approvals"]] == [1] and [x["id"] for x in inbox["commits"]] == [1]
+        assert c.post("/qa/fire", json={"kind": "message"}, headers=auth).json()["conversation"] == "feature-1"

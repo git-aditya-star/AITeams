@@ -195,6 +195,72 @@ async def seed(st, proj) -> None:
     db.resolve_approval(ch["id"], "changes_requested", "Say which page, then ask again.")
     rj = db.create_approval(f3["id"], "frontend", None, "Scope lock: Order notes export", "Also export notes to PDF.")
     db.resolve_approval(rj["id"], "rejected", "PDF is out of scope for this release.")
+    # F-29: mocks and a diagram in F-1's docs, plus two chat messages that show them. Last, so no seeded message id
+    # moves (these two come after every other seeded message), and the design.md addition is appended.
+    _write(docs, "mock-export.html", MOCK_EXPORT_HTML)
+    _write(docs, "shot.png", _png())
+    _write(docs, "flow.svg", FLOW_SVG)
+    (docs / "design.md").write_text(DESIGN_MD + DESIGN_MERMAID)
+    await say(conv, "frontend", "Mock of the Export button and a screenshot of it:\n"
+              "`.aiteams/features/F-1/mock-export.html` and `.aiteams/features/F-1/shot.png`", [])
+    await say(conv, "backend", "The export flow:\n\n```mermaid\nsequenceDiagram\n  Master->>UI: Export CSV\n"
+              "  UI->>API: GET export.csv\n  API-->>UI: stream rows\n```", [])
+
+
+MOCK_EXPORT_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Export orders mock</title>
+<style>
+  body { margin: 0; padding: 24px; font: 14px/1.5 -apple-system, "Segoe UI", Inter, sans-serif; color: #171717; background: #fafafa; }
+  .card { max-width: 420px; border: 1px solid #e5e5e5; border-radius: 12px; padding: 16px; background: #fff; }
+  h1 { font-size: 16px; margin: 0 0 4px; } p { margin: 0 0 12px; color: #737373; }
+  button { border: 1px solid #d4d4d4; border-radius: 8px; padding: 6px 12px; background: #fff; font: inherit; cursor: pointer; }
+  ul { margin: 16px 0 0; padding: 0; list-style: none; font: 12px ui-monospace, Menlo, monospace; color: #525252; }
+</style></head><body>
+<div class="card" data-mock="export">
+  <h1>Orders</h1><p>Export the orders table as CSV.</p>
+  <button type="button" id="export">Export CSV</button>
+  <ul id="probe"><li id="probe-parent">parent: checking</li><li id="probe-fetch">fetch: checking</li></ul>
+</div>
+<script>
+  // The sandbox probe: a mock must not reach the page that frames it, nor the daemon's API with the Master's cookie.
+  const say = (id, text) => { document.getElementById(id).textContent = text; };
+  try {
+    if (parent === window) say('probe-parent', 'parent: not framed');
+    else { void parent.document.title; say('probe-parent', 'parent: reachable'); }
+  } catch (e) { say('probe-parent', 'parent: blocked'); }
+  fetch('/api/projects').then((r) => say('probe-fetch', r.ok ? 'fetch: reachable' : 'fetch: blocked'))
+    .catch(() => say('probe-fetch', 'fetch: blocked'));
+</script>
+</body></html>
+"""
+FLOW_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="360" height="120" viewBox="0 0 360 120">
+  <rect x="8" y="40" width="96" height="40" rx="8" fill="#fff" stroke="#a3a3a3"/><text x="56" y="65" font-size="13" text-anchor="middle" fill="#171717">Export</text>
+  <rect x="132" y="40" width="96" height="40" rx="8" fill="#fff" stroke="#a3a3a3"/><text x="180" y="65" font-size="13" text-anchor="middle" fill="#171717">Stream</text>
+  <rect x="256" y="40" width="96" height="40" rx="8" fill="#fff" stroke="#a3a3a3"/><text x="304" y="65" font-size="13" text-anchor="middle" fill="#171717">Download</text>
+  <path d="M104 60h28M228 60h28" stroke="#737373" stroke-width="2"/>
+</svg>
+"""
+DESIGN_MERMAID = """
+```mermaid
+flowchart LR
+  A[Export CSV] --> B[GET export.csv]
+  B --> C[Stream rows]
+  C --> D[Download]
+```
+"""
+
+
+def _png(w: int = 160, h: int = 100) -> bytes:
+    """A small valid RGB PNG (a gradient), generated so the seed needs no binary file."""
+    import struct
+    import zlib
+
+    rows = b"".join(b"\x00" + b"".join(bytes((40 + x * 160 // w, 90 + y * 120 // h, 200)) for x in range(w)) for y in range(h))
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
 
 
 LIVE_EVENTS = [

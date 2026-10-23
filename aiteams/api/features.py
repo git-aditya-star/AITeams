@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse
 
 from .. import workflow
 from ..models import (ApprovalDecideBody, BrainstormBody, CommitDecideBody, FeatureFreshStartBody, FeaturePatchBody,
@@ -87,6 +88,19 @@ def doc(request: Request, pid: str, fid: int, name: str):
         raise HTTPException(404, "no such doc")
     with open(p, encoding="utf-8", errors="replace") as f:
         return {"name": name, "text": f.read()}
+
+
+# F-29: a mock is code a role wrote, shown inside the Master's UI. Every response carries a CSP `sandbox` (no
+# allow-same-origin), so even opened in its own tab it gets an opaque origin: no AITeams cookies, DOM or storage.
+MOCK_HEADERS = {"Content-Security-Policy": "sandbox allow-scripts allow-forms allow-popups allow-modals",
+                "X-Content-Type-Options": "nosniff", "Cache-Control": "no-cache"}
+
+
+@feat_api.get("/p/{pid}/features/{fid}/files/{name:path}")
+def mock_file(request: Request, pid: str, fid: int, name: str):
+    proj = _project(request, pid)
+    p = workflow.mock_path(proj.path, _feature(proj, fid), name)
+    return FileResponse(p, media_type=workflow.MOCK_TYPES[os.path.splitext(name)[1].lower()], headers=MOCK_HEADERS)
 
 
 @feat_api.get("/p/{pid}/approvals")
