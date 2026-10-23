@@ -103,9 +103,10 @@ export interface FeatureDesign {
   gated: boolean
 }
 
-// F-29: a feature's docs are its .md files plus its mocks (html pages and images, served raw by `fileUrl`).
+// F-29: a feature's docs are its .md files plus its mocks (html pages and images, served raw by `fileUrl`) and its published
+// Claude artifacts (kind `artifact`: `name` is the title, `url` the claude.ai page, `path` the local source file).
 // An older daemon sends no `kind`; that means md.
-export type DocKind = 'md' | 'html' | 'image'
+export type DocKind = 'md' | 'html' | 'image' | 'artifact'
 
 export interface FeatureDoc {
   name: string
@@ -113,6 +114,22 @@ export interface FeatureDoc {
   size: number
   updated_at: number | null
   editor: string | null
+  url?: string | null // artifact
+  version?: number // artifact
+  path?: string // artifact
+}
+
+// F-29 Part B: a page a role published to claude.ai after the Master confirmed it. Private; only the Master shares it.
+export interface Artifact {
+  id: number
+  feature_id: number
+  path: string // the local source, .aiteams/features/F-<n>/artifact-<slug>.html (or just its name)
+  url: string | null
+  title: string
+  version: number
+  role: string
+  created_at: number
+  updated_at: number
 }
 
 // F-25: what the Master can answer an approval card with.
@@ -210,6 +227,7 @@ export interface Message {
   commit?: Commit | null
   question?: Question | null // F-10: ref question:<id>
   brainstorm?: Brainstorm | null // F-10: ref brainstorm:<id> (the round's System line)
+  artifact?: Artifact | null // F-29: ref artifact:<id> (the link card)
 }
 
 // F-10: a brainstorm round on a feature: every voice posts one idea, then Product compiles one card.

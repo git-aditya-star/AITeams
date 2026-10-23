@@ -5,6 +5,7 @@ import { expect, test } from './fixtures'
 // F-29: mocks (html pages and images) and Mermaid diagrams in the Docs tab and as chat previews. The sandbox seeds F-1's
 // docs folder with mock-export.html (its script probes whether it can reach the page or /api), shot.png, flow.svg and a
 // mermaid block in design.md, and two F-1 chat messages: one links mock-export.html and shot.png, one has a mermaid block.
+// B2's seed adds a published artifact to F-1 (a Docs entry and the last chat message); artifacts.spec.ts covers it.
 
 const SHOTS = process.env.SHOT_DIR || 'test-results/shots'
 const SANDBOX = 'allow-scripts allow-forms allow-popups allow-modals'
@@ -12,11 +13,11 @@ const docsTab = (qa: { open: (r: string) => Promise<void> }) => qa.open('/p/demo
 const pick = (page: Page, name: string) => page.locator('[data-doc-kind]', { hasText: new RegExp(`^${name.replace('.', '\\.')}$`) }).click()
 const naturalWidth = (page: Page, sel: string) => page.locator(sel).evaluate((el: HTMLImageElement) => el.naturalWidth)
 
-test('the Docs tab lists .md files first, then the mocks, each with its kind', async ({ page, qa }) => {
+test('the Docs tab lists .md files first, then the mocks, then the published artifacts, each with its kind', async ({ page, qa }) => {
   await docsTab(qa)
   const names = page.locator('[data-doc-kind]')
-  await expect(names).toHaveText(['design.md', 'prd.md', 'flow.svg', 'mock-export.html', 'shot.png'])
-  expect(await names.evaluateAll((els) => els.map((e) => e.getAttribute('data-doc-kind')))).toEqual(['md', 'md', 'image', 'html', 'image'])
+  await expect(names).toHaveText(['design.md', 'prd.md', 'flow.svg', 'mock-export.html', 'shot.png', 'Export orders mock'])
+  expect(await names.evaluateAll((els) => els.map((e) => e.getAttribute('data-doc-kind')))).toEqual(['md', 'md', 'image', 'html', 'image', 'artifact'])
   await expect(page.locator('[data-doc-kind="html"]').locator('xpath=..').locator('svg')).toBeVisible() // a small icon per kind
 })
 

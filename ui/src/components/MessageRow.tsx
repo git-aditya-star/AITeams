@@ -2,6 +2,7 @@ import type { Message } from '../api'
 import { fmtTime } from '../api'
 import { roleName, TYPE_CHIP } from '../roles'
 import ApprovalCard from './ApprovalCard'
+import ArtifactCard from './ArtifactCard'
 import Avatar from './Avatar'
 import CommitCard from './CommitCard'
 import Markdown from './Markdown'
@@ -13,7 +14,8 @@ import { Badge } from './ui/badge'
 
 export default function MessageRow({ m, highlight = false }: { m: Message; highlight?: boolean }) {
   const question = m.ref?.startsWith('question:') && m.question ? m.question : null
-  const card = m.ref?.startsWith('approval:') && m.approval ? <ApprovalCard a={m.approval} /> : m.ref?.startsWith('commit:') && m.commit ? <CommitCard c={m.commit} /> : question ? <QuestionCard key={`${question.id}-${question.state}`} q={question} embedded /> : null
+  const artifact = m.ref?.startsWith('artifact:') && m.artifact ? m.artifact : null
+  const card = m.ref?.startsWith('approval:') && m.approval ? <ApprovalCard a={m.approval} /> : m.ref?.startsWith('commit:') && m.commit ? <CommitCard c={m.commit} /> : question ? <QuestionCard key={`${question.id}-${question.state}`} q={question} embedded /> : artifact ? <ArtifactCard a={artifact} /> : null
   return (
     <div id={`m-${m.id}`} className={`flex gap-2.5 px-4 py-1.5 ${highlight ? 'bg-amber-50' : 'hover:bg-gray-50'}`}>
       <Avatar author={m.author} className="mt-0.5" />
@@ -27,7 +29,7 @@ export default function MessageRow({ m, highlight = false }: { m: Message; highl
         </div>
         {/* F-10: a card message's text is the same questions in plain Markdown (for roles); the card replaces it. */}
         {!question && <Markdown text={m.text} />}
-        {!question && <MockPreviews text={m.text} />}
+        {!question && !artifact && <MockPreviews text={m.text} />}
         {card}
         <Reactions reactions={m.reactions} />
         <Receipts receipts={m.receipts} />
