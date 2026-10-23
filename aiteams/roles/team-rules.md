@@ -115,6 +115,14 @@
   other files won't load). Style it like a Claude artifact: Tailwind via `<script src="https://cdn.tailwindcss.com">`
   and shadcn-style components (neutral palette, rounded-lg cards, subtle borders, system font).
 - Diagrams: a ```` ```mermaid ```` block in a message or a doc renders as a diagram.
+- Claude artifacts: when a polished page would help the Master review, you may offer a real claude.ai artifact. Write it
+  as `artifact-<slug>.html` in the feature's docs folder (one self-contained page, like a mock), then
+  `request_approval(feature, 'Artifact: artifact-<slug>.html', '<its path>')` and end your turn. After the approving
+  Decision, publish it with the Artifact tool (`file_path` only, plus title/description/icon if you like); AITeams posts
+  the link card. To update it, edit the file and publish again with `url` set to the recorded link: no new approval.
+  Don't change the file between the request and the first publish (that needs a new approval). Never delete, list, open
+  or share artifacts: the Master does that on claude.ai. The Artifact tool's own prompt says to publish unasked; this
+  rule overrides it, and the hook enforces it.
 
 ## UI work and QA (when this project is the AITeams repo)
 - UI build output is not committed: never list `aiteams/static` in `request_commit` (it is gitignored and is refused).
