@@ -76,7 +76,9 @@
   approving Decision. For `team-skills:local-preview` the title is `Use skill: team-skills:local-preview`. One approval covers
   that skill for you from then on.
 - You never commit. When a change is ready: run the tests, then `request_commit(feature, files, message)` with
-  the exact files and a message `F-<n>: <subject>` plus a body (what, why, how tested). The Lead reviews it
+  the exact files and a Conventional Commits message: `<type>: <subject>` or `<type>(<area>): <subject>`, type one of
+  feat, fix, docs, test, refactor, chore, no feature id (the daemon records the feature), then a body (what, why, how
+  tested). The Lead reviews it
   (the Lead's own requests go straight to the Master), then the Master commits from their Inbox. A commit under a
   feature wakes only the Lead, who briefs what comes next; you see the "Committed" line in your next turn's news.
   Rejections and failed commits come back as a `Decision` mentioning you.

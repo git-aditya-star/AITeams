@@ -26,7 +26,7 @@ test('sidebar, dashboard, feature, Inbox, History and the Live tab', async ({ pa
   await sidebar.getByRole('button', { name: /^Inbox/ }).click()
   await expect(page.getByRole('heading', { name: 'Inbox' })).toBeVisible()
   await expect(page.locator('[data-card="approval-1"]')).toContainText('PRD ready: CSV export scope')
-  await expect(page.locator('[data-card="commit-1"]')).toContainText('F-1: add CSV export endpoint')
+  await expect(page.locator('[data-card="commit-1"]')).toContainText('add CSV export endpoint')
   await expect(page.getByText('Where should the Export CSV button go?').first()).toBeVisible()
 
   await sidebar.getByRole('button', { name: /^History/ }).click()

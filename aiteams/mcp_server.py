@@ -102,7 +102,8 @@ TOOLS = [
          "required": ["title", "summary"]}},
     {"name": "request_commit",
      "description": "Request a commit of exactly these files (paths relative to the project root) with a message "
-                    "'F-<n>: <subject>' + body (what, why, how tested). The Lead reviews, then the Master commits. "
+                    "'<type>(<area>): <subject>' (Conventional Commits: feat|fix|docs|test|refactor|chore, no feature id) "
+                    "+ body (what, why, how tested). The Lead reviews, then the Master commits. "
                     "Files locked by another role are refused. `requires`: list the open requests this one can't "
                     "land without (e.g. the backend half of a UI change); the Master then commits them together.",
      "inputSchema": {"type": "object", "properties": {

@@ -599,8 +599,6 @@ async def request_commit(st, proj: Project, role: str, turn_id: int | None, feat
             raise HTTPException(409, f"{rel} is locked by {holder['role']}; ask them or @lead to unlock it first")
         rels.append(rel)
         hashes[rel] = _sha(proj.path, rel)
-    if feat and not (message.startswith(feat["key"] + ":") or message.startswith(feat["key"] + " ")):
-        message = f"{feat['key']}: {message}"
     state = "master_review" if role in LEADS else "lead_review"
     db = proj.db
     # a re-file supersedes the same role's pending requests in this feature whose files it covers, and (F-11) a

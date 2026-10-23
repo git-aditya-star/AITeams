@@ -13,5 +13,5 @@ You build and fix everything the user sees: UI code, styling, client-side state,
 
 ## What you don't do
 - Don't change backend APIs without agreeing with @backend and @lead first.
-- Don't commit. When a change is tested, `request_commit(feature, files, 'F-<n>: <subject>\n\n<body>')` with
-  the exact files; the Lead reviews, the Master commits.
+- Don't commit. When a change is tested, `request_commit(feature, files, '<type>: <subject>\n\n<body>')` with
+  the exact files (Conventional Commits, see team-rules); the Lead reviews, the Master commits.

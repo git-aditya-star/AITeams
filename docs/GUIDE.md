@@ -90,7 +90,7 @@ Cards also appear inline in the conversation where they were raised.
 ## 6. Commits, locks and safety
 
 - Roles cannot commit or push; a hook denies it. They call `request_commit` with the exact files and a
-  message `F-<n>: subject` plus body. The Lead reviews first (the Lead's own requests skip review).
+  Conventional Commits message (`feat: subject`, no feature id) plus body. The Lead reviews first (the Lead's own requests skip review).
   Only Lead-approved commits reach your Inbox. The daemon commits only the listed files.
 - Two roles never write the same file at the same moment: an edit locks the file to that role for the
   rest of its turn. The feature header lists current locks; ✕ releases one. Lead and Manager can also

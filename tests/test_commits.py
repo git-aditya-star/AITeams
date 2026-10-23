@@ -51,12 +51,13 @@ def test_full_flow_backend_lead_master(client, pid, repo):
     (repo / "api_export.py").write_text("def hello():\n    return 'hi'\n")
     (repo / "README.md").write_text("# demo\nchanged but not listed\n")
     backend = turn(client, pid, "backend")
-    r = client.post("/internal/commits", json={"feature": "F-1", "files": ["api_export.py"], "message": "add export\n\nbody"}, headers=backend)
+    r = client.post("/internal/commits", json={"feature": "F-1", "files": ["api_export.py"], "message": "feat: add export\n\nbody"}, headers=backend)
     assert r.status_code == 200, r.text
     c = r.json()
     assert c["state"] == "lead_review" and c["files"] == ["api_export.py"]
     row = proj.db.commit(c["id"])
-    assert row["message"] == "F-1: add export\n\nbody" and len(row["hashes"]["api_export.py"]) == 64
+    assert row["message"] == "feat: add export\n\nbody"  # F-27: stored as sent, no F-n prefix
+    assert len(row["hashes"]["api_export.py"]) == 64
     msgs = client.get(f"/api/p/{pid}/messages", params={"conversation": "feature-1"}).json()
     # F-22: the feature had no Lead, so "@lead" picked one (Lead 1, the default), announced right after the card
     assert msgs[-1]["author"] == "system" and msgs[-1]["text"] == "Lead 1 picked automatically (default)."
@@ -79,21 +80,21 @@ def test_full_flow_backend_lead_master(client, pid, repo):
     assert [x["id"] for x in inbox["commits"]] == [c["id"]] and inbox["commits"][0]["feature"] == "F-1" and inbox["count"] == 1
     d = client.get(f"/api/p/{pid}/commits/{c['id']}/diff").json()
     assert "+def hello():" in d["diff"] and d["stale"] == []
-    r = client.post(f"/api/p/{pid}/commits/{c['id']}/decide", json={"decision": "approve", "message": "F-1: add export (edited)\n\nbody"}).json()
-    assert r["state"] == "committed" and r["sha"] and r["message"].startswith("F-1: add export (edited)")
-    assert git(repo, "log", "-1", "--format=%s|%an") == "F-1: add export (edited)|Aditya Test"
+    r = client.post(f"/api/p/{pid}/commits/{c['id']}/decide", json={"decision": "approve", "message": "feat: add export (edited)\n\nbody"}).json()
+    assert r["state"] == "committed" and r["sha"] and r["message"].startswith("feat: add export (edited)")
+    assert git(repo, "log", "-1", "--format=%s|%an") == "feat: add export (edited)|Aditya Test"
     assert git(repo, "diff", "--cached", "--name-only") == "" and git(repo, "diff", "--name-only") == "README.md"  # unlisted dirty file untouched
     assert "README.md" not in git(repo, "show", "--name-only", "--format=", "HEAD")
     last = client.get(f"/api/p/{pid}/messages", params={"conversation": "feature-1"}).json()[-1]
     assert last["author"] == "master" and last["type"] == "Decision" and last["mentions"] == ["lead"]
-    assert last["text"] == f"@lead Committed `{r['sha']}`: F-1: add export (edited)"
+    assert last["text"] == f"@lead Committed `{r['sha']}`: feat: add export (edited)"
     # F-20: a commit wakes only the Lead, who sequences the next step; backend sees the line in its next news
     assert "lead" in {w["role"] for w in proj.db.queued_wakes()}
     assert not any(w["role"] == "backend" and last["id"] in w["message_ids"] for w in proj.db.queued_wakes())
     assert client.get(f"/api/p/{pid}/inbox").json()["count"] == 0
-    # prefix check respects the F-<n> boundary
+    # F-27: a message is never rewritten, with or without an F-n tag
     c12 = client.post("/internal/commits", json={"feature": "F-1", "files": ["api_export.py"], "message": "F-12: other"}, headers=backend).json()
-    assert proj.db.commit(c12["id"])["message"] == "F-1: F-12: other"
+    assert proj.db.commit(c12["id"])["message"] == "F-12: other"
 
 
 def test_stale_then_force_and_lead_direct_and_reject(client, pid, repo):

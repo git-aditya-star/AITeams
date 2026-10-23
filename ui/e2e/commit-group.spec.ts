@@ -9,7 +9,7 @@ test('a group is one Inbox item, and Commit group waits until every member is Le
   await qa.open('/p/demo?c=inbox')
 
   const group = page.locator(`[data-card="commit-group-${fired.group}"]`)
-  await expect(group).toContainText('F-1: group backend half')
+  await expect(group).toContainText('group backend half')
   await expect(group).toContainText('(2 requests, 2 files)')
   await expect(group.locator('[data-member]')).toHaveCount(2)
   await expect(group.locator(`[data-member="${ui}"]`)).toContainText('lead review')

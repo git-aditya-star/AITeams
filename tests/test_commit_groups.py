@@ -103,7 +103,7 @@ def test_group_order_inbox_item_and_group_commit(client, pid, repo):
     r = decide(client, pid, ui["id"], group=True)  # any member id commits the group
     assert r.status_code == 200, r.text
     assert [x["state"] for x in r.json()["group"]] == ["committed", "committed"]
-    assert git(repo, "log", "-2", "--format=%s").splitlines() == [f"F-1: add ui.ts", f"F-1: add api.py"]
+    assert git(repo, "log", "-2", "--format=%s").splitlines() == ["add ui.ts", "add api.py"]  # F-27: no F-n prefix added
     msgs = db.messages("feature-1", limit=5)
     assert msgs[-1]["text"] == f"Group #{base['id']} + #{ui['id']} committed." and msgs[-1]["author"] == "system"
     assert [m["mentions"] for m in msgs[-3:-1]] == [["lead"], ["lead"]]  # F-20: each member line wakes only the Lead
