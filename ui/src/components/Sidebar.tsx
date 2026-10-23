@@ -3,6 +3,7 @@ import { ROLES, dotClass, meterClass, phaseChip, roleName } from '../roles'
 import { useAppDispatch, useAppSelector } from '../store'
 import { selectActiveFeatures, selectHistoryCount, selectInboxBadge, selectTeamByRole } from '../store/selectors'
 import { setPaused } from '../store/thunks'
+import AlertsMenu, { AlertHints } from './AlertsMenu'
 import NewTaskForm from './NewTaskForm'
 import { Badge } from './ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
@@ -120,10 +121,16 @@ export default function Sidebar({
         </div>
       </div>
 
-      <label className="flex items-center gap-2 px-4 py-3 border-t border-gray-200 text-meta text-gray-700 cursor-pointer select-none">
-        <input type="checkbox" checked={paused} onChange={(e) => dispatch(setPaused(e.target.checked))} />
-        Pause project
-      </label>
+      <div className="border-t border-gray-200">
+        <div className="flex items-center justify-between gap-2 px-4 py-3">
+          <label className="flex items-center gap-2 text-meta text-gray-700 cursor-pointer select-none">
+            <input type="checkbox" checked={paused} onChange={(e) => dispatch(setPaused(e.target.checked))} />
+            Pause project
+          </label>
+          <AlertsMenu />
+        </div>
+        <AlertHints />
+      </div>
       {health && (
         <Tip content={health.ref ? `${health.ref} from ${health.source}` : 'editable dev install'} side="top">
           <div className="self-start px-4 pb-2 text-caption text-gray-400 font-mono">

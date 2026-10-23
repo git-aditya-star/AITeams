@@ -53,7 +53,7 @@ const firstLine = (s: string | null | undefined) => (s || '').trim().split('\n')
 const oneParagraph = (s: string | null | undefined) => (s || '').trim().replace(/\s+/g, ' ')
 
 // Feature conversation for an approval/commit, else the requesting role's DM.
-const convFor = (featureId: number | null, role: string, features: Feature[]) =>
+export const convFor = (featureId: number | null, role: string, features: Feature[]) =>
   features.find((f) => f.id === featureId)?.conversation_id || `dm-${role}`
 
 let pluginSeq = 0

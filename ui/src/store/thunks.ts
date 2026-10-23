@@ -1,5 +1,6 @@
 import type { UnknownAction } from '@reduxjs/toolkit'
 import type { Feature, InboxMessage, Question, Standup } from '../api'
+import { alertFor, type Alert } from '../alerts'
 import { api } from '../api'
 import { toastFor, type Toast } from '../toasts'
 import type { WsFrame } from '../ws'
@@ -85,6 +86,12 @@ export const loadOlderMessages = (): AppThunk<Promise<void>> => async (dispatch,
   const items = await api.messages(s.pid, m.conversation, first.id, PAGE)
   dispatch(messages.actions.olderLoaded({ conversation: m.conversation, items, hasMore: items.length >= PAGE }))
 }
+
+// F-28: the alert a live frame calls for (sound and pop-up), or null. Judged on the store's features, like toasts.
+export const alertReceived =
+  (f: WsFrame): AppThunk<Alert | null> =>
+  (_dispatch, getState) =>
+    alertFor(f, { features: getState().features })
 
 // One WS frame -> domain actions + follow-up fetches. Returns the toast it calls for (judged on the state before
 // the frame is applied), or null. `current` is the open view: the dashboard refetches only while on screen.

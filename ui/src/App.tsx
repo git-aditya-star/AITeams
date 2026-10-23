@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { api } from './api'
+import { armAlertGestures, claimAlertLock, deliverAlert } from './alerts'
 import { roleName } from './roles'
 import { useProjectWs, type WsFrame } from './ws'
 import Sidebar from './components/Sidebar'
@@ -24,7 +25,7 @@ import CommitReview from './components/CommitReview'
 import { Tabs, TabsList, TabsTrigger } from './components/ui/tabs'
 import { useAppDispatch, useAppSelector } from './store'
 import { selectDmQuestions, selectFeatureByConversation } from './store/selectors'
-import { createTask, frameReceived, loadOlderMessages, openConversation, openProject, reconnected, refreshTeam } from './store/thunks'
+import { alertReceived, createTask, frameReceived, loadOlderMessages, openConversation, openProject, reconnected, refreshTeam } from './store/thunks'
 
 type Tab = 'chat' | 'live' | 'docs'
 
@@ -49,6 +50,8 @@ export default function App() {
   const dmQuestions = useAppSelector((s) => selectDmQuestions(s, dmRole))
   // Toast keys already shown this page load (rate_limit is cleared when the limit clears).
   const seenToasts = useRef(new Set<string>())
+  // F-28: alert keys already handled this page load, whether or not this tab was the one that played them.
+  const seenAlerts = useRef(new Set<string>())
 
   // Fan-out for components (LiveSession) that want raw WS frames.
   const listeners = useRef(new Set<(f: WsFrame) => void>())
@@ -103,6 +106,10 @@ export default function App() {
     if (pid) dispatch(openConversation(current))
   }, [pid, current, dispatch])
 
+  // F-28: one tab per project alerts (Web Lock), and the first click unlocks sound and the pop-up permission.
+  useEffect(() => claimAlertLock(pid), [pid])
+  useEffect(() => armAlertGestures(), [])
+
   const onFrame = (f: WsFrame) => {
     listeners.current.forEach((fn) => fn(f))
     const toast = dispatch(frameReceived(f, current))
@@ -111,6 +118,11 @@ export default function App() {
       showToast(toast, (t) => {
         if (t.conversation) select(t.conversation, undefined, t.message)
       })
+    }
+    const alert = dispatch(alertReceived(f))
+    if (alert && !seenAlerts.current.has(alert.key)) {
+      seenAlerts.current.add(alert.key)
+      deliverAlert(alert, (a) => select(a.conversation, undefined, a.message))
     }
     if (f.event === 'rate_limit' && (!f.data?.info || f.data.info.status.startsWith('allowed'))) seenToasts.current.delete('rate_limit')
   }
