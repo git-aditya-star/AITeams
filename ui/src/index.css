@@ -132,3 +132,14 @@
 .md th { @apply bg-gray-50 font-semibold text-left; }
 .md hr { @apply my-2 border-gray-200; }
 .md .mention { @apply bg-blue-50 text-blue-700 rounded-sm px-1 font-medium; }
+
+/* F-33: the Markdown styles on the Live session's dark terminal pane (`.term`). Same type tokens, dark colours. */
+.term .md a { @apply text-blue-300; }
+.term .md blockquote { @apply border-neutral-700 text-neutral-400; }
+.term .md code { @apply bg-neutral-800 text-neutral-200; }
+.term .md pre { @apply bg-neutral-900 text-neutral-200; }
+.term .md pre code { @apply bg-transparent; }
+.term .md th, .term .md td { @apply border-neutral-700; }
+.term .md th { @apply bg-neutral-900; }
+.term .md hr { @apply border-neutral-800; }
+.term .md .mention { @apply bg-blue-500/20 text-blue-300; }

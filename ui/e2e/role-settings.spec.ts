@@ -112,5 +112,6 @@ test('the Live session shows the command the daemon ran', async ({ page, qa }) =
     await route.fulfill({ response: res, json: events })
   })
   await qa.open('/p/demo?c=dm-frontend&tab=live')
+  await page.getByRole('button', { name: 'Show details' }).click() // F-33: the spawn command is plumbing, behind the switch
   await expect(page.locator('[data-aiteams-cmd]').first()).toHaveText('claude -p --model sonnet --effort low --mcp-config <json>')
 })

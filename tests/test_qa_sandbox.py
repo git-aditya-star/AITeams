@@ -288,3 +288,48 @@ def test_seed_has_one_published_artifact_with_its_link_card(sandbox):
         proj = c.app.state.app.projects["demo"]
         assert proj.db.q("SELECT COUNT(*) AS n FROM artifacts WHERE url IS NULL")[0]["n"] == 0
         assert all(card["id"] not in w["message_ids"] for w in proj.db.queued_wakes())  # the card woke nobody
+
+
+def test_live_demo_turn_has_the_real_event_shapes(sandbox):
+    """F-33: the seeded frontend turn is a full turn in the stream-json shapes the Live session renders."""
+    import json
+
+    mod, work, _ = sandbox
+    events = mod.LIVE_EVENTS
+    uses = [c for e in events if e["type"] == "assistant" for c in e["message"]["content"] if c["type"] == "tool_use"]
+    answers = {c["tool_use_id"]: (e, c) for e in events if e["type"] == "user" for c in e["message"]["content"]}
+    assert [u["name"] for u in uses] == ["Read", "Grep", "Edit", "Write", "Edit", "Bash", "Bash", "mcp__aiteams__post_message"]
+    assert {u["id"] for u in uses} == set(answers)  # every call has its result, matched by tool_use_id
+    # the Edit's result carries a real structuredPatch next to the message, with line numbers' starting points and context
+    patch = answers["toolu_3"][0]["tool_use_result"]["structuredPatch"][0]
+    assert patch["oldStart"] == 140 and [l[0] for l in patch["lines"]] == [" ", "-", "+", "+", " "]
+    # a hook-denied call and a failing Bash are errors; the denial carries the daemon's reason
+    assert answers["toolu_5"][1]["is_error"] and answers["toolu_5"][1]["content"].startswith("AITEAMS_DENY: ")
+    assert answers["toolu_6"][1]["is_error"] and answers["toolu_6"][1]["content"].startswith("Exit code 2")
+    assert [e["subtype"] for e in events if e["type"] == "system"].count("hook_started") >= 3  # system events, not `hook_event`
+    assert not any(e["type"] == "hook_event" for e in events)
+    assert next(e for e in events if e["subtype" if e["type"] == "system" else "type"] == "init")["cwd"] == "/work/demo"
+    # what the smoke and primitives specs read, and F-8: no currency sign anywhere in the turn
+    texts = [c["text"] for e in events if e["type"] == "assistant" for c in e["message"]["content"] if c["type"] == "text"]
+    assert texts[0] == "Reading the design notes before I add the button."
+    assert texts[-1] == "The button is in place; asking where it should live."
+    assert events[-1]["num_turns"] == 3 and events[-1]["duration_ms"] == 18000
+    assert "$" not in json.dumps(events)
+
+
+def test_fire_turn_event_appends_to_the_newest_turn_and_broadcasts(sandbox):
+    mod, work, _ = sandbox
+    app = mod.build_app(8790, work, "demo")
+    auth = {"Authorization": "Bearer sb-token"}
+    ev = {"type": "assistant", "message": {"content": [{"type": "text", "text": "One more thing."}]}}
+    with TestClient(app) as c:
+        turn = c.get("/api/p/demo/turns?role=frontend", headers=auth).json()[0]
+        before = len(c.get(f"/api/p/demo/turns/{turn['id']}/events", headers=auth).json())
+        assert before == len(mod.LIVE_EVENTS)
+        assert c.post("/qa/fire", json={"kind": "turn_event"}, headers=auth).status_code == 400  # no event
+        with c.websocket_connect("/ws/p/demo?token=sb-token") as ws:
+            r = c.post("/qa/fire", json={"kind": "turn_event", "event": ev}, headers=auth).json()
+            frame = next(f for f in (ws.receive_json() for _ in range(5)) if f["event"] == "turn_event")  # after the hello
+        assert r["turn"] == turn["id"] and r["seq"] == before + 1
+        assert frame["event"] == "turn_event" and frame["data"]["turn_id"] == turn["id"] and frame["data"]["data"] == ev
+        assert len(c.get(f"/api/p/demo/turns/{turn['id']}/events", headers=auth).json()) == before + 1

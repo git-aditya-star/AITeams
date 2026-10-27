@@ -1,27 +1,37 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Turn, TurnEvent } from '../api'
 import { api, fmtDuration, fmtTokens } from '../api'
+import { DENY, editDiff, expandable, toolBody, toolLine, toolSummary, writeRows, type DiffRow, type ToolResult } from '../lib/terminal'
 import type { WsFrame } from '../ws'
+import Markdown from './Markdown'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Toggle } from './ui/toggle'
 
+// F-33: one block per thing the terminal shows. A tool call is ONE block: its `tool_result` fills it in by `tool_use_id`.
 type Block =
   | { kind: 'text'; id: number; text: string; live: boolean }
   | { kind: 'thinking'; id: number; text: string; live: boolean }
-  | { kind: 'tool_use'; id: number; name: string; input: unknown }
-  | { kind: 'tool_result'; id: number; text: string; denied: boolean }
-  | { kind: 'line'; id: number; text: string; denied?: boolean }
-  | { kind: 'cmd'; id: number; text: string }
+  | { kind: 'tool'; id: number; toolId: string; name: string; input: unknown; result?: ToolResult }
+  | { kind: 'orphan'; id: number; result: ToolResult } // a result that matches no call
+  | { kind: 'line'; id: number; text: string; denied?: boolean; cwd?: string } // system events: only with Show details
+  | { kind: 'cmd'; id: number; text: string } // the spawn command: only with Show details
   | { kind: 'result'; id: number; subtype: string; cost: number; turns: number; ms: number; error: string | null }
 
 let nextId = 1
-const DENY = 'AITEAMS_DENY'
 
 function contentText(c: unknown): string {
   if (typeof c === 'string') return c
   if (Array.isArray(c)) return c.map((x) => (typeof x === 'string' ? x : x?.text ?? '')).join('')
   return c == null ? '' : JSON.stringify(c)
+}
+
+// What a hook event reads as in the details: `hook · PreToolUse:Edit · allow`. Claude Code's real events are
+// `type:'system'` with subtype hook_started / hook_response (older shapes had their own top-level type).
+function hookText(d: Record<string, any>): string {
+  const name = d.hook_name || d.hook_event || d.hook_event_name || ''
+  const state = d.subtype === 'hook_started' ? 'started' : d.outcome || (d.subtype === 'hook_response' || d.type === 'hook_response' ? 'done' : '')
+  return ['hook', name, state].filter(Boolean).join(' · ')
 }
 
 // Fold one raw stream-json event into the block list (mutates a copy).
@@ -49,7 +59,7 @@ function apply(blocks: Block[], ev: TurnEvent): Block[] {
       for (const c of d.message?.content || []) {
         if (c.type === 'text') out.push({ kind: 'text', id: nextId++, text: c.text || '', live: false })
         else if (c.type === 'thinking') out.push({ kind: 'thinking', id: nextId++, text: c.thinking || '', live: false })
-        else if (c.type === 'tool_use') out.push({ kind: 'tool_use', id: nextId++, name: c.name, input: c.input })
+        else if (c.type === 'tool_use') out.push({ kind: 'tool', id: nextId++, toolId: String(c.id ?? ''), name: c.name, input: c.input })
       }
       return out
     }
@@ -59,12 +69,23 @@ function apply(blocks: Block[], ev: TurnEvent): Block[] {
       for (const c of content) {
         if (c.type !== 'tool_result') continue
         const text = contentText(c.content)
-        out.push({ kind: 'tool_result', id: nextId++, text, denied: text.includes(DENY) })
+        const result: ToolResult = { text, isError: !!c.is_error, denied: text.includes(DENY), data: d.tool_use_result }
+        let at = -1
+        for (let k = out.length - 1; k >= 0; k--) {
+          const b = out[k]
+          if (b.kind === 'tool' && b.toolId === String(c.tool_use_id) && !b.result) {
+            at = k
+            break
+          }
+        }
+        if (at >= 0) out[at] = { ...(out[at] as Extract<Block, { kind: 'tool' }>), result }
+        else out.push({ kind: 'orphan', id: nextId++, result })
       }
       return out
     }
     case 'system': {
-      if (d.subtype === 'init') out.push({ kind: 'line', id: nextId++, text: `session ${d.session_id} · model ${d.model}` })
+      if (d.subtype === 'init') out.push({ kind: 'line', id: nextId++, text: `init · session ${d.session_id} · model ${d.model}`, cwd: typeof d.cwd === 'string' ? d.cwd : undefined })
+      else if (String(d.subtype || '').startsWith('hook_')) out.push({ kind: 'line', id: nextId++, text: hookText(d), denied: JSON.stringify(d).includes(DENY) })
       else out.push({ kind: 'line', id: nextId++, text: d.subtype || 'system' })
       return out
     }
@@ -72,12 +93,9 @@ function apply(blocks: Block[], ev: TurnEvent): Block[] {
       out.push({ kind: 'cmd', id: nextId++, text: Array.isArray(d.argv) ? d.argv.join(' ') : String(d.argv ?? '') })
       return out
     case 'hook_event':
-    case 'hook_response': {
-      const s = JSON.stringify(d)
-      const label = d.hook_event_name || d.hook_name || d.subtype || ''
-      out.push({ kind: 'line', id: nextId++, text: `${d.type}${label ? ` · ${label}` : ''}`, denied: s.includes(DENY) })
+    case 'hook_response':
+      out.push({ kind: 'line', id: nextId++, text: hookText(d), denied: JSON.stringify(d).includes(DENY) })
       return out
-    }
     case 'result':
       out.push({
         kind: 'result',
@@ -102,69 +120,174 @@ const STATE_BADGE: Record<string, string> = {
   interrupted: 'bg-amber-100 text-amber-800',
 }
 
-function Expandable({ text, limit, className }: { text: string; limit: number; className: string }) {
-  const [open, setOpen] = useState(false)
-  const long = text.length > limit
+// ---------------------------------------------------------------- the terminal pane (dark)
+
+const CAP = 50_000 // an expanded output longer than this is cut, so a huge Read cannot freeze the page
+const capped = (t: string) => (t.length > CAP ? `${t.slice(0, CAP)}\n… (${t.length - CAP} more characters)` : t)
+const DOT = { ok: 'text-green-400', error: 'text-red-400', running: 'animate-pulse text-neutral-400', text: 'text-white' } as const
+const FOCUS = 'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-neutral-500'
+
+function Dot({ state }: { state: keyof typeof DOT }) {
   return (
-    <div className={className}>
-      <pre className="whitespace-pre-wrap wrap-break-word font-mono text-code">{open || !long ? text : text.slice(0, limit) + '…'}</pre>
-      {long && (
-        <Button variant="link" size="inline" className="text-caption font-normal" onClick={() => setOpen((o) => !o)}>
-          {open ? 'collapse' : 'expand'}
-        </Button>
+    <span data-dot={state} className={`shrink-0 ${DOT[state]}`}>
+      ⏺
+    </span>
+  )
+}
+
+// A diff (or the head of a Write): `- 141 │ old`, `+ 141 │ new`, context dim. Long ones show their first `limit` rows.
+function Rows({ rows, limit, label }: { rows: DiffRow[]; limit: number; label: string }) {
+  const [all, setAll] = useState(false)
+  const shown = all ? rows : rows.slice(0, limit)
+  const hidden = rows.length - shown.length
+  const width = String(Math.max(0, ...rows.map((r) => r.line ?? 0))).length
+  return (
+    <div data-term-diff={label} className="mt-1 ml-8 overflow-hidden rounded-sm border border-neutral-800">
+      {shown.map((r, k) => (
+        <div
+          key={k}
+          data-diff={r.sign === '+' ? 'add' : r.sign === '-' ? 'del' : 'ctx'}
+          className={`px-2 whitespace-pre-wrap break-all ${r.sign === '-' ? 'bg-red-950/70 text-red-300' : r.sign === '+' ? 'bg-green-950/70 text-green-300' : 'text-neutral-500'}`}
+        >
+          <span className="select-none">
+            {r.sign} {r.line == null ? ' '.repeat(width) : String(r.line).padStart(width)} │{' '}
+          </span>
+          {r.text}
+        </div>
+      ))}
+      {hidden > 0 && (
+        <button type="button" data-term-more className={`block w-full cursor-pointer px-2 text-left text-neutral-500 hover:bg-white/5 ${FOCUS}`} onClick={() => setAll(true)}>
+          … +{hidden} lines (click to expand)
+        </button>
       )}
     </div>
   )
 }
 
-function ToolUse({ name, input }: { name: string; input: unknown }) {
+function ToolView({ b, running, root }: { b: Extract<Block, { kind: 'tool' }>; running: boolean; root: string | null }) {
   const [open, setOpen] = useState(false)
-  const compact = JSON.stringify(input ?? {})
+  const r = b.result
+  const bad = !!r && (r.isError || r.denied)
+  const line = toolLine(b.name, b.input, root)
+  const sum = toolSummary(b.name, b.input, r, running, root)
+  const body = toolBody(b.name, b.input)
+  const can = expandable(b.name, b.input, r)
+  const isEdit = /^(Edit|MultiEdit|NotebookEdit)$/.test(b.name)
+  const state = !r ? (running ? 'running' : 'ok') : bad ? 'error' : 'ok'
+  const head = (
+    <div className="flex gap-2">
+      <Dot state={!r && !running ? 'text' : state} />
+      <div className="min-w-0 break-all">
+        <b className="font-semibold text-white">{line.title}</b>
+        {line.arg && <>({line.arg})</>}
+        {line.dim && (
+          <>
+            {' '}
+            <span className="text-neutral-400">{line.dim}</span>
+          </>
+        )}
+      </div>
+    </div>
+  )
+  const tone = bad ? 'text-red-400' : r ? 'text-neutral-400' : 'text-neutral-500'
+  const under = sum && (
+    <>
+      {sum.text && (
+        <div data-term-summary className={`pl-4 ${tone}`}>
+          ⎿&nbsp; {sum.text}
+          {sum.more && <span className="ml-1 text-neutral-600">{sum.more}</span>}
+          {can && !open && <span className="ml-1 text-neutral-600">(click to expand)</span>}
+        </div>
+      )}
+      {sum.list.map((t, k) => (
+        <div key={k} className={`pl-8 ${t.startsWith('☒') ? 'text-neutral-500 line-through' : 'text-neutral-300'}`}>
+          {t}
+        </div>
+      ))}
+    </>
+  )
   return (
-    <div className="px-3 py-1 text-meta">
-      <span className="font-mono font-semibold text-violet-700">{name}</span>{' '}
-      {open ? (
-        <pre className="mt-1 whitespace-pre-wrap wrap-break-word font-mono text-code bg-gray-50 rounded-sm p-2">{JSON.stringify(input ?? {}, null, 2)}</pre>
+    <div data-term-tool={b.name} data-state={bad ? 'error' : r ? 'ok' : running ? 'running' : 'none'} {...(r?.denied ? { 'data-term-denied': '' } : {})}>
+      {can ? (
+        <button type="button" aria-expanded={open} className={`block w-full cursor-pointer text-left hover:bg-white/5 ${FOCUS}`} onClick={() => setOpen((o) => !o)}>
+          {head}
+          {under}
+        </button>
       ) : (
-        <span className="font-mono text-gray-500 break-all">{compact.slice(0, 200)}{compact.length > 200 ? '…' : ''}</span>
+        <>
+          {head}
+          {body?.md && (
+            <div data-term-body className="mt-1 ml-4 border-l border-neutral-700 pl-3 font-sans text-meta leading-5 text-neutral-200">
+              <Markdown text={body.md} />
+            </div>
+          )}
+          {body?.files && (
+            <div data-term-body className="pl-8 text-neutral-400">
+              {body.files.map((f) => (
+                <div key={f}>{f}</div>
+              ))}
+            </div>
+          )}
+          {under}
+        </>
       )}
-      {compact.length > 200 && (
-        <Button variant="link" size="inline" className="ml-1 text-caption font-normal" onClick={() => setOpen((o) => !o)}>
-          {open ? 'collapse' : 'expand'}
-        </Button>
-      )}
+      {open && can && r && <pre data-term-output className={`pl-8 whitespace-pre-wrap break-all ${bad ? 'text-red-300' : 'text-neutral-400'}`}>{capped(r.text)}</pre>}
+      {r && !bad && isEdit && <Rows rows={editDiff(b.input, r.data)} limit={60} label="edit" />}
+      {r && !bad && b.name === 'Write' && <Rows rows={writeRows(b.input)} limit={10} label="write" />}
     </div>
   )
 }
 
-function BlockView({ b }: { b: Block }) {
+function ThinkingView({ text }: { text: string }) {
+  const [open, setOpen] = useState(false)
+  if (!text.trim()) return <div data-term-thinking className="text-neutral-500 italic">✻ Thinking…</div>
+  return (
+    <div data-term-thinking>
+      <button type="button" aria-expanded={open} className={`cursor-pointer text-left text-neutral-500 italic hover:text-neutral-400 ${FOCUS}`} onClick={() => setOpen((o) => !o)}>
+        ✻ Thinking…
+      </button>
+      {open && <div className="mt-1 pl-4 whitespace-pre-wrap text-neutral-500 italic">{text}</div>}
+    </div>
+  )
+}
+
+function BlockView({ b, running, root }: { b: Block; running: boolean; root: string | null }) {
   switch (b.kind) {
     case 'text':
-      return <pre className="px-3 py-1 whitespace-pre-wrap wrap-break-word font-sans text-body">{b.text}</pre>
-    case 'thinking':
-      return <pre className="px-3 py-1 whitespace-pre-wrap wrap-break-word font-sans text-caption text-gray-400 italic">{b.text}</pre>
-    case 'tool_use':
-      return <ToolUse name={b.name} input={b.input} />
-    case 'tool_result':
       return (
-        <div className={`mx-3 my-1 ${b.denied ? 'border-l-2 border-red-500 pl-2' : ''}`}>
-          {b.denied && <span className="text-caption font-medium text-red-600">hook denied</span>}
-          <Expandable text={b.text} limit={300} className="text-gray-500" />
+        <div data-term-text className="flex gap-2">
+          <Dot state="text" />
+          <div className="min-w-0 flex-1">
+            <Markdown text={b.text} />
+          </div>
         </div>
       )
+    case 'thinking':
+      return <ThinkingView text={b.text} />
+    case 'tool':
+      return <ToolView b={b} running={running} root={root} />
+    case 'orphan': {
+      const bad = b.result.isError || b.result.denied
+      const s = toolSummary('', null, b.result, false)
+      return (
+        <div data-term-orphan className={`pl-4 ${bad ? 'text-red-400' : 'text-neutral-400'}`}>
+          ⎿&nbsp; {s?.text}
+        </div>
+      )
+    }
     case 'cmd':
       return (
-        <div className="px-3 py-1 font-mono text-code text-gray-600 break-all" data-aiteams-cmd>
+        <div className="break-all text-neutral-500" data-aiteams-cmd>
           {b.text}
         </div>
       )
     case 'line':
-      return <div className={`px-3 py-0.5 text-caption ${b.denied ? 'text-red-600 border-l-2 border-red-500' : 'text-gray-400'}`}>{b.text}</div>
+      return <div className={`break-all ${b.denied ? 'text-red-400' : 'text-neutral-500'}`}>{b.text}</div>
     case 'result':
       return (
-        <div className="px-3 py-1.5 text-caption text-gray-600 border-t border-gray-100 mt-1">
-          <span className="font-medium">{b.subtype}</span> · {b.turns} turns · {fmtDuration(b.ms / 1000)}
-          {b.error && <div className="text-red-600 mt-0.5 whitespace-pre-wrap">{b.error}</div>}
+        <div data-term-result className="pt-2 text-neutral-500">
+          ✻ <span>{b.subtype}</span> · {b.turns} turns · {fmtDuration(b.ms / 1000)}
+          {b.error && <div className="mt-0.5 whitespace-pre-wrap text-red-400">{b.error}</div>}
         </div>
       )
   }
@@ -185,6 +308,7 @@ export default function LiveSession({
   const [now, setNow] = useState(Date.now() / 1000)
   const [copied, setCopied] = useState(false)
   const [showPrompt, setShowPrompt] = useState(false)
+  const [showDetails, setShowDetails] = useState(false) // F-33: the spawn command, init and hook lines; off on every open
   const follow = useRef(true) // auto-select newest until the user clicks a turn
   const lastSeq = useRef(0)
   const loading = useRef(false)
@@ -249,6 +373,9 @@ export default function LiveSession({
 
   const sel = turns.find((t) => t.id === selected) || null
   const running = turns.some((t) => t.state === 'running')
+  const live = sel?.state === 'running' // a tool without its result yet is "running" only while its turn is
+  const root = useMemo(() => blocks.find((b): b is Extract<Block, { kind: 'line' }> => b.kind === 'line' && !!b.cwd)?.cwd ?? null, [blocks])
+  const shown = showDetails ? blocks : blocks.filter((b) => b.kind !== 'line' && b.kind !== 'cmd')
   useEffect(() => {
     if (!running) return
     const id = setInterval(() => setNow(Date.now() / 1000), 1000)
@@ -306,21 +433,26 @@ export default function LiveSession({
           ) : (
             <span className="text-gray-400">no session yet</span>
           )}
-          {sel?.prompt && (
-            <Toggle variant="outline" size="sm" pressed={showPrompt} onPressedChange={setShowPrompt} className="ml-auto data-[state=on]:border-blue-300 data-[state=on]:bg-blue-50 data-[state=on]:text-blue-700">
-              Prompt
+          <div className="ml-auto flex items-center gap-2">
+            <Toggle variant="outline" size="sm" pressed={showDetails} onPressedChange={setShowDetails} className="data-[state=on]:border-blue-300 data-[state=on]:bg-blue-50 data-[state=on]:text-blue-700">
+              Show details
             </Toggle>
-          )}
+            {sel?.prompt && (
+              <Toggle variant="outline" size="sm" pressed={showPrompt} onPressedChange={setShowPrompt} className="data-[state=on]:border-blue-300 data-[state=on]:bg-blue-50 data-[state=on]:text-blue-700">
+                Prompt
+              </Toggle>
+            )}
+          </div>
         </div>
         {showPrompt && sel?.prompt && (
           <pre className="shrink-0 max-h-[40%] overflow-y-auto border-b border-gray-200 bg-gray-50 px-3 py-2 whitespace-pre-wrap wrap-break-word font-mono text-code text-gray-700">{sel.prompt}</pre>
         )}
-        <div ref={listRef} className="flex-1 overflow-y-auto py-1">
-          {sel?.error && <div className="mx-3 my-1 text-caption text-red-600 whitespace-pre-wrap">{sel.error}</div>}
-          {blocks.map((b) => (
-            <BlockView key={b.id} b={b} />
+        <div ref={listRef} data-term className="term flex-1 space-y-2 overflow-y-auto bg-neutral-950 px-4 py-3 font-mono text-code text-neutral-200">
+          {sel?.error && <div className="whitespace-pre-wrap text-red-400">{sel.error}</div>}
+          {shown.map((b) => (
+            <BlockView key={b.id} b={b} running={live} root={root} />
           ))}
-          {sel && blocks.length === 0 && <div className="p-3 text-caption text-gray-400">no events yet</div>}
+          {sel && blocks.length === 0 && <div className="text-neutral-500">no events yet</div>}
         </div>
       </div>
     </div>

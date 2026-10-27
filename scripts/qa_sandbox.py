@@ -27,7 +27,7 @@ DEMO_ID = "demo"
 DEFAULT_TOKEN = "qa-sandbox-token"
 FIRE_KINDS = ("message", "question", "question_message", "blocker", "approval", "commit_request", "committed",
               "commit_failed", "standup", "stopped", "interrupted", "fresh_session", "rate_limit", "rate_clear",
-              "reaction", "card", "card_withdraw", "brainstorm", "commit_group", "plugin_missing")
+              "reaction", "card", "card_withdraw", "brainstorm", "commit_group", "plugin_missing", "turn_event")
 
 
 def isolate_env(home: Path, token: str) -> None:
@@ -269,16 +269,98 @@ def _png(w: int = 160, h: int = 100) -> bytes:
             + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
 
 
+def _tool(n: int, name: str, tool_input: dict) -> dict:
+    """An assistant event with one tool_use, in the shape the stream carries (F-33 design: "Real event shapes")."""
+    return {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": f"toolu_{n}", "name": name, "input": tool_input}]}}
+
+
+def _answer(n: int, content: str, data: dict | None = None, is_error: bool = False) -> dict:
+    """The user event that answers it: the tool_result in the message, and `tool_use_result` next to it."""
+    block: dict = {"type": "tool_result", "tool_use_id": f"toolu_{n}", "content": content}
+    if is_error:
+        block["is_error"] = True
+    ev: dict = {"type": "user", "message": {"role": "user", "content": [block]}}
+    if data is not None:
+        ev["tool_use_result"] = data
+    return ev
+
+
+def _hook(name: str, event: str, outcome: str | None = None, output: str = "") -> list[dict]:
+    """system hook_started / hook_response events (not a `hook_event` type: that is what an older parser looked for)."""
+    out = [{"type": "system", "subtype": "hook_started", "hook_id": f"hook-{name}", "hook_name": name, "hook_event": event}]
+    if outcome:
+        out.append({"type": "system", "subtype": "hook_response", "hook_id": f"hook-{name}", "hook_name": name,
+                    "hook_event": event, "outcome": outcome, "output": output})
+    return out
+
+
+_LIVE_TSX = "/work/demo/ui/src/components/LiveSession.tsx"
+_TERMINAL_TS = "\n".join([
+    "// Pure helpers that turn a stream-json tool call into one terminal line.",
+    "export function relPath(p: string, root: string) {",
+    "  return p.startsWith(root + '/') ? p.slice(root.length + 1) : p",
+    "}",
+    "",
+    "export function plural(n: number, word: string) {",
+    "  return n + ' ' + word + (n === 1 ? '' : 's')",
+    "}",
+    "",
+    "export function firstLine(text: string) {",
+    "  return text.split('\\n').find((l) => l.trim()) ?? ''",
+    "}",
+    "",
+    "export const DENY = 'AITEAMS_DENY'",
+]) + "\n"
+
+# One full turn of the frontend role, in the real stream-json shapes (a probe of `claude -p --output-format stream-json
+# --verbose --include-hook-events`): thinking, Read, Grep, an Edit with `structuredPatch`, a Write, a denied Edit, a failing
+# and a passing Bash, a post_message, system hook events, then the final result. No `$` anywhere: F-8 keeps cost and
+# currency out of this view. Smoke and primitives specs read the first and last sentences and the result line.
 LIVE_EVENTS = [
-    {"type": "system", "subtype": "init", "session_id": "sess-demo-frontend", "model": "claude-opus-5-5"},
-    {"type": "assistant", "message": {"content": [{"type": "text", "text": "Reading the design notes before I add the button."},
-                                                  {"type": "tool_use", "id": "toolu_1", "name": "Read",
-                                                   "input": {"file_path": ".aiteams/features/F-1/design.md"}}]}},
-    {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_1",
-                                              "content": "# F-1 design\n| piece | owner | notes |"}]}},
-    {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_2", "name": "Bash",
-                                                   "input": {"command": "cd ui && npm run build", "description": "Build the UI"}}]}},
-    {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_2", "content": "built in 2.1s"}]}},
+    {"type": "system", "subtype": "init", "session_id": "sess-demo-frontend", "model": "claude-opus-5-5", "cwd": "/work/demo"},
+    *_hook("SessionStart:startup", "SessionStart", "success"),
+    {"type": "assistant", "message": {"content": [{"type": "thinking", "thinking": "The Master wants the export button in the "
+                                                   "orders header. Read the design first, then find where the header renders.",
+                                                   "signature": "sig-demo"}]}},
+    {"type": "assistant", "message": {"content": [{"type": "text", "text": "Reading the design notes before I add the button."}]}},
+    _tool(1, "Read", {"file_path": "/work/demo/.aiteams/features/F-1/design.md"}),
+    _answer(1, "     1\t# F-1 design\n     2\t\n     3\t| piece | owner | notes |\n     4\t| --- | --- | --- |\n"
+               "     5\t| endpoint | backend | streams rows |\n     6\t| button | frontend | orders header |",
+            {"type": "text", "file": {"filePath": "/work/demo/.aiteams/features/F-1/design.md", "numLines": 6, "startLine": 1,
+                                       "totalLines": 6}}),
+    *_hook("PreToolUse:Grep", "PreToolUse", "success"),
+    _tool(2, "Grep", {"pattern": "function BlockView", "path": "/work/demo/ui/src", "output_mode": "content"}),
+    _answer(2, "ui/src/components/LiveSession.tsx:140:function BlockView({ b }: { b: Block }) {",
+            {"mode": "content", "numFiles": 0, "filenames": [], "content": "ui/src/components/LiveSession.tsx:140:function "
+             "BlockView({ b }: { b: Block }) {", "numLines": 1}),
+    _tool(3, "Edit", {"file_path": _LIVE_TSX, "old_string": "  switch (b.kind) {",
+                      "new_string": "  // terminal look: one block per tool call\n  switch (b.kind) {", "replace_all": False}),
+    _answer(3, f"The file {_LIVE_TSX} has been updated successfully.",
+            {"filePath": _LIVE_TSX, "oldString": "  switch (b.kind) {",
+             "newString": "  // terminal look: one block per tool call\n  switch (b.kind) {", "replaceAll": False,
+             "structuredPatch": [{"oldStart": 140, "oldLines": 3, "newStart": 140, "newLines": 4,
+                                  "lines": [" function BlockView({ b }: { b: Block }) {", "-  switch (b.kind) {",
+                                            "+  // terminal look: one block per tool call", "+  switch (b.kind) {",
+                                            "     case 'text':"]}]}),
+    _tool(4, "Write", {"file_path": "/work/demo/ui/src/lib/terminal.ts", "content": _TERMINAL_TS}),
+    _answer(4, "File created successfully at: /work/demo/ui/src/lib/terminal.ts",
+            {"type": "create", "filePath": "/work/demo/ui/src/lib/terminal.ts", "content": _TERMINAL_TS, "structuredPatch": []}),
+    *_hook("PreToolUse:Edit", "PreToolUse", "error", "AITEAMS_DENY: aiteams/workflow.py is locked by backend. Ask them in chat."),
+    _tool(5, "Edit", {"file_path": "/work/demo/aiteams/workflow.py", "old_string": "def docs_list(", "new_string": "def docs_list_all(",
+                      "replace_all": False}),
+    _answer(5, "AITEAMS_DENY: aiteams/workflow.py is locked by backend. Ask them in chat.", is_error=True),
+    _tool(6, "Bash", {"command": "cd ui && npx tsc --noEmit", "description": "Typecheck the UI"}),
+    _answer(6, "Exit code 2\nsrc/components/LiveSession.tsx(212,7): error TS2322: Type 'string' is not assignable to type "
+               "'number'.\n  212         toolId: c.id,\n              ~~~~~~\nFound 1 error in src/components/LiveSession.tsx:212",
+            "Error: Exit code 2", is_error=True),
+    _tool(7, "Bash", {"command": "cd ui && npm run build", "description": "Build the UI"}),
+    _answer(7, "built in 2.1s"),
+    *_hook("Stop", "Stop", "success"),
+    _tool(8, "mcp__aiteams__post_message",
+          {"conversation": "feature-1", "type": "Handoff", "mentions": ["lead"],
+           "text": "@lead The terminal view is filed as **#104**. It is 5 files, and the full e2e gave **137 passed**.\n\n"
+                   "- `terminal.ts`: pure helpers for each tool line\n- `LiveSession.tsx`: the dark pane and the paired calls"}),
+    _answer(8, "posted #1412"),
     {"type": "assistant", "message": {"content": [{"type": "text", "text": "The button is in place; asking where it should live."}]}},
     {"type": "result", "subtype": "success", "is_error": False, "num_turns": 3, "duration_ms": 18000, "total_cost_usd": 0.21,
      "result": "The button is in place; asking where it should live."},
@@ -399,6 +481,15 @@ async def fire(st, proj, body: dict) -> dict:
     elif kind == "rate_clear":
         await st.set_rate_limit({"status": "allowed"})
         out["conversation"] = None
+    elif kind == "turn_event":
+        # F-33: append one stream-json event (body `event`) to `role`'s newest turn, as a running turn would: stored, then
+        # broadcast, so an open Live session shows it. The seeded turn is already done; the view does not care.
+        turns = db.turns(role if "role" in body else "frontend", 1)
+        if not turns or not isinstance(body.get("event"), dict):
+            raise ValueError("turn_event needs a role with a turn and an `event` object")
+        stored = db.add_turn_event(turns[0]["id"], body["event"])
+        await hub.broadcast("turn_event", stored)
+        out.update(turn=turns[0]["id"], seq=stored["seq"])
     elif kind == "plugin_missing":
         # F-23: a plugin switched On that a turn did not load. {id, role, loaded: true} makes it load instead, which clears it.
         pid = body.get("id") or "project-notes@project-notes"
