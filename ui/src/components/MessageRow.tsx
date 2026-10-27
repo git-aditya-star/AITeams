@@ -12,19 +12,23 @@ import Reactions from './Reactions'
 import Receipts from './Receipts'
 import { Badge } from './ui/badge'
 
-// F-32: a message that @mentions the Master (cards included; @all is never expanded into `mentions`, and the Master's own
-// messages stay plain) gets a soft blue tint and a 2px bar. The jump highlight (amber) wins while it shows. `markMaster` is
-// off in the Inbox, where every row is for the Master. The left padding drops by the bar's 2px so nothing shifts.
+// F-32: a message is "for the Master" when it @mentions them and they did not write it (cards included; @all is never expanded
+// into `mentions`). It gets a soft blue tint and a 2px bar, and MessageList never folds it into a run of replies: one rule
+// for both, so they cannot drift.
+export const forMaster = (m: Message) => m.author !== 'master' && m.mentions.includes('master')
+
+// The jump highlight (amber) wins while it shows. `markMaster` is off in the Inbox, where every row is for the Master.
+// The left padding drops by the bar's 2px so nothing shifts.
 export default function MessageRow({ m, highlight = false, markMaster = true }: { m: Message; highlight?: boolean; markMaster?: boolean }) {
-  const forMaster = markMaster && m.author !== 'master' && m.mentions.includes('master')
+  const tinted = markMaster && forMaster(m)
   const question = m.ref?.startsWith('question:') && m.question ? m.question : null
   const artifact = m.ref?.startsWith('artifact:') && m.artifact ? m.artifact : null
   const card = m.ref?.startsWith('approval:') && m.approval ? <ApprovalCard a={m.approval} /> : m.ref?.startsWith('commit:') && m.commit ? <CommitCard c={m.commit} /> : question ? <QuestionCard key={`${question.id}-${question.state}`} q={question} embedded /> : artifact ? <ArtifactCard a={artifact} /> : null
   return (
     <div
       id={`m-${m.id}`}
-      data-for-master={forMaster ? '' : undefined}
-      className={`flex gap-2.5 py-1.5 ${highlight ? 'bg-amber-50 px-4' : forMaster ? 'border-l-2 border-blue-400 bg-blue-50/60 pr-4 pl-3.5' : 'px-4 hover:bg-gray-50'}`}
+      data-for-master={tinted ? '' : undefined}
+      className={`flex gap-2.5 py-1.5 ${highlight ? 'bg-amber-50 px-4' : tinted ? 'border-l-2 border-blue-400 bg-blue-50/60 pr-4 pl-3.5' : 'px-4 hover:bg-gray-50'}`}
     >
       <Avatar author={m.author} className="mt-0.5" />
       <div className="min-w-0 flex-1">

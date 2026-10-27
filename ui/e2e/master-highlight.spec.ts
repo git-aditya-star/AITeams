@@ -125,3 +125,35 @@ test('the Inbox does not tint its message rows: every row there is for the maste
   await qa.open('/p/demo?c=feature-1')
   await expect(page.locator(`#m-${id}`)).toHaveAttribute('data-for-master', '')
 })
+
+test('a message that tags master is never folded into a run of replies', async ({ page, qa }) => {
+  await qa.open('/p/demo?c=feature-1')
+  // 2 plain role messages, the tagged one, 2 more: 5 role messages in a row, which would fold into "5 replies" (a run folds
+  // unless it is the last thing in the chat, so the master's own message ends it). The tagged one must break the run.
+  const before = [await post(qa, 'backend', 'Plain before 1', []), await post(qa, 'qa', 'Plain before 2', [])]
+  const tagged = await post(qa, 'lead', 'Tagged inside the run: @master please look', ['master'])
+  const after = [await post(qa, 'backend', 'Plain after 1', []), await post(qa, 'qa', 'Plain after 2', [])]
+  await post(qa, 'master', 'Noted.', [])
+
+  const row = (id: number) => page.locator(`#m-${id}`)
+  await expect(row(tagged)).toBeVisible()
+  await expect(row(tagged)).toHaveAttribute('data-for-master', '')
+  await expect(row(tagged)).toHaveCSS('border-left-width', '2px')
+  for (const id of [...before, ...after]) await expect(row(id)).toBeVisible() // two in a row are not a run either
+  await expect(page.getByText('5 replies')).toHaveCount(0) // nothing folded the five together
+  await expect(page.getByText('3 replies')).toBeVisible() // the seeded fold of plain replies (#2-#4) is still a fold
+  await expect(row(3)).toHaveCount(0)
+  await row(tagged).scrollIntoViewIfNeeded()
+  await page.mouse.move(0, 0)
+  await page.screenshot({ path: `${SHOTS}/master-highlight-fold.png`, animations: 'disabled' })
+})
+
+test('three plain role messages in a row still fold, a tagged one beside them does not join the fold', async ({ page, qa }) => {
+  await qa.open('/p/demo?c=feature-1')
+  const run = [await post(qa, 'backend', 'Fold me 1', []), await post(qa, 'qa', 'Fold me 2', []), await post(qa, 'backend', 'Fold me 3', [])]
+  const tagged = await post(qa, 'lead', 'Tagged right after: @master', ['master'])
+  await post(qa, 'master', 'Noted.', [])
+  await expect(page.getByText('3 replies')).toHaveCount(2) // the seeded fold and this one
+  await expect(page.locator(`#m-${run[1]}`)).toHaveCount(0) // folded away
+  await expect(page.locator(`#m-${tagged}`)).toHaveAttribute('data-for-master', '') // but the tagged one is out in the open
+})

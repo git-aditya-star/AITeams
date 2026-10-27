@@ -3,13 +3,14 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Message } from '../api'
 import { fmtTime } from '../api'
 import { roleName } from '../roles'
-import MessageRow from './MessageRow'
+import MessageRow, { forMaster } from './MessageRow'
 import { Button } from './ui/button'
 
 type Chunk = { kind: 'single'; m: Message } | { kind: 'run'; key: number; items: Message[] }
 
 // Runs of ≥3 consecutive role messages collapse; the last run in the list never does.
-// Messages carrying a card (`ref`) or the fresh-start marker break runs.
+// Messages carrying a card (`ref`), messages that tag the Master (F-32: a fold would hide what the tint is there to show)
+// and the fresh-start marker break runs.
 function chunk(messages: Message[], resetAfter: number): Chunk[] {
   const out: Chunk[] = []
   let run: Message[] = []
@@ -19,7 +20,7 @@ function chunk(messages: Message[], resetAfter: number): Chunk[] {
     run = []
   }
   messages.forEach((m, i) => {
-    if (m.author !== 'master' && !m.ref) {
+    if (m.author !== 'master' && !m.ref && !forMaster(m)) {
       run.push(m)
       if (i === messages.length - 1) flush(true)
       else if (m.id === resetAfter) flush(false)
