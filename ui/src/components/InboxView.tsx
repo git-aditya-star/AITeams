@@ -74,7 +74,7 @@ export default function InboxView({ onOpen }: { onOpen: (conversationId: string)
                   Resolve
                 </Button>
               </div>
-              <MessageRow m={m} />
+              <MessageRow m={m} markMaster={false} />
             </div>
           )
         })}
