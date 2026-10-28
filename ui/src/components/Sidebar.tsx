@@ -5,6 +5,7 @@ import { selectActiveFeatures, selectHistoryCount, selectInboxBadge, selectTeamB
 import { setPaused } from '../store/thunks'
 import AlertsMenu, { AlertHints } from './AlertsMenu'
 import NewTaskForm from './NewTaskForm'
+import StallChip from './StallChip'
 import { Badge } from './ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
 import { Tip } from './ui/tooltip'
@@ -47,7 +48,10 @@ export default function Sidebar({
       <span className="flex items-center gap-1.5 min-w-0">
         <span className="font-mono text-caption text-gray-500 shrink-0">{f.key}</span>
         <span className="truncate">{f.title}</span>
-        <Badge className={`ml-auto px-1.5 ${phaseChip(f.phase)}`}>{f.archived ? 'archived' : f.phase}</Badge>
+        <span className="ml-auto flex items-center gap-1 shrink-0">
+          <StallChip stall={f.stall} compact />
+          <Badge className={`px-1.5 ${phaseChip(f.phase)}`}>{f.archived ? 'archived' : f.phase}</Badge>
+        </span>
       </span>,
     )
 

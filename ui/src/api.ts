@@ -92,6 +92,20 @@ export interface Feature {
   open_approvals: number
   open_commits: number
   design?: FeatureDesign // F-21
+  stall?: Stall | null // F-38: who the feature waits on while the whole team is idle; null/absent = nothing waits on a role
+}
+
+// F-38: an open feature whose newest word waits on a role while the team is idle. The daemon nudges that role (step 1),
+// tells the Manager (step 2), then gives up (step 3 = `stuck`: no more automatic wakes). `ref` is `commit:<id>` or `msg:<id>`;
+// `since` is when this wait began (epoch seconds). A cleared stall arrives as a `feature` frame with `stall: null`.
+export type StallKind = 'review' | 'message' | 'unaddressed'
+export interface Stall {
+  who: string
+  kind: StallKind
+  ref: string
+  step: 1 | 2 | 3
+  stuck: boolean
+  since: number
 }
 
 // F-21: where the feature's design stands. It comes from the latest approval titled `Design:`; commit requests
@@ -294,6 +308,7 @@ export interface TeamRole {
   rotation_handoff_pending?: boolean
   current?: { conversation_id: string; label: string; feature_key: string | null } | null
   kind?: WakeKind | string | null
+  stuck?: boolean // F-38: its turn has run, or its wake has been queued, for a long time (flagged, never stopped)
 }
 
 // M1c: activity feed, standups, handoffs, dashboard.

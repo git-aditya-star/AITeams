@@ -7,6 +7,7 @@ import { useAppDispatch, useAppSelector } from '../store'
 import { freshStartFeature, patchFeature, releaseLock } from '../store/thunks'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
+import StallChip from './StallChip'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
 import { Tip } from './ui/tooltip'
@@ -93,6 +94,7 @@ export default function FeatureHeader({ feature, tab, onTab }: { feature: Featur
           </Select>
         </label>
         {feature.design && <DesignChip design={feature.design} scrollable={tab === 'chat'} />}
+        <StallChip stall={feature.stall} />
         <label className="flex items-center gap-1 text-caption text-gray-500">
           owner
           <Select value={feature.owner || NO_OWNER} disabled={busy} onValueChange={(v) => run(onPatch({ owner: v === NO_OWNER ? null : v }))}>
