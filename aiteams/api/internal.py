@@ -11,7 +11,7 @@ from ..config import LEADS, ROLES, role_name
 from ..db import EMOJI
 from ..models import (AskMasterBody, CheckpointBody, HandoffBody, InternalApprovalBody, InternalBranchBody,
                       InternalBrainstormBody, InternalCommitBody, InternalFeatureBody, InternalFeaturePatchBody, InternalMessageBody,
-                      InternalReviewBody, InternalWithdrawBody, InterruptBody, LockBody, PermissionBody, ReactionBody,
+                      InternalPRBody, InternalReviewBody, InternalWithdrawBody, InterruptBody, LockBody, PermissionBody, ReactionBody,
                       StandupSaveBody)
 from ..orchestrator.lifecycle import request_rotation
 from ..orchestrator import receipts
@@ -228,6 +228,20 @@ async def propose_branch(request: Request, body: InternalBranchBody):
     await workflow.guard_lead(st, proj, turn["role"], feat)  # F-22: not the other Lead's feature; an unled one is claimed
     a = await workflow.propose_branch(st, proj, turn["role"], turn["id"], body.feature, body.mode, body.branch, body.base,
                                       body.shared_from, body.why)
+    return {"id": a["id"], "state": a["state"], "payload": a["payload"]}
+
+
+@internal.post("/prs")
+async def request_pr(request: Request, body: InternalPRBody):
+    """F-39 B3: the feature's Lead asks the Master to open a pull request for the feature's branch (a PR: card)."""
+    st, proj, turn = _auth(request)
+    if turn["role"] not in LEADS:
+        raise HTTPException(403, "only the feature's Lead requests its pull request")
+    feat = workflow.resolve_feature(proj.db, body.feature)
+    if feat is None:
+        raise HTTPException(404, "unknown feature")
+    await workflow.guard_lead(st, proj, turn["role"], feat)
+    a = await workflow.request_pr(st, proj, turn["role"], turn["id"], body.feature, body.destination, body.title, body.body)
     return {"id": a["id"], "state": a["state"], "payload": a["payload"]}
 
 

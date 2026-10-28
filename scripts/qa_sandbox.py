@@ -28,7 +28,7 @@ DEFAULT_TOKEN = "qa-sandbox-token"
 FIRE_KINDS = ("message", "question", "question_message", "blocker", "approval", "commit_request", "committed",
               "commit_failed", "standup", "stopped", "interrupted", "fresh_session", "rate_limit", "rate_clear",
               "reaction", "card", "card_withdraw", "withdraw", "brainstorm", "commit_group", "plugin_missing",
-              "turn_event", "stall_check", "long_turn", "branch_card", "lane_turn")
+              "turn_event", "stall_check", "long_turn", "branch_card", "pr_card", "lane_turn")
 
 
 def isolate_env(home: Path, token: str) -> None:
@@ -492,6 +492,37 @@ async def fire(st, proj, body: dict) -> dict:
                                           body.get("shared_from"), body.get("why", "Keeps this feature off the main folder."))
         feat = db.feature(a["feature_id"])
         out.update(approval=a["id"], feature=feat["key"], conversation=feat["conversation_id"], payload=a["payload"])
+    elif kind == "pr_card":
+        # F-39 B3: a pending PR card for {feature} (default F-1) from its Lead, through the real request_pr path. A feature
+        # without a confirmed branch first gets a real `new` worktree (as if its Branch card were approved) with {commits}
+        # (default 3) tiny commits on it, so the card lists real commits. The sandbox repo has no origin, so Approve fails the
+        # real way (a 409 "this repo has no `origin` remote..."), which the card shows. {destination, title, body}; with
+        # {pr_state (or state): open|merged|closed, pr_url} no card is filed: the feature's header chip shows that pull request.
+        from aiteams import branches
+        feat = workflow.resolve_feature(db, body.get("feature", "F-1"))
+        if feat is None:
+            raise ValueError(f"unknown feature {body.get('feature')}")
+        if db.feature_branch(feat["id"]) is None:
+            applied = branches.apply_branch(proj, feat, {"mode": "new", "branch": body.get("branch") or f"feat/f{feat['id']}-demo",
+                                                         "base": "main"})
+            tree = Path(db.set_feature_branch(feat["id"], **{k: v for k, v in applied.items() if k != "warnings"})["tree"])
+            for i in range(int(body.get("commits", 3))):
+                _write(tree, f"docs/{feat['key'].lower()}-note-{i + 1}.md", f"# {feat['key']} note {i + 1}\n")
+                _git(tree, "add", "-A")
+                _git(tree, "commit", "-qm", f"docs: note {i + 1} for {feat['key']}")
+        pr_state = body.get("pr_state") or body.get("state")
+        if pr_state:
+            if pr_state not in ("open", "merged", "closed"):
+                raise ValueError("pr_state must be open, merged or closed")
+            db.set_feature_branch(feat["id"], pr_state=pr_state, pr_destination=body.get("destination", "main"),
+                                  pr_url=body.get("pr_url", "https://github.com/acme/demo/pull/7"))
+            out.update(feature=feat["key"], conversation=feat["conversation_id"])
+        else:
+            a = await workflow.request_pr(st, proj, body.get("role", "lead"), None, feat["key"], body.get("destination"),
+                                          body.get("title", f"Export orders to CSV ({feat['key']})"),
+                                          body.get("body", "Adds the CSV export behind the new button.\n\nTested in the sandbox."))
+            out.update(approval=a["id"], feature=feat["key"], conversation=feat["conversation_id"], payload=a["payload"])
+        await hub.broadcast("feature", db.feature(feat["id"]))
     elif kind == "lane_turn":
         # F-41: a feature session of {role} (default frontend) on {feature} (default F-1), as if the role worked there: an
         # active session on the lane, a turn on it ({state}: running, the default, or done; {context_tokens}) and a message

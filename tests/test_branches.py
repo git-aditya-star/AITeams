@@ -346,7 +346,9 @@ def test_changes_and_reject_create_nothing_and_a_payload_is_only_for_branch_and_
     assert proj_of(client, pid).db.approval(plain)["state"] == "pending"
     pr = client.post("/internal/approvals", json={"feature": "F-1", "title": "PR: Export", **BRIEF},
                      headers=hdr(client, pid, "lead")).json()["id"]
-    assert decide(client, pid, pr, payload={"destination": "main"}).status_code == 200  # accepted (B3 gives it meaning)
+    r = decide(client, pid, pr, payload={"destination": "main"})  # the payload is accepted on a PR: card (B3 gives it meaning) ...
+    assert r.status_code == 409 and "no confirmed branch" in r.json()["detail"]  # ... and F-1 has no branch to push yet
+    assert proj_of(client, pid).db.approval(pr)["state"] == "pending"
 
 
 # ---- the gate --------------------------------------------------------------------------------------------------------------------

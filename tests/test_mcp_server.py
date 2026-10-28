@@ -49,6 +49,8 @@ class Mock(BaseHTTPRequestHandler):
                 self._send(200, {"behavior": "deny", "message": "The Master did not answer within 10 minutes. Post the question"})
         elif self.path == "/internal/branches":
             self._send(200, {"id": 9, "state": "pending", "payload": body})
+        elif self.path == "/internal/prs":
+            self._send(200, {"id": 12, "state": "pending", "payload": body})
         elif self.path == "/internal/approvals":
             self._send(200, {"id": 5, "state": "pending"})
         elif self.path == "/internal/withdraw":
@@ -95,7 +97,8 @@ def test_handshake_tools_list_and_errors():
         "post_message", "get_messages", "list_conversations", "permission", "list_features", "get_feature",
         "create_feature", "set_feature", "request_approval", "request_commit", "review_commit", "lock_file",
         "unlock_file", "list_locks", "write_handoff", "get_team_status", "run_standup", "save_standup",
-        "interrupt", "checkpoint", "react", "ask_master", "withdraw_request", "start_brainstorm", "propose_branch"}
+        "interrupt", "checkpoint", "react", "ask_master", "withdraw_request", "start_brainstorm", "propose_branch",
+        "request_pr"}
     assert by_id[4]["error"]["code"] == -32601
     assert by_id[5]["error"]["code"] == -32602
     assert by_id[6]["result"]["isError"] is True and "unreachable" in by_id[6]["result"]["content"][0]["text"]
@@ -201,6 +204,25 @@ def test_propose_branch_tool_posts_the_proposal_and_the_schema_lists_the_modes()
     assert posts[0][2]["x-aiteams-token"] == "turn-secret"
     tool = next(t for t in by_id[2]["result"]["tools"] if t["name"] == "propose_branch")
     assert tool["inputSchema"]["required"] == ["feature"] and tool["inputSchema"]["properties"]["mode"]["enum"] == ["new", "current", "shared"]
+
+
+def test_request_pr_tool_posts_the_request_and_the_schema_names_its_parts():
+    """F-39 B3: feature + title are required; destination and body are optional and go through as given (the daemon defaults them)."""
+    Mock.calls.clear()
+    full = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "request_pr", "arguments": {
+        "feature": "F-39", "destination": "dev", "title": "Branches per feature", "body": "Adds worktrees."}}}
+    bare = {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "request_pr", "arguments": {
+        "feature": "F-2", "title": "T"}}}
+    res = with_server(lambda url: run_rpc(url, [full, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, bare]))
+    by_id = {r["id"]: r for r in res}
+    assert by_id[1]["result"]["content"][0]["text"] == "PR card #12 pending; end your turn, the Master will answer in the Inbox"
+    posts = [c for c in Mock.calls if c[1] == "/internal/prs"]
+    assert posts[0][3] == {"feature": "F-39", "destination": "dev", "title": "Branches per feature", "body": "Adds worktrees."}
+    assert posts[1][3] == {"feature": "F-2", "destination": None, "title": "T", "body": ""}
+    assert posts[0][2]["x-aiteams-token"] == "turn-secret"
+    tool = next(t for t in by_id[2]["result"]["tools"] if t["name"] == "request_pr")
+    assert tool["inputSchema"]["required"] == ["feature", "title"]
+    assert set(tool["inputSchema"]["properties"]) == {"feature", "destination", "title", "body"}
 
 
 def test_request_approval_tool_sends_the_brief_and_the_schema_names_its_parts():

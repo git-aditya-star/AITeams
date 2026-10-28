@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import html
 import json
+import logging
 import os
 import re
 import shutil
@@ -889,6 +890,43 @@ async def propose_branch(st, proj: Project, role: str, turn_id: int | None, feat
     return await request_approval(st, proj, role, turn_id, feat["key"], f"Branch: {feat['key']}", summary, payload)
 
 
+async def request_pr(st, proj: Project, role: str, turn_id: int | None, feature, destination: str | None, title: str,
+                     body: str = "") -> dict:
+    """F-39 B3: the feature's Lead asks the Master to open a pull request for the feature's branch. It lands in the Inbox as
+    the approval `PR: <title>` (payload {source, destination, title, body, commits}); approving pushes the branch to origin and
+    opens the PR on GitHub (`decide_approval`). Refused (400) without a confirmed branch, when the destination is the branch
+    itself or unknown, or when the branch has no commits the destination lacks; refused (409) when the feature already has a
+    PR open or merged, or a PR card is waiting. Sent after QA passes: that is process, not enforced."""
+    db = proj.db
+    feat = resolve_feature(db, feature)
+    if feat is None:
+        raise HTTPException(404, "unknown feature")
+    row = db.feature_branch(feat["id"])
+    if row is None:
+        raise HTTPException(400, f"{feat['key']} has no confirmed branch yet; send a Branch card (propose_branch) first")
+    if row["pr_state"] in ("open", "merged"):
+        raise HTTPException(409, f"{feat['key']} already has a pull request ({row['pr_state']}): {row['pr_url']}")
+    if any(is_pr_title(a["title"]) for a in db.approvals("pending", feat["id"])):
+        raise HTTPException(409, f"a PR card for {feat['key']} is already waiting for the Master; withdraw it to change it")
+    title = " ".join((title or "").split())
+    if not title:
+        raise HTTPException(400, "title required")
+    await asyncio.to_thread(branches.fetch_origin, branches.work_dir(proj, feat["id"]))  # best effort: compare with origin as it is now
+    try:
+        pv = await asyncio.to_thread(branches.pr_preview, proj, feat, destination)
+    except branches.BranchError as e:
+        raise HTTPException(400, str(e))
+    if pv["errors"]:
+        raise HTTPException(400, "; ".join(pv["errors"]))
+    body = (body or "").strip()
+    payload = {"source": pv["source"], "destination": pv["destination"], "title": title, "body": body,
+               "commits": pv["commits"]}
+    n = len(pv["commits"])
+    summary = (f"Open a pull request on GitHub: {pv['source']} → {pv['destination']} ({n} commit{'s' if n != 1 else ''})."
+               + (f"\n\n{body}" if body else ""))
+    return await request_approval(st, proj, role, turn_id, feat["key"], f"PR: {title}", summary, payload)
+
+
 async def decide_approval(st, proj: Project, aid: int, decision: str, note: str | None, set_phase: str | None,
                           payload: dict | None = None) -> dict:
     a = proj.db.approval(aid)
@@ -914,6 +952,15 @@ async def decide_approval(st, proj: Project, aid: int, decision: str, note: str 
             applied = await asyncio.to_thread(branches.apply_branch, proj, feat, merged)
         except branches.BranchError as e:
             raise HTTPException(409, str(e))
+    pr = pr_merged = None
+    if decision == "approve" and is_pr_title(a["title"]) and feat:
+        # F-39 B3: push the branch and open the pull request BEFORE resolving, so a missing origin, gh or login is a 409 with
+        # the reason and the card stays pending for a retry
+        pr_merged = {**(a["payload"] or {}), **{k: v for k, v in (payload or {}).items() if k in branches.PR_EDITABLE}}
+        try:
+            pr = await asyncio.to_thread(branches.open_pr, proj, feat, pr_merged)
+        except branches.BranchError as e:
+            raise HTTPException(409, str(e))
     state = {"approve": "approved", "changes": "changes_requested", "reject": "rejected"}[decision]
     a = proj.db.resolve_approval(aid, state, note)
     extra = ""
@@ -929,9 +976,15 @@ async def decide_approval(st, proj: Project, aid: int, decision: str, note: str 
         proj.db.set_approval_payload(aid, await asyncio.to_thread(branches.approved_payload, proj, feat, merged, applied))
         proj.db.set_feature_branch(feat["id"], **{k: v for k, v in applied.items() if k != "warnings"})
         await proj.hub.broadcast("feature", proj.db.feature(feat["id"]))
+    if pr:
+        proj.db.set_approval_payload(aid, branches.approved_pr_payload(pr_merged, pr))
+        proj.db.set_feature_branch(feat["id"], pr_url=pr["url"], pr_state="open", pr_destination=pr["destination"])
+        await proj.hub.broadcast("feature", proj.db.feature(feat["id"]))
     if decision == "approve":
         text = (f"Approved: {a['title']}{extra}" + (f"\n\n{note}" if note else "")
-                + (f"\n\n{branches.lands_on(feat['key'], applied)}" if applied else ""))
+                + (f"\n\n{branches.lands_on(feat['key'], applied)}" if applied else "")
+                + (f"\n\nPull request {'already open' if pr['reused'] else 'opened'}: {pr['url']} "
+                   f"({pr['source']} → {pr['destination']})" if pr else ""))
     elif decision == "reject":  # F-25: "no, stop"; Changes requested means revise and ask again
         text = f"Rejected: {a['title']}" + (f"\n\n{note}" if note else "")
     else:
@@ -943,6 +996,94 @@ async def decide_approval(st, proj: Project, aid: int, decision: str, note: str 
     await proj.hub.broadcast("approval", a)
     await broadcast_inbox(proj)
     return a
+
+
+# ---- F-39 B3: pull requests after they are opened ------------------------------
+PR_POLL_S = 600  # the poller looks at every open pull request this often (and once at startup)
+log = logging.getLogger("aiteams.prs")
+
+
+def _feature_open(db: ProjectDB, fid: int) -> bool:
+    r = db.one("SELECT phase, archived FROM features WHERE id=?", fid)
+    return r is not None and r["phase"] != "done" and not r["archived"]
+
+
+async def _pr_merged(st, proj: Project, feat: dict, row: dict) -> None:
+    """The PR was merged on GitHub: its worktree goes (never --force, never while another open feature still works in it), the
+    feature leaves its lane, and the chat says what happened. The branch is never deleted (GitHub does that)."""
+    db, tree, url = proj.db, row["tree"], row["pr_url"]
+    db.set_feature_branch(feat["id"], pr_state="merged")
+    lead, conv, note, dirty = feat.get("lead") or "lead", feat["conversation_id"], "", []
+    if tree and row["tree_state"] == "live":
+        sharers = [f"F-{r['feature_id']}" for r in db.feature_branches()
+                   if r["tree"] == tree and r["feature_id"] != feat["id"] and r["tree_state"] == "live"
+                   and _feature_open(db, r["feature_id"])]
+        if sharers:
+            note = f"The worktree {branches.tilde(tree)} stays: {', '.join(sharers)} still work in it."
+        else:
+            result, dirty = await asyncio.to_thread(branches.remove_tree, proj.path, tree)
+            for r in db.feature_branches():  # every row on this tree: they share the one folder
+                if r["tree"] == tree:
+                    db.set_feature_branch(r["feature_id"], tree_state=result)
+            note = (f"Worktree {branches.tilde(tree)} removed; the branch {row['branch']} stays (GitHub deletes it)."
+                    if result == "removed" else f"Worktree {branches.tilde(tree)} kept: it has changes git won't delete.")
+    await _post(st, proj, conv, "system", f"Pull request merged: {url}" + (f"\n\n{note}" if note else ""), "System", [])
+    if dirty:
+        await _post(st, proj, conv, "system",
+                    f"{feat['key']}'s pull request merged, but its worktree {branches.tilde(tree)} was kept because git won't "
+                    f"delete it:\n" + "\n".join(f"- `{x}`" for x in dirty[:20])
+                    + f"\n\nCommit or discard these, then run `git worktree remove {tree}`.", "Finding", [lead])
+    if branches.tree_for(db, feat["id"]) is None:  # no tree of its own any more: its lane session closes, wakes go to main
+        gone = db.retire_lane(feat["key"])
+        if gone["roles"] or gone["moved"]:
+            await _broadcast_team(st, proj)
+    await proj.hub.broadcast("feature", db.feature(feat["id"]))
+
+
+async def refresh_pr(st, proj: Project, feat: dict) -> dict:
+    """One look at the feature's open pull request on GitHub (the poller and the header's refresh button): merged → cleanup,
+    closed → the Lead is told, open → nothing. Raises branches.BranchError when gh can't answer. Returns the branch row."""
+    db = proj.db
+    row = db.feature_branch(feat["id"])
+    if not row or row["pr_state"] != "open" or not row["pr_url"]:
+        return row or {}
+    state = await asyncio.to_thread(branches.pr_remote_state, proj.path, row["pr_url"])
+    row = db.feature_branch(feat["id"])
+    if state == "OPEN" or row["pr_state"] != "open":  # or a second refresh already handled it
+        return row
+    if state == "MERGED":
+        await _pr_merged(st, proj, feat, row)
+    else:
+        db.set_feature_branch(feat["id"], pr_state="closed")
+        await _post(st, proj, feat["conversation_id"], "system",
+                    f"Pull request closed without merging: {row['pr_url']}. The worktree stays.", "System",
+                    [feat.get("lead") or "lead"])
+        await proj.hub.broadcast("feature", db.feature(feat["id"]))
+    return db.feature_branch(feat["id"])
+
+
+async def poll_prs_once(st) -> None:
+    for proj in list(st.projects.values()):
+        if proj.schema_ahead:
+            continue
+        try:
+            rows = [r for r in proj.db.feature_branches() if r["pr_state"] == "open" and r["pr_url"]]
+        except Exception:
+            log.exception("PR poll: could not read the feature branches of %s", proj.id)
+            continue
+        for r in rows:
+            try:
+                await refresh_pr(st, proj, proj.db.feature(r["feature_id"]))
+            except Exception as e:  # a failed look is retried next round, never posted
+                log.warning("PR poll: %s %s: %s", proj.id, r["pr_url"], e)
+
+
+async def poll_prs(st, interval: float | None = None) -> None:
+    """The daemon's own task (not the scheduler's): look at every open pull request once at startup, then every `interval`
+    (PR_POLL_S, read at each round)."""
+    while True:
+        await poll_prs_once(st)
+        await asyncio.sleep(PR_POLL_S if interval is None else interval)
 
 
 # ---- commits -----------------------------------------------------------------

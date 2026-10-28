@@ -1,6 +1,7 @@
 """FastAPI app factory: lifespan (recover/shutdown), routers, static UI."""
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from contextlib import asynccontextmanager
@@ -10,7 +11,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config
+from . import config, workflow
 from .api.features import feat_api
 from .api.internal import internal
 from .api.skills import skills
@@ -32,11 +33,14 @@ def create_app(port: int, write_daemon_json: bool = True) -> FastAPI:
         state.scheduler = Scheduler(state)
         await state.scheduler.recover()
         state.scheduler.start()
+        pr_poll = asyncio.create_task(workflow.poll_prs(state))  # F-39 B3: merged pull requests clean up their worktree
         if write_daemon_json:
             config.save_daemon(os.getpid(), port, time.time())
         try:
             yield
         finally:
+            pr_poll.cancel()
+            await asyncio.gather(pr_poll, return_exceptions=True)
             await state.scheduler.shutdown()
             for p in state.projects.values():
                 p.db.close()

@@ -188,6 +188,40 @@ def test_fire_branch_card_and_the_gate_that_starts_after_the_seed(sandbox, monke
         assert o["worktrees"] == [] and isinstance(o["branches"], list) and o["current"]
 
 
+def test_fire_pr_card_files_a_real_pr_card_on_a_real_worktree_and_approve_fails_without_origin(sandbox):
+    """F-39 B3: `pr_card` gives a feature without a branch a real worktree with commits, then files the PR card through the real
+    request_pr; the sandbox repo has no origin, so Approve is the real 409. With `pr_state` it sets the header chip instead."""
+    mod, work, _ = sandbox
+    app = mod.build_app(8790, work, "demo")
+    auth = {"Authorization": "Bearer sb-token"}
+    with TestClient(app) as c:
+        r = c.post("/qa/fire", json={"kind": "pr_card"}, headers=auth)
+        assert r.status_code == 200, r.text
+        r = r.json()
+        p = r["payload"]
+        assert r["feature"] == "F-1" and (p["source"], p["destination"]) == ("feat/f1-demo", "main")
+        assert [x["subject"] for x in p["commits"]] == ["docs: note 3 for F-1", "docs: note 2 for F-1", "docs: note 1 for F-1"]
+        f1 = next(x for x in c.get("/api/p/demo/features", headers=auth).json() if x["key"] == "F-1")
+        assert (f1["branch"]["state"], f1["branch"]["mode"], f1["branch"]["tree_state"]) == ("approved", "new", "live")
+        assert os.path.isdir(f1["branch"]["tree"]) and f1["branch"]["tree"].endswith(os.sep + "f1")
+        card = next(a for a in c.get("/api/p/demo/inbox", headers=auth).json()["approvals"] if a["id"] == r["approval"])
+        assert card["title"].startswith("PR: ") and card["payload"]["commits"] == p["commits"]
+        d = c.post(f"/api/p/demo/approvals/{r['approval']}/decide", json={"decision": "approve"}, headers=auth)
+        assert d.status_code == 409 and "no `origin` remote" in d.json()["detail"]
+        again = c.post("/qa/fire", json={"kind": "pr_card"}, headers=auth)
+        assert again.status_code in (400, 409) or "already waiting" in again.text  # a PR card is already waiting on F-1
+        c.post(f"/api/p/demo/approvals/{r['approval']}/decide", json={"decision": "reject"}, headers=auth)
+        r = c.post("/qa/fire", json={"kind": "pr_card", "pr_state": "merged", "pr_url": "https://github.com/acme/demo/pull/9"},
+                   headers=auth)
+        assert r.status_code == 200 and "approval" not in r.json()  # the chip only, no card
+        b = next(x for x in c.get("/api/p/demo/features", headers=auth).json() if x["key"] == "F-1")["branch"]
+        assert (b["pr_state"], b["pr_url"], b["pr_destination"]) == ("merged", "https://github.com/acme/demo/pull/9", "main")
+        assert c.post("/qa/fire", json={"kind": "pr_card", "pr_state": "weird"}, headers=auth).status_code == 400
+        r = c.post("/qa/fire", json={"kind": "pr_card", "state": "open"}, headers=auth)  # `state` works as the short name
+        assert r.status_code == 200 and next(x for x in c.get("/api/p/demo/features", headers=auth).json()
+                                             if x["key"] == "F-1")["branch"]["pr_state"] == "open"
+
+
 def test_fire_commit_group(sandbox):
     mod, work, _ = sandbox
     app = mod.build_app(8790, work, "demo")

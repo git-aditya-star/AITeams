@@ -128,6 +128,36 @@ async def branch_check(request: Request, pid: str, mode: str = "new", branch: st
     return await asyncio.to_thread(branches.check, proj.path, proj.db, mode, branch, base, shared_from)
 
 
+@feat_api.get("/p/{pid}/branches/pr-preview")
+async def pr_preview(request: Request, pid: str, feature: str, destination: str | None = None):
+    """F-39 B3: what the PR card shows, computed now: the feature's branch, the chosen destination, the branches to pick from
+    and the commits it would carry (`errors` says why a PR can't be opened yet). `feature` is F-n or the number."""
+    proj = _project(request, pid)
+    feat = workflow.resolve_feature(proj.db, feature)
+    if feat is None:
+        raise HTTPException(400, "feature required")
+    try:
+        return await asyncio.to_thread(branches.pr_preview, proj, feat, destination)
+    except branches.BranchError as e:
+        raise HTTPException(400, str(e))
+
+
+@feat_api.post("/p/{pid}/features/{fid}/pr/refresh")
+async def pr_refresh(request: Request, pid: str, fid: int):
+    """F-39 B3: the header's PR chip: look at the pull request on GitHub now instead of at the next poll. Returns the
+    feature (its `branch` carries the new pr_state / tree_state)."""
+    proj = _project(request, pid)
+    feat = _feature(proj, fid)
+    row = proj.db.feature_branch(feat["id"])
+    if not row or not row["pr_url"]:
+        raise HTTPException(400, f"{feat['key']} has no pull request to refresh")
+    try:
+        await workflow.refresh_pr(_state(request), proj, feat)
+    except branches.BranchError as e:
+        raise HTTPException(409, str(e))
+    return proj.db.feature(feat["id"])
+
+
 @feat_api.get("/p/{pid}/commits")
 def commits(request: Request, pid: str, state: str = "all", feature: int | None = None):
     if state != "all" and state not in workflow.COMMIT_STATES:

@@ -112,6 +112,13 @@ class InternalBranchBody(BaseModel):
     why: str = ""
 
 
+class InternalPRBody(BaseModel):
+    feature: str
+    destination: str | None = None  # the branch the PR goes to; default: the one the feature started from
+    title: str = Field(min_length=1)
+    body: str = ""
+
+
 class InternalCommitBody(BaseModel):
     feature: str | None = None
     files: list[str]

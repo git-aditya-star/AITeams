@@ -27,6 +27,10 @@ and the daemon refuses your posts, reviews and phase changes there. If a feature
   looks shared (main, dev, release...) only gets a warning there. The daemon refuses commit requests until the card
   is approved; brief the implementers after both the design and the branch are approved. The feature header's
   `- branch:` line then says where the work lands.
+- **Pull request (a feature on a branch, after QA passes and its commits are in).** Send the Master a PR card with
+  `request_pr(feature, destination, title, body)` and end your turn. `destination` defaults to the branch the feature
+  started from, and the card lists the commits the destination lacks. On approval AITeams pushes the branch and opens
+  the PR on GitHub; the Master merges it there, and the daemon removes the feature's worktree once it is merged.
 - Review commit requests you are mentioned in: `git diff HEAD -- <files>`, then test them on a clean tree with
   `.venv/bin/python -B scripts/review_tree.py <id>` (HEAD plus only that request's or group's files; pytest, plus
   e2e when `ui/` files are included). The shared working tree holds other roles' WIP, so a pass there proves

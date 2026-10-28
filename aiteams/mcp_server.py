@@ -130,6 +130,17 @@ TOOLS = [
          "feature": {"type": "string"}, "mode": {"type": "string", "enum": ["new", "current", "shared"], "default": "new"},
          "branch": {"type": "string"}, "base": {"type": "string"}, "shared_from": {"type": "string"},
          "why": {"type": "string"}}, "required": ["feature"]}},
+    {"name": "request_pr",
+     "description": "Lead only, for your own feature, after QA passes: ask the Master to open a pull request for the "
+                    "feature's branch, as a PR card in their Inbox (end your turn afterwards). `destination` is the branch "
+                    "it goes to (default: the one the feature started from, else main); `title` and `body` are the PR's. "
+                    "The card lists the commits the branch has that the destination lacks; the Master may edit all three. "
+                    "On approval AITeams pushes the branch to origin and opens the PR on GitHub with `gh`; the Master "
+                    "merges it there, and the feature's worktree is removed once it is merged. Refused when the feature "
+                    "has no confirmed branch, the branch has no new commits, or it already has an open PR.",
+     "inputSchema": {"type": "object", "properties": {
+         "feature": {"type": "string"}, "destination": {"type": "string"}, "title": {"type": "string"},
+         "body": {"type": "string"}}, "required": ["feature", "title"]}},
     {"name": "request_commit",
      "description": "Request a commit of exactly these files (paths relative to the project root) with a message "
                     "'<type>(<area>): <subject>' (Conventional Commits: feat|fix|docs|test|refactor|chore, no feature id) "
@@ -328,6 +339,12 @@ def tool_propose_branch(a):
     return "Branch card #%s pending; end your turn, the Master will answer in the Inbox" % res["id"]
 
 
+def tool_request_pr(a):
+    res = http("POST", "/internal/prs", {"feature": _feat(a), "destination": a.get("destination"),
+                                         "title": str(a.get("title") or ""), "body": str(a.get("body") or "")})
+    return "PR card #%s pending; end your turn, the Master will answer in the Inbox" % res["id"]
+
+
 def tool_request_commit(a):
     res = http("POST", "/internal/commits", {"feature": _feat(a), "files": [str(f) for f in (a.get("files") or [])],
                                              "message": str(a.get("message") or ""),
@@ -402,7 +419,7 @@ HANDLERS = {"post_message": tool_post_message, "get_messages": tool_get_messages
             "list_conversations": tool_list_conversations, "permission": tool_permission,
             "list_features": tool_list_features, "get_feature": tool_get_feature,
             "create_feature": tool_create_feature, "set_feature": tool_set_feature,
-            "request_approval": tool_request_approval, "propose_branch": tool_propose_branch,
+            "request_approval": tool_request_approval, "propose_branch": tool_propose_branch, "request_pr": tool_request_pr,
             "ask_master": tool_ask_master,
             "withdraw_request": tool_withdraw_request, "start_brainstorm": tool_start_brainstorm,
             "request_commit": tool_request_commit,

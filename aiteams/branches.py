@@ -8,9 +8,12 @@ resolved, so a failure leaves the card pending. Nothing here ever refuses a "sha
 the card warns and the Master decides ("ask me each time", card #47)."""
 from __future__ import annotations
 
+import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 
 SHARED_RE = re.compile(r"^(origin/)?(main|master|trunk|dev|develop.*|development.*|release.*|staging|stage|production|prod|"
                        r"hotfix.*)(/.*)?$", re.IGNORECASE)
@@ -18,6 +21,12 @@ MODES = ("new", "current", "shared")
 EDITABLE = ("mode", "branch", "base", "shared_from")  # what the Master may change on the card
 LINKED = (".venv", os.path.join("ui", "node_modules"))  # untracked tooling the tree borrows from the main folder
 FETCH_TIMEOUT_S = 10
+PR_EDITABLE = ("destination", "title", "body")  # what the Master may change on a PR card
+PR_COMMITS_MAX = 50
+GH_TIMEOUT_S = 15  # a quick gh call: the auth check and the merge poll
+PUSH_TIMEOUT_S = 120
+PR_CREATE_TIMEOUT_S = 60
+GITHUB_URL = re.compile(r"^(?:(?:https?|ssh|git)://(?:[^@/\s]+@)?|[^@/\s]+@)github\.com(?::|/|$)", re.IGNORECASE)
 
 
 class BranchError(Exception):
@@ -236,3 +245,222 @@ def lands_on(key: str, info: dict) -> str:
     """The line the Decision to the Lead (and the card) says: where this feature's commits go."""
     where = f"in {tilde(info['tree'])}" if info.get("tree") else "in the main folder"
     return f"Work on {key} lands on {info['branch']} {where}."
+
+
+# ---- F-39 B3: the pull request (push + gh pr create) and cleanup on merge ----------------------------------------------
+def _cli_env() -> dict:
+    """The daemon has no terminal: a credential prompt must fail with a message, never hang a worker thread."""
+    return {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GH_PROMPT_DISABLED": "1", "NO_COLOR": "1"}
+
+
+def _run(cmd: list[str], cwd: str, timeout: float) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=timeout, env=_cli_env())
+    except subprocess.TimeoutExpired:
+        raise BranchError(f"`{' '.join(cmd[:3])}` didn't answer in {int(timeout)} s; check the network and retry")
+    except OSError as e:
+        raise BranchError(f"`{cmd[0]}` could not run: {e}")
+
+
+def gh(cwd: str, *args: str, timeout: float = GH_TIMEOUT_S) -> subprocess.CompletedProcess:
+    return _run(["gh", *args], cwd, timeout)
+
+
+def _tail(r: subprocess.CompletedProcess) -> str:
+    text = ((r.stderr or "").strip() + "\n" + (r.stdout or "").strip()).strip()
+    return text[-600:] if len(text) > 600 else text
+
+
+def is_github_url(url: str | None) -> bool:
+    return bool(GITHUB_URL.match((url or "").strip()))
+
+
+def origin_urls(repo: str) -> list[str]:
+    """origin's URL as written in the config and as git expands it (`insteadOf`); empty when there is no origin."""
+    raw = git(repo, "config", "--get", "remote.origin.url").stdout.strip()
+    expanded = git(repo, "remote", "get-url", "origin")
+    out = [u for u in (raw, expanded.stdout.strip() if expanded.returncode == 0 else "") if u]
+    return list(dict.fromkeys(out))
+
+
+def pr_preflight(root: str) -> None:
+    """The four things that must hold before AITeams pushes anything, each failing with a sentence the Master can act on."""
+    urls = origin_urls(root)
+    if not urls:
+        raise BranchError("this repo has no `origin` remote; add one (`git remote add origin …`) and retry")
+    if shutil.which("gh") is None:
+        raise BranchError("the GitHub CLI `gh` isn't installed (`brew install gh`)")
+    if gh(root, "auth", "status", "--hostname", "github.com").returncode != 0:
+        raise BranchError("`gh` isn't logged in; run `gh auth login` and retry")
+    if not any(is_github_url(u) for u in urls):
+        raise BranchError("origin isn't a GitHub remote; only GitHub is supported")
+
+
+def bare_branch(name: str | None) -> str:
+    """A destination as `gh --base` wants it: no `origin/` prefix."""
+    name = (name or "").strip()
+    return name[len("origin/"):] if name.startswith("origin/") else name
+
+
+def dest_ref(repo: str, dest: str) -> str | None:
+    """The ref a PR into `dest` is measured against: origin's copy when there is one (what GitHub compares), else a local branch."""
+    for ref in (f"origin/{dest}", dest):
+        if resolves(repo, ref):
+            return ref
+    return None
+
+
+def commits_ahead(repo: str, source: str, dest: str, limit: int = PR_COMMITS_MAX) -> list[dict]:
+    """[{sha, subject}], newest first: what `source` has that `dest` lacks. Raises BranchError when the pair can't be a PR
+    (the same branch, an unknown destination, nothing to propose)."""
+    if source == dest:
+        raise BranchError(f"{source} is both the branch and the destination; pick another destination")
+    ref = dest_ref(repo, dest)
+    if ref is None:
+        raise BranchError(f"the destination {dest} doesn't exist (no origin/{dest} and no local {dest})")
+    r = git(repo, "log", f"--max-count={limit}", "--format=%h%x09%s", f"{ref}..{source}")
+    if r.returncode != 0:
+        raise BranchError((r.stderr or r.stdout).strip() or f"git log {ref}..{source} failed")
+    commits = []
+    for line in r.stdout.splitlines():
+        sha, _, subject = line.partition("\t")
+        if sha:
+            commits.append({"sha": sha, "subject": subject})
+    if not commits:
+        raise BranchError(f"{source} has no commits that {dest} lacks, so there is nothing to open a pull request for")
+    return commits
+
+
+def default_destination(repo: str, row: dict) -> str:
+    """The branch a PR goes to unless told otherwise: the one the feature started from, else the repo's main branch."""
+    for cand in (bare_branch(row.get("base")), bare_branch(default_base(repo))):
+        if cand and cand != row["branch"] and dest_ref(repo, cand):
+            return cand
+    return bare_branch(default_base(repo)) or "main"
+
+
+def work_dir(proj, feature_id: int) -> str:
+    return tree_for(proj.db, feature_id) or proj.path
+
+
+def pr_preview(proj, feat: dict, destination: str | None = None) -> dict:
+    """GET /branches/pr-preview: what the PR card shows: `source`, the chosen `destination`, `branches` to pick from (`[{name, remote}]`
+    as /branches, plain names: origin's branches, else local ones), the `commits` it would carry and `errors` (empty when a PR
+    can be opened)."""
+    row = proj.db.feature_branch(feat["id"])
+    if row is None:
+        raise BranchError(f"{feat['key']} has no confirmed branch yet; the Lead sends a Branch card (propose_branch) first")
+    root = work_dir(proj, feat["id"])
+    dest = bare_branch(destination) or default_destination(root, row)
+    errors, commits = [], []
+    try:
+        commits = commits_ahead(root, row["branch"], dest)
+    except BranchError as e:
+        errors.append(str(e))
+    lb = list_branches(root)
+    remote = [n[len("origin/"):] for n in lb["remote"] if n.startswith("origin/")]
+    names = [{"name": n, "remote": bool(remote)} for n in dict.fromkeys(remote or lb["local"]) if n != row["branch"]]
+    if dest != row["branch"] and dest not in [b["name"] for b in names]:
+        names.insert(0, {"name": dest, "remote": False})  # the chosen one is always offered, even if only local
+    return {"source": row["branch"], "destination": dest, "branches": names, "commits": commits, "errors": errors,
+            "pr_url": row["pr_url"], "pr_state": row["pr_state"]}
+
+
+def _pr_url(text: str) -> str | None:
+    for line in reversed([x.strip() for x in (text or "").splitlines() if x.strip()]):
+        if re.match(r"^https?://\S+$", line):
+            return line
+    return None
+
+
+def open_pr(proj, feat: dict, payload: dict) -> dict:
+    """On approving a PR card (blocking, run in a thread): pre-checks, a push of the branch to origin, then `gh pr create`
+    (an existing PR for the branch is reused). Returns {url, state, source, destination, title, body, commits, reused}.
+    Raises BranchError with the reason on any failure; the card then stays pending so the Master can fix it and retry. The
+    source is the feature's own branch, never the payload's."""
+    row = proj.db.feature_branch(feat["id"])
+    if row is None:
+        raise BranchError(f"{feat['key']} has no confirmed branch, so there is nothing to push")
+    source = row["branch"]
+    dest = bare_branch(payload.get("destination"))
+    title = " ".join((payload.get("title") or "").split())
+    body = payload.get("body") or ""
+    if not dest:
+        raise BranchError("name the branch the pull request goes to")
+    if not title:
+        raise BranchError("the pull request needs a title")
+    root = work_dir(proj, feat["id"])
+    if git(root, "check-ref-format", "--branch", dest).returncode != 0:
+        raise BranchError(f"'{dest}' is not a valid branch name")
+    pr_preflight(root)
+    commits = commits_ahead(root, source, dest)
+    r = _run(["git", "push", "-u", "origin", source], root, PUSH_TIMEOUT_S)
+    if r.returncode != 0:
+        raise BranchError(f"pushing {source} to origin failed: {_tail(r) or 'no message'}")
+    fd, body_file = tempfile.mkstemp(prefix="aiteams-pr-", suffix=".md")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(body)
+        r = gh(root, "pr", "create", "--base", dest, "--head", source, "--title", title, "--body-file", body_file,
+               timeout=PR_CREATE_TIMEOUT_S)
+        reused = False
+        url = _pr_url(r.stdout) if r.returncode == 0 else None
+        if r.returncode == 0 and not url:
+            raise BranchError(f"gh made the pull request but printed no URL: {_tail(r)}")
+        if r.returncode != 0:
+            if "already exists" not in _tail(r).lower():
+                raise BranchError(f"gh pr create failed: {_tail(r) or 'no message'}")
+            v = gh(root, "pr", "view", source, "--json", "url,state")
+            info = {}
+            if v.returncode == 0:
+                try:
+                    info = json.loads(v.stdout)
+                except ValueError:
+                    pass
+            if not info.get("url") or str(info.get("state", "OPEN")).upper() != "OPEN":
+                raise BranchError(f"gh says a pull request for {source} already exists, but it can't be reused: "
+                                  f"{_tail(v) or _tail(r)}")
+            url, reused = info["url"], True
+    finally:
+        try:
+            os.unlink(body_file)
+        except OSError:
+            pass
+    return {"url": url, "state": "open", "source": source, "destination": dest, "title": title, "body": body,
+            "commits": commits, "reused": reused}
+
+
+def approved_pr_payload(merged: dict, done: dict) -> dict:
+    """What a decided PR card shows: the edited choice that was opened, with its link (`pr_url`, `pr_state`, as on the feature)."""
+    return {**merged, "source": done["source"], "destination": done["destination"], "title": done["title"],
+            "body": done["body"], "commits": done["commits"], "pr_url": done["url"], "pr_state": done["state"]}
+
+
+def pr_remote_state(repo: str, url: str) -> str:
+    """OPEN | MERGED | CLOSED, from `gh pr view <url> --json state`. Raises BranchError when gh can't say."""
+    if shutil.which("gh") is None:
+        raise BranchError("the GitHub CLI `gh` isn't installed (`brew install gh`)")
+    r = gh(repo, "pr", "view", url, "--json", "state", timeout=GH_TIMEOUT_S)
+    if r.returncode != 0:
+        raise BranchError(f"gh pr view failed: {_tail(r) or 'no message'}")
+    try:
+        state = str(json.loads(r.stdout).get("state", "")).upper()
+    except ValueError:
+        state = ""
+    if state not in ("OPEN", "MERGED", "CLOSED"):
+        raise BranchError(f"gh pr view gave no usable state: {_tail(r)}")
+    return state
+
+
+def remove_tree(repo: str, tree: str) -> tuple[str, list[str]]:
+    """`git worktree remove` without --force, run from the main folder. ("removed", []) on success (a folder that is
+    already gone is pruned); ("kept", why) when git refuses: the dirty files, or git's own message."""
+    if not os.path.isdir(tree):
+        git(repo, "worktree", "prune")
+        return "removed", []
+    r = git(repo, "worktree", "remove", tree)
+    if r.returncode == 0:
+        return "removed", []
+    dirty = [x for x in git(tree, "status", "--porcelain").stdout.splitlines() if x.strip()]
+    return "kept", dirty or [(r.stderr or r.stdout).strip() or "git worktree remove refused"]
