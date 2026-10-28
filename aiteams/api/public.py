@@ -211,6 +211,8 @@ async def post_message(st, proj: Project, conversation: str, author: str, text: 
         await receipts.mark(proj.db, proj.hub, [msg["id"]], w["role"], "queued")
     msg = proj.db.message(msg["id"])
     await proj.hub.broadcast("message", msg)
+    if conv["kind"] == "feature":  # F-38: someone spoke, so a stall that waited on the old newest message is over
+        await workflow._recheck(st, proj, (proj.db.feature(conv["id"]) or {}).get("id"))
     if wakes and st.scheduler:
         st.scheduler.notify()
     if pick_line:  # after the message itself

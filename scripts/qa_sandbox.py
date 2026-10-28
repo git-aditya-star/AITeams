@@ -28,7 +28,7 @@ DEFAULT_TOKEN = "qa-sandbox-token"
 FIRE_KINDS = ("message", "question", "question_message", "blocker", "approval", "commit_request", "committed",
               "commit_failed", "standup", "stopped", "interrupted", "fresh_session", "rate_limit", "rate_clear",
               "reaction", "card", "card_withdraw", "withdraw", "brainstorm", "commit_group", "plugin_missing",
-              "turn_event")
+              "turn_event", "stall_check", "long_turn")
 
 
 def isolate_env(home: Path, token: str) -> None:
@@ -468,6 +468,20 @@ async def fire(st, proj, body: dict) -> dict:
         feat = db.feature(item["feature_id"]) if item.get("feature_id") else None
         out.update(conversation=item.get("conversation_id") or (feat["conversation_id"] if feat else f"dm-{item['role']}"),
                    item=what, id=item["id"], state=item["state"], note=item["note"])
+    elif kind == "stall_check":
+        # F-38: run the idle check for the demo project (it has no turns): one rung of the ladder per fire
+        from aiteams import stalls
+        out.update(changes=await stalls.on_idle(st, proj))
+    elif kind == "long_turn":
+        # F-38: a wake for {role} that has been queued {minutes} minutes (the sandbox runs no turns), then the long-turn check
+        from aiteams import stalls
+        from aiteams.orchestrator import lifecycle
+        r, minutes = body.get("role", "backend"), float(body.get("minutes", 25))
+        w = db.add_wake(r, f"dm-{r}", [], "system")
+        db.x("UPDATE wake_queue SET created_at=? WHERE id=?", time.time() - minutes * 60, w["id"])
+        flagged = st.scheduler.flagged if st.scheduler else set()
+        out.update(role=r, wake=w["id"], flagged=await stalls.flag_long_turns(st, proj, flagged))
+        await lifecycle.broadcast_team(st, proj)
     elif kind == "commit_group":
         # F-11: a backend request + a frontend request that requires it, both Lead-approved (one Inbox item) unless
         # {lead_review: true} leaves the frontend half in Lead review (the group isn't ready)

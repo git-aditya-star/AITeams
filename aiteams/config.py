@@ -56,6 +56,7 @@ DEFAULT_SETTINGS = {
     "max_turns": 100,  # F-37: claude's --max-turns for a normal turn; turn_timeout_s is the real wall-clock guard
     "max_turn_continues": 2,  # F-37: how many capped turns in a row a role is re-woken automatically
     "turn_timeout_s": 1200,
+    "stuck_turn_s": 1200,  # F-38: a turn running or a wake queued this long is flagged to the Manager (never stopped)
     "rotate_pct": 0.6,
     "stale_hours": 4,
     "fail_streak_rotate": 3,

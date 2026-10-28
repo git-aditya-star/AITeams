@@ -116,11 +116,11 @@ def test_dashboard_waits_on_and_stale(client, pid, repo):
     d = client.get(f"/api/p/{pid}/dashboard").json()
     w = {f["key"]: f["waits_on"] for f in d["features"]}
     assert w["F-1"]["kind"] == "approval" and w["F-1"]["who"] == "master"
-    assert w["F-2"] == {"kind": "review", "who": "lead", "since": w["F-2"]["since"]}
+    assert w["F-2"] == {"kind": "review", "who": "lead", "since": w["F-2"]["since"], "ref": "commit:1"}  # F-38: + ref
     assert w["F-3"]["kind"] == "commit" and w["F-3"]["who"] == "master"
     assert w["F-4"]["kind"] == "question" and w["F-4"]["who"] == "master"
     assert w["F-5"] == {"kind": "queued", "who": "frontend", "since": None}
-    assert w["F-6"]["kind"] == "message" and w["F-6"]["who"] == "qa"
+    assert w["F-6"]["kind"] == "message" and w["F-6"]["who"] == "qa" and w["F-6"]["ref"].startswith("msg:")
     assert w["F-7"] is None
     assert d["needs_you"] == {"questions": 1, "approvals": 1, "commits": 1, "messages": 0, "total": 3}
     assert d["phase_counts"]["intake"] == 7 and d["standup"] is None and d["last_standup"] is None

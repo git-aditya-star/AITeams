@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import time
 
+from .. import stalls
 from . import lifecycle
 from .claude_proc import kill_orphan
 from .turn import TurnRunner
@@ -14,6 +15,7 @@ class Scheduler:
         self.state = state
         self.running: dict[tuple[str, str], TurnRunner] = {}
         self.stopping = False
+        self.flagged: set = set()  # F-38: (project id, "turn"|"wake", id) of the long turns already reported
         self._wake = asyncio.Event()
         self._task: asyncio.Task | None = None
 
@@ -28,6 +30,7 @@ class Scheduler:
         while not self.stopping:
             try:
                 self._tick()
+                await self._flag_long()
             except Exception as e:  # keep the loop alive
                 print("scheduler tick error:", e)
             self._wake.clear()
@@ -70,6 +73,15 @@ class Scheduler:
             self.running[key] = runner
             runner.task = asyncio.create_task(self._run(key, runner))
 
+    async def _flag_long(self) -> None:
+        """F-38: report (once each) a turn running, or a wake queued, past `stuck_turn_s`. Never stops anything. It runs
+        beside _tick (every 5 s at most); a paused or rate-limited project is waiting by design, so it isn't flagged."""
+        if self.stopping or self.state.rate_limit_active():
+            return
+        for proj in list(self.state.projects.values()):
+            if not (proj.paused or proj.schema_ahead):
+                await stalls.flag_long_turns(self.state, proj, self.flagged)
+
     async def _run(self, key, runner: TurnRunner) -> None:
         try:
             await runner.run()
@@ -92,6 +104,11 @@ class Scheduler:
                 print("after_turn error:", e)
             if runner.interrupt_reason == "shutdown":
                 await self.requeue_once(runner.project, runner.wake, runner.role)
+            elif not self.stopping:
+                try:  # F-38: the last turn of an idle project just ended; anything still waiting on a role climbs a rung
+                    await stalls.check_idle(self.state, runner.project)
+                except Exception as e:
+                    print("stalls error:", e)
             self.notify()
 
     def stop(self, pid: str, role: str, reason: str, note: str | None = None) -> bool:
@@ -142,6 +159,10 @@ class Scheduler:
             for role in [r["role"] for r in db.q("SELECT role FROM role_state WHERE rotate_handoff=1")]:
                 if not db.queued_wake(role, "handoff"):
                     db.add_wake(role, "dm-" + role, [], "system", kind="handoff")
+            try:  # F-38: once at daemon start, for a project that came up idle
+                await stalls.check_idle(self.state, proj)
+            except Exception as e:
+                print("stalls error:", e)
         self.notify()
 
     async def shutdown(self) -> None:

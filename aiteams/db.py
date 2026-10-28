@@ -569,7 +569,37 @@ class ProjectDB:
         d["key"] = f"F-{d['id']}"
         d["archived"] = bool(d["archived"])
         d["design"] = self.design_info(d["id"], d["created_at"], gate_since)
+        d["stall"] = self.stall_info(d["id"])
         return d
+
+    # ---- F-38: the stall ladder (one row per feature) ----------------------
+    def stall_row(self, fid: int) -> dict | None:
+        r = self.one("SELECT * FROM stalls WHERE feature_id=?", fid)
+        return dict(r) if r else None
+
+    def stall_rows(self) -> list[dict]:
+        return [dict(r) for r in self.q("SELECT * FROM stalls ORDER BY feature_id")]
+
+    def stall_info(self, fid: int) -> dict | None:
+        """What a feature row carries as `stall`: {who, kind, ref, step, stuck, since}, or None. `since` is when this
+        (who, ref) started waiting; `stuck` is step 3 (nudged, the Manager told, nothing moved)."""
+        r = self.stall_row(fid)
+        return None if r is None else {"who": r["who"], "kind": r["kind"], "ref": r["ref"], "step": r["step"],
+                                       "stuck": r["step"] >= 3, "since": r["created_at"]}
+
+    def set_stall(self, fid: int, who: str, kind: str, ref: str, step: int) -> dict:
+        """Write the ladder row. The same (who, ref) keeps its `created_at` (it is still the same wait); a new one starts now."""
+        now, cur = time.time(), self.stall_row(fid)
+        created = cur["created_at"] if cur and (cur["who"], cur["ref"]) == (who, ref) else now
+        self.x("INSERT OR REPLACE INTO stalls(feature_id, who, kind, ref, step, created_at, updated_at) VALUES(?,?,?,?,?,?,?)",
+               fid, who, kind, ref, step, created, now)
+        return self.stall_info(fid)
+
+    def delete_stall(self, fid: int) -> bool:
+        had = self.stall_row(fid) is not None
+        if had:
+            self.x("DELETE FROM stalls WHERE feature_id=?", fid)
+        return had
 
     def design_info(self, fid: int, created_at: float | None, gate_since=False) -> dict:
         """F-21: {state, approval_id, gated} from the feature's latest approval titled `Design:`. State is approved |
@@ -953,4 +983,7 @@ MIGRATIONS: list = [
     _migration_10,
     # F-34: the reason a role gave when it withdrew a question card (approvals and commits already have `note`)
     "ALTER TABLE questions ADD COLUMN note TEXT NULL",
+    # F-38: one row per feature whose conversation is waiting on a role while the team is idle (the nudge ladder)
+    "CREATE TABLE stalls(feature_id INTEGER PRIMARY KEY, who TEXT NOT NULL, kind TEXT NOT NULL, ref TEXT NOT NULL,"
+    " step INTEGER NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL)",
 ]

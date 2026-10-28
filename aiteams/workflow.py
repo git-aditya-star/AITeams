@@ -677,6 +677,7 @@ async def withdraw_request(st, proj: Project, role: str, kind: str, rid: int, re
     if kind == "approval":
         await _broadcast_design(proj, item)  # a withdrawn redesign request changes the feature's design chip
     await broadcast_inbox(proj)
+    await _recheck(st, proj, item.get("feature_id"))
     return item
 
 
@@ -964,6 +965,7 @@ async def request_commit(st, proj: Project, role: str, turn_id: int | None, feat
                     new.append(n)
             await proj.hub.broadcast("commit", db.update_commit(d["id"], requires=json.dumps(new)))
     await broadcast_inbox(proj)
+    await _recheck(st, proj, c["feature_id"])
     return c
 
 
@@ -1064,6 +1066,7 @@ async def review_commit(st, proj: Project, role: str, cid: int, decision: str, n
                         f"commit:{cid}")
     await proj.hub.broadcast("commit", c)
     await broadcast_inbox(proj)
+    await _recheck(st, proj, c["feature_id"])
     return c
 
 
@@ -1250,6 +1253,7 @@ async def decide_commit(st, proj: Project, cid: int, decision: str, message: str
             await _post(st, proj, conv, "master", f"{at} Commit #{cid} failed:\n```\n{out}\n```", "Decision", who)
     await proj.hub.broadcast("commit", c)
     await broadcast_inbox(proj)
+    await _recheck(st, proj, c["feature_id"])
     return c
 
 
@@ -1316,6 +1320,8 @@ async def _commit_group(st, proj: Project, members: list[dict], note: str | None
     for m in members:
         await proj.hub.broadcast("commit", db.commit(m["id"]))
     await broadcast_inbox(proj)
+    for fid in {m["feature_id"] for m in members}:
+        await _recheck(st, proj, fid)
     return {**db.commit(first["id"]), "group": [db.commit(m["id"]) for m in members]}
 
 
@@ -1517,6 +1523,7 @@ def _conv_short(db: ProjectDB, cid: str | None) -> dict | None:
 
 
 def team_status(st, proj: Project) -> list[dict]:
+    from . import stalls  # late import: stalls imports this module
     from .orchestrator.turn import context_window_from
     db = proj.db
     running = st.scheduler.running if st.scheduler else {}
@@ -1541,7 +1548,8 @@ def team_status(st, proj: Project) -> list[dict]:
                     "session_seq": info["seq"], "fresh_starts": info["fresh_starts"],
                     "rotation": rs["rotate_reason"], "rotation_handoff_pending": bool(rs["rotate_handoff"]),
                     "current": _conv_short(db, (last or {}).get("conversation_id")),
-                    "kind": (getattr(runner, "kind", None) if runner else None)})
+                    "kind": (getattr(runner, "kind", None) if runner else None),
+                    "stuck": stalls.is_stuck(st, proj, role)})  # F-38: running or queued past stuck_turn_s
     return out
 
 
@@ -1557,20 +1565,33 @@ def _waits_on(st, proj: Project, feat: dict, running_convs: dict[str, str], queu
     for c in db.commits("master_review", feat["id"]):
         return {"kind": "commit", "who": "master", "since": c["created_at"]}
     for c in db.commits("lead_review", feat["id"]):
-        return {"kind": "review", "who": feat.get("lead") or "lead", "since": c["created_at"]}
+        return {"kind": "review", "who": feat.get("lead") or "lead", "since": c["created_at"], "ref": f"commit:{c['id']}"}
     if cid in running_convs:
         return {"kind": "running", "who": running_convs[cid], "since": None}
     if cid in queued_convs:
         return {"kind": "queued", "who": queued_convs[cid], "since": None}
-    last = db.messages(cid, limit=1)
-    if last:
-        m = last[0]
+    # F-38: the newest NON-System message (System lines, our own nudges included, never wait on anyone). A mention waits
+    # on the first role that isn't its author; a role's Handoff/Question/Blocker/Concern that mentions nobody waits on
+    # the feature's owner, else the Manager ("unaddressed"). Master items were handled above and are never stalls.
+    m = next((x for x in reversed(db.messages(cid, limit=30)) if x["author"] != "system"), None)
+    if m:
         if "master" in m["mentions"]:
-            return {"kind": "message", "who": "master", "since": m["created_at"]}
-        roles = [r for r in m["mentions"] if r in ROLES]
+            return {"kind": "message", "who": "master", "since": m["created_at"], "ref": f"msg:{m['id']}"}
+        roles = [r for r in m["mentions"] if r in ROLES and r != m["author"]]
         if roles:
-            return {"kind": "message", "who": roles[0], "since": m["created_at"]}
+            return {"kind": "message", "who": roles[0], "since": m["created_at"], "ref": f"msg:{m['id']}"}
+        if m["author"] in ROLES and not m["mentions"] and m["type"] in ("Handoff", "Question", "Blocker", "Concern"):
+            owner = feat.get("owner")
+            who = owner if owner in ROLES and owner != m["author"] else "manager"
+            if who != m["author"]:
+                return {"kind": "unaddressed", "who": who, "since": m["created_at"], "ref": f"msg:{m['id']}"}
     return None
+
+
+async def _recheck(st, proj: Project, feature_id: int | None) -> None:
+    """F-38: after a post in a feature or a commit request's state change, drop a stall row whose wait has moved on."""
+    from . import stalls  # late import: stalls imports this module
+    await stalls.recheck(st, proj, feature_id)
 
 
 def dashboard_features(st, proj: Project) -> list[dict]:

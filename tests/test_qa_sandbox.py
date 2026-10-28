@@ -133,6 +133,29 @@ def test_fire_withdraw(sandbox):
         assert (w["state"], c.get("/api/p/demo/questions", params={"state": "withdrawn"}, headers=auth).json()[0]["id"]) == ("withdrawn", q2)
 
 
+def test_fire_stall_check_and_long_turn(sandbox):
+    """F-38: `stall_check` runs one rung of the idle ladder; `long_turn {role, minutes}` backdates a queued wake and flags it."""
+    mod, work, _ = sandbox
+    app = mod.build_app(8790, work, "demo")
+    auth = {"Authorization": "Bearer sb-token"}
+    with TestClient(app) as c:
+        f = c.post("/api/p/demo/features", json={"text": "Stall demo", "starter": "product"}, headers=auth).json()
+        r = c.post("/qa/fire", json={"kind": "stall_check"}, headers=auth)
+        assert r.status_code == 200, r.text
+        assert {"feature": f["key"], "step": 1, "who": "product"} in r.json()["changes"]
+        feats = {x["key"]: x for x in c.get("/api/p/demo/features", headers=auth).json()}
+        assert feats[f["key"]]["stall"]["who"] == "product" and feats[f["key"]]["stall"]["stuck"] is False
+        c.post("/qa/fire", json={"kind": "stall_check"}, headers=auth)
+        r = c.post("/qa/fire", json={"kind": "stall_check"}, headers=auth).json()
+        assert {"feature": f["key"], "step": 3, "who": "product"} in r["changes"]
+        feats = {x["key"]: x for x in c.get("/api/p/demo/features", headers=auth).json()}
+        assert feats[f["key"]]["stall"]["stuck"] is True
+        r = c.post("/qa/fire", json={"kind": "long_turn", "role": "qa", "minutes": 30}, headers=auth).json()
+        assert r["ok"] and len(r["flagged"]) == 1 and "Qa's turn has been queued for 30m" in r["flagged"][0]
+        team = {x["role"]: x for x in c.get("/api/p/demo/team", headers=auth).json()["roles"]}
+        assert team["qa"]["stuck"] is True and team["backend"]["stuck"] is False
+
+
 def test_fire_commit_group(sandbox):
     mod, work, _ = sandbox
     app = mod.build_app(8790, work, "demo")
