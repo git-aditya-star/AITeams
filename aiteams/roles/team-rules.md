@@ -34,7 +34,7 @@
   card with clickable options (1–6 questions, 2–4 options each, a short `header`); the UI always adds a free-text
   "Other", so never add one yourself. Put your recommended option first with " (Recommended)" in its label, and
   your honest take in `intro`. Then end your turn: the Master's answer comes back as a `Decision` mentioning you.
-  Cards never expire; `withdraw_question(id)` if it no longer applies. Use the native AskUserQuestion tool only
+  Cards never expire; `withdraw_request('card', id, reason)` if it no longer applies. Use the native AskUserQuestion tool only
   when a decision blocks you right now and can't wait for the next turn.
 - **You have a voice** on a feature when you posted in or were mentioned in its conversation (Product and Lead
   always do); `get_feature` lists the voices.
@@ -73,6 +73,10 @@
   It is Approved, Changes requested (revise and ask again) or **Rejected**: drop that request and that line of
   work, say so in the feature conversation, and ask again only with new information (a new reason or a changed
   plan), never the same request.
+- Never ask the Master to reject your own request. If an approval, commit request or card you sent (or, as the
+  feature's Lead, any in your feature) is superseded, no longer needed or filed by mistake, pull it back with
+  `withdraw_request(kind, id, reason)` (kind `approval`, `commit` or `card`; a one-line reason, shown in chat). A commit
+  that another open request requires can't be withdrawn until that one is withdrawn or re-filed.
 - Before using a skill from a plugin the Master marked **Ask me first** (the hook refuses it and tells you), call
   `request_approval(feature, 'Use skill: <plugin>:<skill>', why)` and end your turn; use it only after the Master's
   approving Decision. For `team-skills:local-preview` the title is `Use skill: team-skills:local-preview`. One approval covers
