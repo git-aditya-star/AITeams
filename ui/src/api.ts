@@ -92,7 +92,58 @@ export interface Feature {
   open_approvals: number
   open_commits: number
   design?: FeatureDesign // F-21
+  branch?: FeatureBranch // F-39
   stall?: Stall | null // F-38: who the feature waits on while the whole team is idle; null/absent = nothing waits on a role
+}
+
+// F-39: where a feature's code goes. It comes from the latest approval titled `Branch:`; commit requests on a `gated` feature
+// are refused until it is approved. `none` + not gated = a feature that predates the gate (it works in the main folder).
+// `new` = its own worktree on a new branch, `current` = the main folder on the branch checked out then, `shared` = another
+// feature's worktree. `tree` is the worktree's absolute path (null = the main folder).
+export type BranchMode = 'new' | 'current' | 'shared'
+export type BranchState = 'none' | 'pending' | 'approved' | 'changes' | 'rejected'
+export interface FeatureBranch {
+  state: BranchState
+  gated?: boolean
+  approval_id?: number | null
+  mode?: BranchMode | null
+  branch?: string | null
+  base?: string | null
+  tree?: string | null
+  shared_from?: number | string | null
+}
+
+// The `payload` of a `Branch:` approval: what the Lead proposed, plus what the daemon found (`current` = the branch checked out
+// in the main folder, `worktrees` = other features' live trees, `warnings`, `tree` = where a new worktree would go). The
+// Master's decision sends back only the choice (`BranchChoice`); `shared_from` is the worktree's feature key, e.g. `F-37`.
+export interface BranchWorktree {
+  feature: string
+  branch: string
+  tree: string
+}
+export interface BranchPayload {
+  mode: BranchMode
+  branch?: string | null
+  base?: string | null
+  shared_from?: number | string | null
+  current?: string | null
+  worktrees?: BranchWorktree[]
+  warnings?: string[]
+  tree?: string | null
+}
+export interface BranchChoice {
+  mode: BranchMode
+  branch?: string
+  base?: string
+  shared_from?: number | string
+}
+export interface BranchList {
+  branches: { name: string; remote?: boolean }[]
+  current: string | null
+}
+export interface BranchCheck {
+  warnings: string[]
+  errors: string[]
 }
 
 // F-38: an open feature whose newest word waits on a role while the team is idle. The daemon nudges that role (step 1),
@@ -161,6 +212,7 @@ export interface Approval {
   message_id: number | null
   created_at: number
   resolved_at: number | null
+  payload?: BranchPayload | string | null // F-39: JSON for `Branch:` approvals (a string from a daemon that does not decode it)
 }
 
 export interface Commit {
@@ -577,8 +629,19 @@ export const api = {
   decideApproval: (
     pid: string,
     id: number,
-    body: { decision: ApprovalDecision; note?: string; set_phase?: string },
+    body: { decision: ApprovalDecision; note?: string; set_phase?: string; payload?: BranchChoice },
   ) => post<Approval>(`/api/p/${pid}/approvals/${id}/decide`, body),
+  // F-39: the branches the Master can base a new one on, and the live warnings/errors for the card's current choice.
+  branches: async (pid: string): Promise<BranchList> => {
+    const r = await req<BranchList | string[]>(`/api/p/${pid}/branches`)
+    if (Array.isArray(r)) return { branches: r.map((name) => ({ name })), current: null }
+    return { branches: (r.branches ?? []).map((b: any) => (typeof b === 'string' ? { name: b } : b)), current: r.current ?? null }
+  },
+  checkBranch: (pid: string, q: { mode: BranchMode; branch?: string; base?: string; shared_from?: number | string }) => {
+    const p = new URLSearchParams({ mode: q.mode })
+    for (const k of ['branch', 'base', 'shared_from'] as const) if (q[k] !== undefined && q[k] !== '') p.set(k, String(q[k]))
+    return req<BranchCheck>(`/api/p/${pid}/branches/check?${p}`)
+  },
   commits: (pid: string, state: CommitState | 'all' = 'master_review', feature?: number) => {
     const q = new URLSearchParams({ state })
     if (feature != null) q.set('feature', String(feature))

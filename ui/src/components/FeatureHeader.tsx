@@ -7,6 +7,7 @@ import { useAppDispatch, useAppSelector } from '../store'
 import { freshStartFeature, patchFeature, releaseLock } from '../store/thunks'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
+import BranchChip from './BranchChip'
 import StallChip from './StallChip'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
@@ -94,6 +95,7 @@ export default function FeatureHeader({ feature, tab, onTab }: { feature: Featur
           </Select>
         </label>
         {feature.design && <DesignChip design={feature.design} scrollable={tab === 'chat'} />}
+        <BranchChip branch={feature.branch} scrollable={tab === 'chat'} />
         <StallChip stall={feature.stall} />
         <label className="flex items-center gap-1 text-caption text-gray-500">
           owner

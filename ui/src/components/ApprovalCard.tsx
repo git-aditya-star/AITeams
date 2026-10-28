@@ -5,6 +5,7 @@ import { PHASES, roleName, stateChip, stateLabel } from '../roles'
 import { useAppDispatch, useAppSelector } from '../store'
 import { approvalUpdated } from '../store/actions'
 import { selectFeatureLabel, selectPid } from '../store/selectors'
+import BranchCard, { branchPayload, isBranchTitle, type BranchEdit } from './BranchCard'
 import Markdown from './Markdown'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
@@ -22,20 +23,25 @@ export default function ApprovalCard({ a, showFeature = false }: { a: Approval; 
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const pending = a.state === 'pending'
+  // F-39: a `Branch:` card carries the Lead's proposal; Approve sends the Master's edited choice.
+  const branch = isBranchTitle(a.title) ? branchPayload(a) : null
+  const [branchEdit, setBranchEdit] = useState<BranchEdit | null>(null)
 
   const decide = async (decision: ApprovalDecision) => {
     if (!pid) return
     setBusy(true)
     setErr(null)
     try {
-      const body: { decision: ApprovalDecision; note?: string; set_phase?: string } = { decision }
+      const body: { decision: ApprovalDecision; note?: string; set_phase?: string; payload?: BranchEdit['choice'] } = { decision }
       if (note.trim()) body.note = note.trim()
       if (phase !== UNCHANGED) body.set_phase = phase
+      if (branch && decision === 'approve' && branchEdit) body.payload = branchEdit.choice
       const updated = await api.decideApproval(pid, a.id, body)
       // The WS `approval` frame also lands; apply the response when it looks like a row.
       if (updated && typeof updated === 'object' && 'id' in updated) dispatch(approvalUpdated({ ...a, ...updated }))
     } catch (e: any) {
-      setErr(e?.message || 'failed')
+      // A refused approval (a worktree that would not be created) says why in `detail`, not the raw "POST … -> 409 {…}" line.
+      setErr(typeof e?.detail === 'string' ? e.detail : e?.message || 'failed')
     } finally {
       setBusy(false)
     }
@@ -59,11 +65,12 @@ export default function ApprovalCard({ a, showFeature = false }: { a: Approval; 
           <Markdown text={a.summary} />
         </div>
       )}
+      {branch && <BranchCard p={branch} pending={pending} onEdit={setBranchEdit} />}
       {pending && pid ? (
         <div className="mt-2 flex flex-col gap-1.5">
           <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (optional)" />
           <div className="flex items-center gap-2 flex-wrap">
-            <Button size="sm" data-action="approve" disabled={busy} onClick={() => decide('approve')}>
+            <Button size="sm" data-action="approve" disabled={busy || !!(branch && branchEdit?.blocked)} onClick={() => decide('approve')}>
               Approve
             </Button>
             <Button variant="outline" size="sm" data-action="changes" disabled={busy} onClick={() => decide('changes')}>
