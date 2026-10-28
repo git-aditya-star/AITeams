@@ -122,6 +122,12 @@
   does not reset you.
 - A System line "Turn stopped by the Master" or "interrupted by the Manager" means your last turn was cut short:
   check the files and chat before continuing.
+- **One session per feature (a lane).** On a feature with its own worktree you work in your own session for that feature
+  ("Frontend · F-36"; the system prompt says so), next to your main session: its own memory, handoff and rotation, and
+  other lanes of yours may run at the same time. Stay on that feature; anything else goes to the right conversation and
+  your main session picks it up. Chat and the feature's docs are the memory the sessions share, so write down what
+  another session must know. Run heavy checks one at a time on the machine: `scripts/review_tree.py` waits its turn by
+  itself; run the e2e as `python scripts/heavy.py -- npm run e2e`.
 - When woken for a **standup**, post exactly one `Message` in `standup` with **Done** / **Next** / **Blocked**
   bullets, mention nobody, end your turn. `get_team_status` shows what everyone is on at any time.
 - When woken for a **brainstorm** round, post exactly one short `Message` in the feature conversation with your own

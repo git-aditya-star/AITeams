@@ -34,7 +34,7 @@ def test_tick_marks_wake_started_before_a_concurrent_merge(db, home, monkeypatch
         s._tick()  # takes w1 synchronously; the runner task has not run yet
         m2 = proj.db.add_message("general", "lead", "Message", "@backend B", parse_mentions("@backend B"), None)
         w2 = route(proj.db, m2, proj.db.conversation("general"))[0]
-        runner = s.running[("p1", "backend")]
+        runner = s.running[("p1", "backend", "")]
         await asyncio.wait_for(runner.started.wait(), 2)
         await asyncio.gather(*[r.task for r in s.running.values()])
         return w1, w2, runner.wake

@@ -202,7 +202,7 @@ def test_watermark_set_at_prompt_and_cleared_at_turn_end(db, home, monkeypatch):
     runner = turn_mod.TurnRunner(st, proj, proj.db.add_wake("qa", "dm-qa", [m["id"]], "master"))
 
     async def go():
-        await s._run(("p1", "qa"), runner)
+        await s._run(("p1", "qa", ""), runner)
     asyncio.run(go())
     assert seen["wm"] == m["id"] and proj.delivered == {}
     proj.db.close()

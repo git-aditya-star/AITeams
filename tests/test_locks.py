@@ -98,4 +98,4 @@ def test_locks_released_when_turn_ends(db, home, monkeypatch):
 
     events = asyncio.run(go())
     assert [l["path"] for l in db.locks()] == ["other.py"]
-    assert ("locks", {"locks": [{"path": "other.py", "role": "qa", "turn_id": 99, "created_at": db.locks()[0]["created_at"]}]}) in events
+    assert ("locks", {"locks": [{"path": "other.py", "role": "qa", "turn_id": 99, "created_at": db.locks()[0]["created_at"], "lane": ""}]}) in events

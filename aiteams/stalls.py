@@ -102,7 +102,7 @@ def is_idle(st, proj) -> bool:
     if proj.paused or proj.schema_ahead or st.rate_limit_active():
         return False
     running = st.scheduler.running if st.scheduler else {}
-    return not any(pid == proj.id for pid, _ in running) and not proj.db.queued_wakes()
+    return not any(k[0] == proj.id for k in running) and not proj.db.queued_wakes()
 
 
 async def check_idle(st, proj) -> list[dict]:
@@ -110,19 +110,20 @@ async def check_idle(st, proj) -> list[dict]:
 
 
 # ---- long turns: flagged, never stopped -------------------------------------------------------------------------------
-def age(st, proj, role: str, now: float | None = None) -> float | None:
-    """Seconds the role's running turn has been running, else its oldest queued wake has waited; None if neither."""
+def age(st, proj, role: str, now: float | None = None, lane: str = "") -> float | None:
+    """Seconds the role's running turn has been running, else its oldest queued wake has waited; None if neither.
+    F-41: of one lane of the role ("" = its main session)."""
     now = now or time.time()
-    runner = st.scheduler.running.get((proj.id, role)) if st.scheduler else None
+    runner = st.scheduler.running.get((proj.id, role, lane)) if st.scheduler else None
     if runner is not None:
         t = proj.db.turn(runner.turn["id"]) if runner.turn else None
         return now - t["started_at"] if t and t.get("started_at") else None
-    waits = [w["created_at"] for w in proj.db.queued_wakes() if w["role"] == role]
+    waits = [w["created_at"] for w in proj.db.queued_wakes() if w["role"] == role and (w.get("lane") or "") == lane]
     return now - min(waits) if waits else None
 
 
-def is_stuck(st, proj, role: str, now: float | None = None) -> bool:
-    a = age(st, proj, role, now)
+def is_stuck(st, proj, role: str, now: float | None = None, lane: str = "") -> bool:
+    a = age(st, proj, role, now, lane)
     return a is not None and a > float(st.settings.get("stuck_turn_s", 1200))
 
 
@@ -133,17 +134,18 @@ async def flag_long_turns(st, proj, flagged: set, now: float | None = None) -> l
     db, now = proj.db, now or time.time()
     limit = float(st.settings.get("stuck_turn_s", 1200))
     items = []
-    for (pid, role), runner in (st.scheduler.running.items() if st.scheduler else []):
+    for (pid, role, lane), runner in (st.scheduler.running.items() if st.scheduler else []):
         t = db.turn(runner.turn["id"]) if pid == proj.id and runner.turn else None
         if t and t.get("started_at"):
-            items.append((("turn", t["id"]), role, "running", now - t["started_at"]))
-    items += [(("wake", w["id"]), w["role"], "queued", now - w["created_at"]) for w in db.queued_wakes()]
+            items.append((("turn", t["id"]), role, "running", now - t["started_at"], lane))
+    items += [(("wake", w["id"]), w["role"], "queued", now - w["created_at"], w.get("lane") or "") for w in db.queued_wakes()]
     lines = []
-    for key, role, verb, secs in items:
+    for key, role, verb, secs, lane in items:
         if secs <= limit or (proj.id, *key) in flagged:
             continue
         flagged.add((proj.id, *key))
-        text = f"{role_name(role)}'s turn has been {verb} for {int(secs // 60)}m; it was not stopped."
+        who = role_name(role) + (f" · {lane}" if lane else "")  # F-41: a feature lane names its feature
+        text = f"{who}'s turn has been {verb} for {int(secs // 60)}m; it was not stopped."
         if role != "manager":
             await lifecycle.system_wake(st, proj, "manager", "dm-manager", text)
         else:

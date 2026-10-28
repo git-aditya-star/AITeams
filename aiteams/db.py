@@ -172,10 +172,15 @@ class ProjectDB:
 
     # ---- messages --------------------------------------------------------
     def add_message(self, conversation_id: str, author: str, type_: str, text: str,
-                    mentions: list[str], turn_id: int | None, ref: str | None = None) -> dict:
-        mid = self.x("INSERT INTO messages(conversation_id, author, type, text, mentions, turn_id, created_at, ref)"
-                     " VALUES(?,?,?,?,?,?,?,?)", conversation_id, author, type_, text,
-                     json.dumps(mentions), turn_id, time.time(), ref)
+                    mentions: list[str], turn_id: int | None, ref: str | None = None, lane: str | None = None) -> dict:
+        """F-41: `lane` is the author's lane when a role posts ("" = its main session); left out, it is the lane of the turn
+        the message was posted from, when that turn belongs to the author. Master and System posts stay on ''."""
+        if lane is None:
+            t = self.one("SELECT role, lane FROM turns WHERE id=?", turn_id) if turn_id else None
+            lane = t["lane"] if t and t["role"] == author else ""
+        mid = self.x("INSERT INTO messages(conversation_id, author, type, text, mentions, turn_id, created_at, ref, lane)"
+                     " VALUES(?,?,?,?,?,?,?,?,?)", conversation_id, author, type_, text,
+                     json.dumps(mentions), turn_id, time.time(), ref, lane)
         return self.message(mid)
 
     def _msg_dict(self, r: sqlite3.Row) -> dict:
@@ -286,58 +291,103 @@ class ProjectDB:
             return True
 
     # ---- sessions --------------------------------------------------------
-    def active_session(self, role: str) -> str | None:
-        r = self.one("SELECT session_id FROM sessions WHERE role=? AND active=1 ORDER BY created_at DESC LIMIT 1", role)
+    # F-41: a role runs in "lanes": "" is its main session, a feature key ("F-36") its session for that feature. Sessions,
+    # role state, handoffs, wakes, turns and locks are all keyed by (role, lane); every `lane` below defaults to the main one.
+    def active_session(self, role: str, lane: str = "") -> str | None:
+        r = self.one("SELECT session_id FROM sessions WHERE role=? AND lane=? AND active=1 ORDER BY created_at DESC LIMIT 1",
+                     role, lane)
         return r["session_id"] if r else None
 
-    def new_session(self, role: str, session_id: str, reason: str) -> str:
+    def new_session(self, role: str, session_id: str, reason: str, lane: str = "") -> str:
         with self.lock:
-            self.conn.execute("UPDATE sessions SET active=0 WHERE role=?", (role,))
-            n = self.conn.execute("SELECT COUNT(*) AS n FROM sessions WHERE role=?", (role,)).fetchone()["n"]
-            self.conn.execute("INSERT INTO sessions(role, session_id, created_at, reason, active, seq) VALUES(?,?,?,?,1,?)",
-                              (role, session_id, time.time(), reason, n + 1))
+            self.conn.execute("UPDATE sessions SET active=0 WHERE role=? AND lane=?", (role, lane))
+            n = self.conn.execute("SELECT COUNT(*) AS n FROM sessions WHERE role=? AND lane=?", (role, lane)).fetchone()["n"]
+            self.conn.execute("INSERT INTO sessions(role, session_id, created_at, reason, active, seq, lane)"
+                              " VALUES(?,?,?,?,1,?,?)", (role, session_id, time.time(), reason, n + 1, lane))
         return session_id
 
-    def session_info(self, role: str) -> dict:
-        """Active session row plus seq/fresh_starts; seq 0 when the role never ran."""
-        r = self.one("SELECT * FROM sessions WHERE role=? AND active=1 ORDER BY created_at DESC LIMIT 1", role)
-        n = self.one("SELECT COUNT(*) AS n FROM sessions WHERE role=?", role)["n"]
+    def session_info(self, role: str, lane: str = "") -> dict:
+        """Active session row plus seq/fresh_starts; seq 0 when the role never ran in this lane."""
+        r = self.one("SELECT * FROM sessions WHERE role=? AND lane=? AND active=1 ORDER BY created_at DESC LIMIT 1", role, lane)
+        n = self.one("SELECT COUNT(*) AS n FROM sessions WHERE role=? AND lane=?", role, lane)["n"]
         return {"session_id": r["session_id"] if r else None, "seq": (r["seq"] or n) if r else 0,
                 "fresh_starts": max(n - 1, 0), "reason": r["reason"] if r else None}
 
-    # ---- role state (rotation / fail streak) ------------------------------
-    def role_state(self, role: str) -> dict:
-        r = self.one("SELECT * FROM role_state WHERE role=?", role)
-        return dict(r) if r else {"role": role, "rotate_reason": None, "rotate_handoff": 0, "fail_streak": 0}
+    def active_lanes(self, role: str | None = None) -> list[tuple[str, str]]:
+        """(role, lane) of every active FEATURE session (lane != ""), oldest first."""
+        sql = "SELECT role, lane FROM sessions WHERE lane!='' AND active=1" + (" AND role=?" if role else "") + " ORDER BY created_at"
+        return [(r["role"], r["lane"]) for r in (self.q(sql, role) if role else self.q(sql))]
 
-    def set_role_state(self, role: str, **fields) -> dict:
+    def retire_lane(self, lane: str) -> dict:
+        """F-41: a feature is done or archived: its sessions stop being active (no handoff turn: its docs are the record),
+        its rotation state goes, and what is still queued for the lane moves to the role's main lane (merged into the main
+        wake already queued there, else re-keyed); a queued handoff wake of the lane is dropped. A turn already running
+        on the lane finishes normally. Returns {"roles": [...], "moved": n}."""
+        if not lane:
+            return {"roles": [], "moved": 0}
+        roles = [r["role"] for r in self.q("SELECT DISTINCT role FROM sessions WHERE lane=? AND active=1", lane)]
+        moved = 0
+        with self.lock:
+            self.conn.execute("UPDATE sessions SET active=0 WHERE lane=?", (lane,))
+            self.conn.execute("DELETE FROM role_state WHERE lane=?", (lane,))
+            for w in [self._wake_dict(r) for r in self.conn.execute(
+                    "SELECT * FROM wake_queue WHERE lane=? AND state='queued' ORDER BY id", (lane,)).fetchall()]:
+                if w["kind"] == "handoff":
+                    self.conn.execute("UPDATE wake_queue SET state='done' WHERE id=?", (w["id"],))
+                    continue
+                moved += 1
+                main = self.conn.execute("SELECT * FROM wake_queue WHERE role=? AND lane='' AND state='queued' AND kind=?"
+                                         " ORDER BY id LIMIT 1", (w["role"], w["kind"])).fetchone()
+                if main is not None and w["kind"] == "normal":
+                    m = self._wake_dict(main)
+                    ids = m["message_ids"] + [i for i in w["message_ids"] if i not in m["message_ids"]]
+                    origin = "master" if "master" in (m["origin"], w["origin"]) else m["origin"]
+                    self.conn.execute("UPDATE wake_queue SET message_ids=?, origin=?, conversation_id=? WHERE id=?",
+                                      (json.dumps(ids), origin, w["conversation_id"], m["id"]))
+                    self.conn.execute("UPDATE wake_queue SET state='done' WHERE id=?", (w["id"],))
+                else:
+                    self.conn.execute("UPDATE wake_queue SET lane='' WHERE id=?", (w["id"],))
+        return {"roles": roles, "moved": moved}
+
+    # ---- role state (rotation / fail streak) ------------------------------
+    def role_state(self, role: str, lane: str = "") -> dict:
+        r = self.one("SELECT * FROM role_state WHERE role=? AND lane=?", role, lane)
+        return dict(r) if r else {"role": role, "lane": lane, "rotate_reason": None, "rotate_handoff": 0, "fail_streak": 0}
+
+    def set_role_state(self, role: str, lane: str = "", **fields) -> dict:
         fields = {k: v for k, v in fields.items() if k in ("rotate_reason", "rotate_handoff", "fail_streak")}
         if fields:
             cols = ", ".join(f"{k}=?" for k in fields)
-            self.x("INSERT OR IGNORE INTO role_state(role, updated_at) VALUES(?,?)", role, time.time())
-            self.x(f"UPDATE role_state SET {cols}, updated_at=? WHERE role=?", *fields.values(), time.time(), role)
-        return self.role_state(role)
+            self.x("INSERT OR IGNORE INTO role_state(role, lane, updated_at) VALUES(?,?,?)", role, lane, time.time())
+            self.x(f"UPDATE role_state SET {cols}, updated_at=? WHERE role=? AND lane=?", *fields.values(), time.time(), role, lane)
+        return self.role_state(role, lane)
 
     # ---- handoffs / standups / activity ------------------------------------
     def add_handoff(self, role: str, session_id: str, seq: int, path: str, message_id: int | None,
-                    reason: str | None, context_pct: float | None) -> dict:
-        hid = self.x("INSERT INTO handoffs(role, session_id, seq, path, message_id, reason, context_pct, created_at)"
-                     " VALUES(?,?,?,?,?,?,?,?)", role, session_id, seq, path, message_id, reason, context_pct, time.time())
+                    reason: str | None, context_pct: float | None, lane: str = "") -> dict:
+        hid = self.x("INSERT INTO handoffs(role, session_id, seq, path, message_id, reason, context_pct, created_at, lane)"
+                     " VALUES(?,?,?,?,?,?,?,?,?)", role, session_id, seq, path, message_id, reason, context_pct, time.time(),
+                     lane)
         return dict(self.one("SELECT * FROM handoffs WHERE id=?", hid))
 
-    def handoffs(self, role: str | None = None, limit: int = 50) -> list[dict]:
+    def handoffs(self, role: str | None = None, limit: int = 50, lane: str | None = None) -> list[dict]:
+        """Newest first. `lane` None = every lane of the role, else just that one."""
+        where, args = [], []
         if role:
-            rows = self.q("SELECT * FROM handoffs WHERE role=? ORDER BY id DESC LIMIT ?", role, limit)
-        else:
-            rows = self.q("SELECT * FROM handoffs ORDER BY id DESC LIMIT ?", limit)
-        return [dict(r) for r in rows]
+            where.append("role=?")
+            args.append(role)
+        if lane is not None:
+            where.append("lane=?")
+            args.append(lane)
+        sql = "SELECT * FROM handoffs" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY id DESC LIMIT ?"
+        return [dict(r) for r in self.q(sql, *args, limit)]
 
-    def latest_handoff(self, role: str) -> dict | None:
-        rows = self.handoffs(role, 1)
+    def latest_handoff(self, role: str, lane: str = "") -> dict | None:
+        rows = self.handoffs(role, 1, lane)
         return rows[0] if rows else None
 
-    def handoff_in_turn(self, role: str, since_ts: float) -> bool:
-        return self.one("SELECT 1 FROM handoffs WHERE role=? AND created_at>=?", role, since_ts) is not None
+    def handoff_in_turn(self, role: str, since_ts: float, lane: str = "") -> bool:
+        return self.one("SELECT 1 FROM handoffs WHERE role=? AND lane=? AND created_at>=?", role, lane, since_ts) is not None
 
     def _standup_dict(self, r: sqlite3.Row) -> dict:
         d = dict(r)
@@ -414,26 +464,34 @@ class ProjectDB:
         r = self.one("SELECT * FROM turns WHERE id=?", tid)
         return dict(r) if r else None
 
-    def turns(self, role: str | None = None, limit: int = 50) -> list[dict]:
+    def turns(self, role: str | None = None, limit: int = 50, lane: str | None = None) -> list[dict]:
+        """Newest first. `lane` None = every lane, else just that one ("" = the main session)."""
+        where, args = [], []
         if role:
-            rows = self.q("SELECT * FROM turns WHERE role=? ORDER BY id DESC LIMIT ?", role, limit)
-        else:
-            rows = self.q("SELECT * FROM turns ORDER BY id DESC LIMIT ?", limit)
+            where.append("role=?")
+            args.append(role)
+        if lane is not None:
+            where.append("lane=?")
+            args.append(lane)
+        rows = self.q("SELECT * FROM turns" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY id DESC LIMIT ?",
+                      *args, limit)
         return [dict(r) for r in rows]
 
     def create_turn(self, role: str, session_id: str, origin: str, conversation_id: str,
-                    kind: str = "normal", token: str | None = None) -> dict:
-        tid = self.x("INSERT INTO turns(role, session_id, state, origin, conversation_id, created_at, kind, token)"
-                     " VALUES(?,?,?,?,?,?,?,?)", role, session_id, "queued", origin, conversation_id, time.time(), kind,
-                     token)
+                    kind: str = "normal", token: str | None = None, lane: str = "") -> dict:
+        tid = self.x("INSERT INTO turns(role, session_id, state, origin, conversation_id, created_at, kind, token, lane)"
+                     " VALUES(?,?,?,?,?,?,?,?,?)", role, session_id, "queued", origin, conversation_id, time.time(), kind,
+                     token, lane)
         return self.turn(tid)
 
-    def cap_streak(self, role: str) -> int:
+    def cap_streak(self, role: str, lane: str | None = None) -> int:
         """F-37: how many of the role's most recent ended normal turns, newest first, stopped at the max-turns cap
-        (state done, error "max turns reached"). Any other ended turn (done, failed, interrupted) ends the streak."""
+        (state done, error "max turns reached"). Any other ended turn (done, failed, interrupted) ends the streak.
+        F-41: with a `lane`, only that lane's turns count (another lane's turn between two doesn't break the streak)."""
         n = 0
         for r in self.q("SELECT state, error FROM turns WHERE role=? AND kind='normal' AND state IN"
-                        " ('done','failed','interrupted') ORDER BY id DESC LIMIT 100", role):
+                        " ('done','failed','interrupted')" + (" AND lane=?" if lane is not None else "")
+                        + " ORDER BY id DESC LIMIT 100", *([role, lane] if lane is not None else [role])):
             if r["state"] != "done" or r["error"] != MAX_TURNS_ERROR:
                 break
             n += 1
@@ -492,8 +550,13 @@ class ProjectDB:
         return float(r["c"] or 0)
 
     # ---- wake queue ------------------------------------------------------
-    def queued_wake(self, role: str, kind: str = "normal") -> dict | None:
-        r = self.one("SELECT * FROM wake_queue WHERE role=? AND state='queued' AND kind=? ORDER BY id LIMIT 1", role, kind)
+    def queued_wake(self, role: str, kind: str = "normal", lane: str | None = "") -> dict | None:
+        """The role's oldest queued wake of `kind` in `lane` (None = in any lane)."""
+        if lane is None:
+            r = self.one("SELECT * FROM wake_queue WHERE role=? AND state='queued' AND kind=? ORDER BY id LIMIT 1", role, kind)
+        else:
+            r = self.one("SELECT * FROM wake_queue WHERE role=? AND lane=? AND state='queued' AND kind=? ORDER BY id LIMIT 1",
+                         role, lane, kind)
         return self._wake_dict(r) if r else None
 
     def _wake_dict(self, r: sqlite3.Row) -> dict:
@@ -502,10 +565,10 @@ class ProjectDB:
         return d
 
     def add_wake(self, role: str, conversation_id: str, message_ids: list[int], origin: str,
-                 kind: str = "normal", ref: int | None = None) -> dict:
-        wid = self.x("INSERT INTO wake_queue(role, conversation_id, message_ids, origin, created_at, state, kind, ref)"
-                     " VALUES(?,?,?,?,?,?,?,?)", role, conversation_id, json.dumps(message_ids), origin,
-                     time.time(), "queued", kind, ref)
+                 kind: str = "normal", ref: int | None = None, lane: str = "") -> dict:
+        wid = self.x("INSERT INTO wake_queue(role, conversation_id, message_ids, origin, created_at, state, kind, ref, lane)"
+                     " VALUES(?,?,?,?,?,?,?,?,?)", role, conversation_id, json.dumps(message_ids), origin,
+                     time.time(), "queued", kind, ref, lane)
         return self._wake_dict(self.one("SELECT * FROM wake_queue WHERE id=?", wid))
 
     def merge_wake(self, wid: int, conversation_id: str, message_ids: list[int], origin: str) -> dict:
@@ -640,11 +703,16 @@ class ProjectDB:
         return [dict(r) for r in self.q("SELECT * FROM stalls ORDER BY feature_id")]
 
     def stall_info(self, fid: int) -> dict | None:
-        """What a feature row carries as `stall`: {who, kind, ref, step, stuck, since}, or None. `since` is when this
+        """What a feature row carries as `stall`: {who, kind, ref, step, stuck, since, lane}, or None. `since` is when this
         (who, ref) started waiting; `stuck` is step 3 (nudged, the Manager told, nothing moved)."""
         r = self.stall_row(fid)
-        return None if r is None else {"who": r["who"], "kind": r["kind"], "ref": r["ref"], "step": r["step"],
-                                       "stuck": r["step"] >= 3, "since": r["created_at"]}
+        if r is None:
+            return None
+        from .lanes import lane_for_feature  # late import: lanes imports branches
+        # F-41: the lane the waited-on role works in for this feature ("" for the main session, and for the Master)
+        lane = lane_for_feature(self, fid) if r["who"] != "master" else ""
+        return {"who": r["who"], "kind": r["kind"], "ref": r["ref"], "step": r["step"],
+                "stuck": r["step"] >= 3, "since": r["created_at"], "lane": lane}
 
     def set_stall(self, fid: int, who: str, kind: str, ref: str, step: int) -> dict:
         """Write the ladder row. The same (who, ref) keeps its `created_at` (it is still the same wait); a new one starts now."""
@@ -760,6 +828,8 @@ class ProjectDB:
             if "title" in fields:
                 conv_id = self.one("SELECT conversation_id FROM features WHERE id=?", fid)["conversation_id"]
                 self.x("UPDATE conversations SET title=? WHERE id=?", f"F-{fid} {fields['title']}", conv_id)
+            if cur is not None and (fields.get("phase") == "done" or fields.get("archived")):
+                self.retire_lane(f"F-{fid}")  # F-41: a finished feature's sessions close; queued work moves to main
         return self.feature(fid)
 
     # ---- approvals -------------------------------------------------------
@@ -883,15 +953,16 @@ class ProjectDB:
         self.x("UPDATE messages SET ref=? WHERE id=?", ref, mid)
 
     # ---- locks / edits ---------------------------------------------------
-    def acquire_lock(self, path: str, role: str, turn_id: int | None) -> dict | None:
-        """Lock `path` for `role`. Returns None when acquired (or already held by role), else the holder row."""
+    def acquire_lock(self, path: str, role: str, turn_id: int | None, lane: str = "") -> dict | None:
+        """Lock `path` for `role` in `lane` (F-41: the holder is a role AND a lane, so two sessions of one role don't share a
+        lock). Returns None when acquired (or already held by that holder), else the holder row."""
         with self.lock:
             r = self.conn.execute("SELECT * FROM locks WHERE path=?", (path,)).fetchone()
-            if r and r["role"] != role:
+            if r and (r["role"] != role or r["lane"] != lane):
                 return dict(r)
             if not r:
-                self.conn.execute("INSERT INTO locks(path, role, turn_id, created_at) VALUES(?,?,?,?)",
-                                  (path, role, turn_id, time.time()))
+                self.conn.execute("INSERT INTO locks(path, role, turn_id, created_at, lane) VALUES(?,?,?,?,?)",
+                                  (path, role, turn_id, time.time(), lane))
         return None
 
     def release_lock(self, path: str) -> dict | None:
@@ -900,10 +971,11 @@ class ProjectDB:
             self.x("DELETE FROM locks WHERE path=?", path)
         return dict(r) if r else None
 
-    def release_locks(self, role: str) -> list[str]:
-        paths = [r["path"] for r in self.q("SELECT path FROM locks WHERE role=?", role)]
+    def release_locks(self, role: str, lane: str = "") -> list[str]:
+        """The turn's locks end with it: drop the (role, lane) holder's, never another lane's."""
+        paths = [r["path"] for r in self.q("SELECT path FROM locks WHERE role=? AND lane=?", role, lane)]
         if paths:
-            self.x("DELETE FROM locks WHERE role=?", role)
+            self.x("DELETE FROM locks WHERE role=? AND lane=?", role, lane)
         return paths
 
     def locks(self) -> list[dict]:
@@ -1064,6 +1136,24 @@ def _migration_15(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE turns ADD COLUMN prompt_conv TEXT NULL")
 
 
+def _migration_16(conn: sqlite3.Connection) -> None:
+    """F-41: a role's work is split into lanes: '' = its main session, a feature key ('F-36') = its session for that
+    feature. Every existing row is the main lane. `role_state` is keyed by (role, lane), so it is rebuilt."""
+    for table in ("sessions", "wake_queue", "turns", "handoffs", "messages", "locks"):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN lane TEXT NOT NULL DEFAULT ''")
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(role_state)")]
+    if "lane" not in cols:
+        conn.execute("CREATE TABLE role_state_new(role TEXT NOT NULL, lane TEXT NOT NULL DEFAULT '', rotate_reason TEXT,"
+                     " rotate_handoff INTEGER NOT NULL DEFAULT 0, fail_streak INTEGER NOT NULL DEFAULT 0, updated_at REAL,"
+                     " PRIMARY KEY(role, lane))")
+        conn.execute("INSERT INTO role_state_new(role, lane, rotate_reason, rotate_handoff, fail_streak, updated_at)"
+                     " SELECT role, '', rotate_reason, rotate_handoff, fail_streak, updated_at FROM role_state")
+        conn.execute("DROP TABLE role_state")
+        conn.execute("ALTER TABLE role_state_new RENAME TO role_state")
+    conn.execute("CREATE INDEX IF NOT EXISTS sessions_lane ON sessions(role, lane, active)")
+    conn.execute("CREATE INDEX IF NOT EXISTS wake_queue_lane ON wake_queue(role, lane, state)")
+
+
 MIGRATIONS: list = [
     _migration_1,
     "ALTER TABLE turns ADD COLUMN token TEXT",
@@ -1089,4 +1179,5 @@ MIGRATIONS: list = [
     # F-40: the three-part brief of an approval (JSON {what, if_approved, tradeoffs, doc}); rows filed before it stay NULL
     "ALTER TABLE approvals ADD COLUMN brief TEXT NULL",
     _migration_15,
+    _migration_16,
 ]

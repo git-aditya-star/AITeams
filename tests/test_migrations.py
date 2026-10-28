@@ -6,13 +6,21 @@ import pytest
 from aiteams.db import MIGRATIONS, SCHEMA, ProjectDB
 
 
+def drop_lane_columns(db):
+    """Put the F-41 lane columns (migration 16) back out, so an old-DB test can re-run it. role_state keeps its rebuilt shape:
+    the migration only rebuilds a table that has no `lane` yet."""
+    db.conn.execute("DROP INDEX IF EXISTS sessions_lane")
+    db.conn.execute("DROP INDEX IF EXISTS wake_queue_lane")
+    for table in ("sessions", "wake_queue", "turns", "handoffs", "messages", "locks"):
+        db.conn.execute(f"ALTER TABLE {table} DROP COLUMN lane")
+
 def cols(db, table):
     return [r["name"] for r in db.q(f"PRAGMA table_info({table})")]
 
 
 def test_fresh_db_lands_at_latest(db):
-    assert db.one("PRAGMA user_version")[0] == len(MIGRATIONS) == 15
-    assert db.applied == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] and db.schema_ahead is False
+    assert db.one("PRAGMA user_version")[0] == len(MIGRATIONS) == 16
+    assert db.applied == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16] and db.schema_ahead is False
     assert "token" in cols(db, "turns") and db.get_kv("schema_version") is None
     t = db.create_turn("qa", "s", "master", "general", token="abc")
     assert db.turn(t["id"])["token"] == "abc"
@@ -29,7 +37,7 @@ def test_m1c_shaped_db_migrates(repo):
     conn.close()
     db = ProjectDB(str(repo))
     try:
-        assert db.one("PRAGMA user_version")[0] == len(MIGRATIONS) and db.applied == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        assert db.one("PRAGMA user_version")[0] == len(MIGRATIONS) and db.applied == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         assert "token" in cols(db, "turns") and db.get_kv("schema_version") is None
         assert db.session_info("qa")["seq"] == 1  # the v3 body still ran (seq backfill)
         assert db.conversation("standup")["kind"] == "channel"
@@ -56,7 +64,7 @@ def test_schema_ahead_opens_read_only(repo):
 
 def test_migrations_run_once(repo):
     db = ProjectDB(str(repo))
-    assert db.applied == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    assert db.applied == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
     db.close()
     db = ProjectDB(str(repo))
     try:
@@ -85,11 +93,12 @@ def test_v2_db_gets_reactions_table(repo):
     db.conn.execute("ALTER TABLE approvals DROP COLUMN brief")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_max_id")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_conv")
+    drop_lane_columns(db)
     db.conn.execute("PRAGMA user_version=2")
     db.close()
     db = ProjectDB(str(repo))
     try:
-        assert db.applied == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] and cols(db, "reactions") == ["message_id", "role", "emoji", "created_at"]
+        assert db.applied == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16] and cols(db, "reactions") == ["message_id", "role", "emoji", "created_at"]
         assert db.message(m["id"])["text"] == "hi" and db.message(m["id"])["reactions"] == []
     finally:
         db.close()
@@ -115,11 +124,12 @@ def test_v3_db_gets_question_card_columns(repo):
     db.conn.execute("ALTER TABLE approvals DROP COLUMN brief")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_max_id")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_conv")
+    drop_lane_columns(db)
     db.conn.execute("PRAGMA user_version=3")
     db.close()
     db = ProjectDB(str(repo))
     try:
-        assert db.applied == [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        assert db.applied == [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         assert cols(db, "questions")[-7:] == ["kind", "purpose", "intro", "feature_id", "conversation_id", "message_id", "note"]
         q = db.question(old["id"])
         assert (q["kind"], q["purpose"], q["state"]) == ("blocking", None, "pending")
@@ -142,11 +152,12 @@ def test_v4_db_gets_brainstorms_table(repo):
     db.conn.execute("ALTER TABLE approvals DROP COLUMN brief")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_max_id")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_conv")
+    drop_lane_columns(db)
     db.conn.execute("PRAGMA user_version=4")
     db.close()
     db = ProjectDB(str(repo))
     try:
-        assert db.applied == [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        assert db.applied == [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         assert cols(db, "brainstorms") == ["id", "feature_id", "topic", "state", "roles", "requested_by",
                                            "start_message_id", "question_id", "created_at", "ended_at"]
     finally:
@@ -168,11 +179,12 @@ def test_v5_db_gets_commit_requires(repo):
     db.conn.execute("ALTER TABLE approvals DROP COLUMN brief")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_max_id")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_conv")
+    drop_lane_columns(db)
     db.conn.execute("PRAGMA user_version=5")
     db.close()
     db = ProjectDB(str(repo))
     try:
-        assert db.applied == [6, 7, 8, 9, 10, 11, 12, 13, 14, 15] and cols(db, "commits")[-1] == "requires"
+        assert db.applied == [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16] and cols(db, "commits")[-1] == "requires"
         assert db.commit(old["id"])["requires"] == []
     finally:
         db.close()
@@ -202,11 +214,12 @@ def test_v6_db_gets_done_at_backfilled(repo):
     db.conn.execute("ALTER TABLE approvals DROP COLUMN brief")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_max_id")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_conv")
+    drop_lane_columns(db)
     db.conn.execute("PRAGMA user_version=6")
     db.close()
     db = ProjectDB(str(repo))
     try:
-        assert db.applied == [7, 8, 9, 10, 11, 12, 13, 14, 15]
+        assert db.applied == [7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         last = db.messages(done["conversation_id"], limit=1)[-1]
         assert db.feature(done["id"])["done_at"] == last["created_at"]  # the newest done line, not the qa one
         assert db.feature(archived["id"])["done_at"] == db.messages(archived["conversation_id"], limit=1)[-1]["created_at"]
@@ -232,13 +245,14 @@ def test_v7_db_gets_the_design_gate_start(repo, monkeypatch):
     db.conn.execute("ALTER TABLE approvals DROP COLUMN brief")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_max_id")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_conv")
+    drop_lane_columns(db)
     db.conn.execute("PRAGMA user_version=7")
     db.close()
     monkeypatch.setattr("aiteams.db.design_gate_start", time.time)  # the real start, not the tests' far-future one
     before = time.time()
     db = ProjectDB(str(repo))
     try:
-        assert db.applied == [8, 9, 10, 11, 12, 13, 14, 15] and before <= db.get_kv("design_gate_since") <= time.time()
+        assert db.applied == [8, 9, 10, 11, 12, 13, 14, 15, 16] and before <= db.get_kv("design_gate_since") <= time.time()
         assert db.feature(old["id"])["design"] == {"state": "none", "approval_id": None, "gated": False}
         new = db.create_feature("new")
         assert db.feature(new["id"])["design"]["gated"] is True
@@ -262,11 +276,12 @@ def test_v8_db_gets_the_feature_lead(repo):
     db.conn.execute("ALTER TABLE approvals DROP COLUMN brief")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_max_id")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_conv")
+    drop_lane_columns(db)
     db.conn.execute("PRAGMA user_version=8")
     db.close()
     db = ProjectDB(str(repo))
     try:
-        assert db.applied == [9, 10, 11, 12, 13, 14, 15] and cols(db, "features")[-1] == "lead"
+        assert db.applied == [9, 10, 11, 12, 13, 14, 15, 16] and cols(db, "features")[-1] == "lead"
         assert [db.feature(i)["lead"] for i in (a["id"], b["id"])] == ["lead", "lead"]
         assert db.create_feature("c")["lead"] is None
     finally:
@@ -284,11 +299,12 @@ def test_v9_db_gets_the_artifacts_table(repo):
     db.conn.execute("ALTER TABLE approvals DROP COLUMN brief")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_max_id")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_conv")
+    drop_lane_columns(db)
     db.conn.execute("PRAGMA user_version=9")
     db.close()
     db = ProjectDB(str(repo))
     try:
-        assert db.applied == [10, 11, 12, 13, 14, 15]
+        assert db.applied == [10, 11, 12, 13, 14, 15, 16]
         assert cols(db, "artifacts") == ["id", "feature_id", "path", "url", "title", "version", "role", "approval_id",
                                          "turn_id", "created_at", "updated_at"]
         f = db.create_feature("Export")
@@ -314,11 +330,12 @@ def test_v10_db_gets_the_question_note(repo):
     db.conn.execute("ALTER TABLE approvals DROP COLUMN brief")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_max_id")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_conv")
+    drop_lane_columns(db)
     db.conn.execute("PRAGMA user_version=10")
     db.close()
     db = ProjectDB(str(repo))
     try:
-        assert db.applied == [11, 12, 13, 14, 15] and cols(db, "questions")[-1] == "note"
+        assert db.applied == [11, 12, 13, 14, 15, 16] and cols(db, "questions")[-1] == "note"
         assert db.question(old["id"])["note"] is None and db.question(old["id"])["state"] == "pending"
         q = db.withdraw_question(old["id"], "superseded by #5")
         assert (q["state"], q["note"]) == ("withdrawn", "superseded by #5") and q["answered_at"] is not None
@@ -339,15 +356,16 @@ def test_v11_db_gets_the_stalls_table(repo):
     db.conn.execute("ALTER TABLE approvals DROP COLUMN brief")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_max_id")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_conv")
+    drop_lane_columns(db)
     db.conn.execute("PRAGMA user_version=11")
     db.close()
     db = ProjectDB(str(repo))
     try:
-        assert db.applied == [12, 13, 14, 15]
+        assert db.applied == [12, 13, 14, 15, 16]
         assert cols(db, "stalls") == ["feature_id", "who", "kind", "ref", "step", "created_at", "updated_at"]
         assert db.feature(f["id"])["stall"] is None and db.features()[0]["stall"] is None
         s = db.set_stall(f["id"], "lead-2", "review", "commit:7", 1)
-        assert s == {"who": "lead-2", "kind": "review", "ref": "commit:7", "step": 1, "stuck": False, "since": s["since"]}
+        assert s == {"who": "lead-2", "kind": "review", "ref": "commit:7", "step": 1, "stuck": False, "since": s["since"], "lane": ""}
         assert db.feature(f["id"])["stall"]["who"] == "lead-2"
         db.set_stall(f["id"], "lead-2", "review", "commit:7", 3)  # one row per feature: it is replaced, not added
         assert len(db.stall_rows()) == 1 and db.stall_info(f["id"])["stuck"] is True
@@ -368,13 +386,14 @@ def test_v12_db_gets_feature_branches_the_payload_column_and_the_branch_gate(rep
     db.conn.execute("ALTER TABLE approvals DROP COLUMN brief")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_max_id")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_conv")
+    drop_lane_columns(db)
     db.conn.execute("PRAGMA user_version=12")
     db.close()
     monkeypatch.setattr("aiteams.db.branch_gate_start", time.time)  # the real start, not the tests' far-future one
     before = time.time()
     db = ProjectDB(str(repo))
     try:
-        assert db.applied == [13, 14, 15] and before <= db.get_kv("branch_gate_since") <= time.time()
+        assert db.applied == [13, 14, 15, 16] and before <= db.get_kv("branch_gate_since") <= time.time()
         assert cols(db, "feature_branches") == ["feature_id", "mode", "branch", "base", "tree", "shared_from", "pr_url",
                                                 "pr_state", "pr_destination", "tree_state", "created_at", "updated_at"]
         assert cols(db, "approvals")[-2:] == ["payload", "brief"] and db.approval(a["id"])["payload"] is None  # an old row reads None
@@ -402,11 +421,12 @@ def test_v13_db_gets_the_approval_brief_column(repo):
     db.conn.execute("ALTER TABLE approvals DROP COLUMN brief")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_max_id")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_conv")
+    drop_lane_columns(db)
     db.conn.execute("PRAGMA user_version=13")
     db.close()
     db = ProjectDB(str(repo))
     try:
-        assert db.applied == [14, 15] and cols(db, "approvals")[-1] == "brief"
+        assert db.applied == [14, 15, 16] and cols(db, "approvals")[-1] == "brief"
         assert db.approval(old["id"])["brief"] is None and db.approvals("pending")[0]["brief"] is None
         brief = {"what": "w", "if_approved": "i", "tradeoffs": ["t"], "doc": None}
         new = db.create_approval(None, "lead", None, "Design: y", "s", brief=brief)
@@ -423,16 +443,53 @@ def test_v14_db_gets_the_turn_prompt_watermark_columns(repo):
     old = db.create_turn("backend", "s1", "master", "dm-backend")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_max_id")
     db.conn.execute("ALTER TABLE turns DROP COLUMN prompt_conv")
+    drop_lane_columns(db)
     db.conn.execute("PRAGMA user_version=14")
     db.close()
     db = ProjectDB(str(repo))
     try:
-        assert db.applied == [15] and cols(db, "turns")[-2:] == ["prompt_max_id", "prompt_conv"]
+        assert db.applied == [15, 16] and cols(db, "turns")[-3:] == ["prompt_max_id", "prompt_conv", "lane"]
         t = db.turn(old["id"])
         assert t["prompt_max_id"] is None and t["prompt_conv"] is None
         assert db.prompt_watermark("s1", "dm-backend", old["id"] + 1) is None  # no watermark: full history
         new = db.create_turn("backend", "s1", "master", "dm-backend")
         db.update_turn(new["id"], state="done", prompt_max_id=42, prompt_conv="dm-backend")
         assert db.turn(new["id"])["prompt_max_id"] == 42
+    finally:
+        db.close()
+
+
+def test_v15_db_gets_lanes_and_every_old_row_is_the_main_lane(repo):
+    """F-41: migration 16 adds `lane` (default '') to sessions, wakes, turns, handoffs, messages and locks, and rebuilds
+    role_state with primary key (role, lane): nothing changes for a project until a feature gets its own worktree."""
+    db = ProjectDB(str(repo))
+    db.new_session("backend", "s1", "first turn")
+    db.add_wake("backend", "dm-backend", [], "master")
+    t = db.create_turn("backend", "s1", "master", "dm-backend")
+    db.add_handoff("backend", "s1", 1, "/tmp/h.md", None, "own initiative", 0.4)
+    msg = db.add_message("dm-backend", "backend", "Message", "hi", [], t["id"])
+    db.acquire_lock("a.py", "backend", t["id"])
+    db.set_role_state("backend", rotate_reason="r", rotate_handoff=1, fail_streak=2)
+    db.conn.execute("DROP TABLE role_state")
+    db.conn.execute("CREATE TABLE role_state(role TEXT PRIMARY KEY, rotate_reason TEXT, rotate_handoff INTEGER NOT NULL DEFAULT 0,"
+                    " fail_streak INTEGER NOT NULL DEFAULT 0, updated_at REAL)")
+    db.conn.execute("INSERT INTO role_state(role, rotate_reason, rotate_handoff, fail_streak, updated_at) VALUES('backend','r',1,2,1.0)")
+    drop_lane_columns(db)
+    db.conn.execute("PRAGMA user_version=15")
+    db.close()
+    db = ProjectDB(str(repo))
+    try:
+        assert db.applied == [16]
+        for table in ("sessions", "wake_queue", "turns", "handoffs", "messages", "locks"):
+            assert cols(db, table)[-1] == "lane", table
+            assert {r["lane"] for r in db.q(f"SELECT lane FROM {table}")} == {""}, table
+        assert cols(db, "role_state") == ["role", "lane", "rotate_reason", "rotate_handoff", "fail_streak", "updated_at"]
+        assert db.role_state("backend") == {"role": "backend", "lane": "", "rotate_reason": "r", "rotate_handoff": 1,
+                                            "fail_streak": 2, "updated_at": 1.0}
+        assert db.active_session("backend") == "s1" and db.active_session("backend", "F-1") is None
+        assert db.queued_wake("backend")["lane"] == "" and db.latest_handoff("backend")["lane"] == ""
+        assert db.message(msg["id"])["lane"] == "" and db.locks()[0]["lane"] == ""
+        db.set_role_state("backend", "F-1", fail_streak=1)  # a lane has its own row, the main one is untouched
+        assert db.role_state("backend", "F-1")["fail_streak"] == 1 and db.role_state("backend")["fail_streak"] == 2
     finally:
         db.close()

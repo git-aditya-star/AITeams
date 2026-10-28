@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture
-def rt():
+def rt(monkeypatch, tmp_path):
+    monkeypatch.setenv("AITEAMS_HOME", str(tmp_path / "home"))  # F-41: main() takes the heavy-run lock; never the real one
     spec = importlib.util.spec_from_file_location("review_tree", ROOT / "scripts" / "review_tree.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

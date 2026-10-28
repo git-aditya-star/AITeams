@@ -28,7 +28,7 @@ DEFAULT_TOKEN = "qa-sandbox-token"
 FIRE_KINDS = ("message", "question", "question_message", "blocker", "approval", "commit_request", "committed",
               "commit_failed", "standup", "stopped", "interrupted", "fresh_session", "rate_limit", "rate_clear",
               "reaction", "card", "card_withdraw", "withdraw", "brainstorm", "commit_group", "plugin_missing",
-              "turn_event", "stall_check", "long_turn", "branch_card")
+              "turn_event", "stall_check", "long_turn", "branch_card", "lane_turn")
 
 
 def isolate_env(home: Path, token: str) -> None:
@@ -405,7 +405,7 @@ async def fire(st, proj, body: dict) -> dict:
     if kind == "message":
         conv = body.get("conversation", conv)
         m = await post_message(st, proj, conv, role, text or f"Plain message {n}", body.get("type", "Message"),
-                               body.get("mentions", []), None)
+                               body.get("mentions", []), None, lane=body.get("lane"))  # F-41: an optional lane ("F-1")
         out.update(conversation=conv, message=m["id"])
     elif kind in ("question_message", "blocker"):
         type_ = "Question" if kind == "question_message" else "Blocker"
@@ -492,6 +492,36 @@ async def fire(st, proj, body: dict) -> dict:
                                           body.get("shared_from"), body.get("why", "Keeps this feature off the main folder."))
         feat = db.feature(a["feature_id"])
         out.update(approval=a["id"], feature=feat["key"], conversation=feat["conversation_id"], payload=a["payload"])
+    elif kind == "lane_turn":
+        # F-41: a feature session of {role} (default frontend) on {feature} (default F-1), as if the role worked there: an
+        # active session on the lane, a turn on it ({state}: running, the default, or done; {context_tokens}) and a message
+        # from the role (so `messages.lane` is set). A running turn also gets a stand-in runner so the team strip shows the
+        # lane busy; nothing real runs, and /qa/reset clears it.
+        import types
+        from aiteams.orchestrator import lifecycle
+        r, state = body.get("role", "frontend"), body.get("state", "running")
+        if state not in ("running", "done"):
+            raise ValueError("state must be running or done")
+        feat = workflow.resolve_feature(db, body.get("feature", "F-1"))
+        if feat is None:
+            raise ValueError(f"unknown feature {body.get('feature')}")
+        lane = feat["key"]
+        sid = db.active_session(r, lane) or db.new_session(r, f"sess-{r}-{lane}", "first turn", lane)
+        t = db.create_turn(r, sid, "role", feat["conversation_id"], token=f"qa-lane-{n}-{time.time()}", lane=lane)
+        t = db.update_turn(t["id"], state=state, started_at=time.time(), context_tokens=int(body.get("context_tokens", 30000)),
+                           **({"ended_at": time.time()} if state == "done" else {}))
+        key = (proj.id, r, lane)
+        if st.scheduler:
+            if state == "running":
+                st.scheduler.running[key] = types.SimpleNamespace(turn=t, kind="normal", wake={"conversation_id": feat["conversation_id"]},
+                                                                  lane=lane, role=r, task=None, interrupt=lambda *a, **k: None)
+            else:
+                st.scheduler.running.pop(key, None)
+        await hub.broadcast("turn_state", t)
+        m = await post_message(st, proj, feat["conversation_id"], r, text or f"Working on {lane} in my own session ({n})",
+                               "Message", [], t["id"])
+        await lifecycle.broadcast_team(st, proj)
+        out.update(role=r, lane=lane, turn=t["id"], session=sid, message=m["id"], conversation=feat["conversation_id"])
     elif kind == "stall_check":
         # F-38: run the idle check for the demo project (it has no turns): one rung of the ladder per fire
         from aiteams import stalls
@@ -580,6 +610,8 @@ def build_app(port: int, workdir: Path, seed_kind: str):
     async def reseed(st) -> None:
         """Fresh repo + DB under the fixed id; keeps the old hub so open WebSockets stay connected."""
         old = st.projects.pop(DEMO_ID, None) if st is not None else None
+        if st is not None and st.scheduler:
+            st.scheduler.running.clear()  # F-41: the stand-in runners of `lane_turn` die with the data they described
         if old is not None:
             old.db.close()
         if repo.exists():

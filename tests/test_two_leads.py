@@ -127,7 +127,7 @@ def test_a_real_turn_writes_the_leads_features_line(db, home, monkeypatch, role,
     st.projects["p1"] = proj
     m = proj.db.add_message(f"dm-{role}", "master", "Message", "hi", [], None)
     runner = turn_mod.TurnRunner(st, proj, proj.db.add_wake(role, f"dm-{role}", [m["id"]], "master"))
-    asyncio.run(sched_mod.Scheduler(st)._run(("p1", role), runner))
+    asyncio.run(sched_mod.Scheduler(st)._run(("p1", role, ""), runner))
     text = open(f"{db.project_path}/.aiteams/prompts/{role}.system.md").read()
     assert expect in text
     if role == "lead-2":
@@ -216,14 +216,14 @@ def test_feature_lead_fallback_order_and_the_system_line(client, pid):
 
     # a running Lead counts as busy too: Lead 2 running, Lead 1's queued wake gone -> Lead 1
     db.x("DELETE FROM wake_queue WHERE role='lead'")
-    st.scheduler.running[(proj.id, "lead-2")] = object()
+    st.scheduler.running[(proj.id, "lead-2", "")] = object()
     try:
         assert pick(client, pid, 4) == "lead"
         # both busy: fewer open features (Lead 1 has F-1, F-4; Lead 2 has F-2, F-3) -> equal -> Lead 1
         db.add_wake("lead", "general", [], "role")
         assert pick(client, pid, 5) == "lead"
     finally:
-        st.scheduler.running.pop((proj.id, "lead-2"), None)
+        st.scheduler.running.pop((proj.id, "lead-2", ""), None)
     assert [lead_of(client, pid, i) for i in range(1, 6)] == ["lead", "lead-2", "lead-2", "lead", "lead"]
 
 

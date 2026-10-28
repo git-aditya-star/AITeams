@@ -198,14 +198,14 @@ def messages(request: Request, pid: str, conversation: str, before: int | None =
 
 
 async def post_message(st, proj: Project, conversation: str, author: str, text: str, type_: str,
-                       mentions: list[str], turn_id: int | None, ref: str | None = None) -> dict:
+                       mentions: list[str], turn_id: int | None, ref: str | None = None, lane: str | None = None) -> dict:
     conv = proj.db.conversation(conversation)
     if conv is None:
         raise HTTPException(404, f"unknown conversation: {conversation}")
     pick_line = None
     if conv["kind"] == "feature":  # F-22: a Lead mention in a feature means that feature's Lead
         mentions, pick_line = await workflow.resolve_lead_mentions(st, proj, proj.db.feature(conv["id"]), mentions)
-    msg = proj.db.add_message(conv["id"], author, type_, text, mentions, turn_id, ref)
+    msg = proj.db.add_message(conv["id"], author, type_, text, mentions, turn_id, ref, lane)
     wakes = routing.route(proj.db, msg, conv)
     for w in wakes:
         await receipts.mark(proj.db, proj.hub, [msg["id"]], w["role"], "queued")
@@ -238,12 +238,13 @@ def dashboard(request: Request, pid: str):
 
 
 @api.post("/p/{pid}/team/{role}/stop")
-async def stop_role(request: Request, pid: str, role: str):
+async def stop_role(request: Request, pid: str, role: str, lane: str | None = None):
+    """Stop the role's running turn(s): every running lane, or with `?lane=` just that one (F-41; empty = the main session)."""
     st = _state(request)
     proj = _project(request, pid)
     if role not in ROLES:
         raise HTTPException(404, "unknown role")
-    if not (st.scheduler and st.scheduler.stop(proj.id, role, "master")):
+    if not (st.scheduler and st.scheduler.stop(proj.id, role, "master", lane=lane)):
         raise HTTPException(409, "not running")
     return {"ok": True}
 
@@ -255,9 +256,9 @@ async def fresh_start_role(request: Request, pid: str, role: str, body: FreshSta
     proj = _project(request, pid)
     if role not in ROLES:
         raise HTTPException(404, "unknown role")
-    if not await request_rotation(st, proj, role, "fresh start", body.handoff):
+    if not await request_rotation(st, proj, role, "fresh start", body.handoff, body.lane):
         raise HTTPException(409, "a rotation is already pending")
-    return proj.db.role_state(role)
+    return proj.db.role_state(role, body.lane)
 
 
 @api.post("/p/{pid}/standup")
@@ -276,10 +277,10 @@ def standup_report(request: Request, pid: str, sid: int):
 
 
 @api.get("/p/{pid}/handoffs")
-def handoffs(request: Request, pid: str, role: str | None = None, limit: int = 20):
+def handoffs(request: Request, pid: str, role: str | None = None, limit: int = 20, lane: str | None = None):
     proj = _project(request, pid)
     out = []
-    for h in proj.db.handoffs(role, min(max(limit, 1), 100)):
+    for h in proj.db.handoffs(role, min(max(limit, 1), 100), lane):
         try:
             with open(h["path"], encoding="utf-8", errors="replace") as f:
                 h["text"] = f.read()
@@ -295,8 +296,9 @@ def activity(request: Request, pid: str, limit: int = 30):
 
 
 @api.get("/p/{pid}/turns")
-def turns(request: Request, pid: str, role: str | None = None, limit: int = 50):
-    return _project(request, pid).db.turns(role, min(max(limit, 1), 500))
+def turns(request: Request, pid: str, role: str | None = None, limit: int = 50, lane: str | None = None):
+    """Newest first. F-41: `lane` (a feature key, or empty for the main session) narrows to one session; left out, every lane."""
+    return _project(request, pid).db.turns(role, min(max(limit, 1), 500), lane)
 
 
 @api.get("/p/{pid}/turns/{tid}/events")

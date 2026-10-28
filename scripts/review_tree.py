@@ -22,6 +22,7 @@ built from one tree, so the files are taken from the project folder and a `mixed
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -34,6 +35,15 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def _heavy():
+    """F-41: scripts/heavy.py, the machine-wide lock that keeps two heavy runs from overlapping (loaded by path: this file is
+    itself loaded by path in the tests)."""
+    spec = importlib.util.spec_from_file_location("aiteams_heavy", Path(__file__).with_name("heavy.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 WHERE: dict = {}  # F-39 B2: {tree, branch, mixed} of the group last read by group_files (empty when it is monkeypatched)
@@ -224,13 +234,14 @@ def main(argv: list[str] | None = None) -> int:
     ok = True
     try:
         prepare(repo, tree, files, src_root)
-        passed, line = run_pytest(tree)
-        ok &= passed
-        print(line)
-        if any(f.startswith("ui/") for f in files) and not args.no_e2e:
-            passed, line = run_e2e(tree)
+        with _heavy().heavy_lock():  # F-41: one review/e2e run at a time on the machine; the others wait here
+            passed, line = run_pytest(tree)
             ok &= passed
             print(line)
+            if any(f.startswith("ui/") for f in files) and not args.no_e2e:
+                passed, line = run_e2e(tree)
+                ok &= passed
+                print(line)
     finally:
         if args.keep:
             print(f"kept      {tree}")

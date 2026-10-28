@@ -271,13 +271,13 @@ def locks(request: Request):
 @internal.post("/locks/acquire")
 async def acquire_lock(request: Request, body: LockBody):
     _, proj, turn = _auth(request)
-    return await workflow.acquire_lock(proj, turn["role"], turn["id"], body.path)
+    return await workflow.acquire_lock(proj, turn["role"], turn["id"], body.path, turn.get("lane") or "")
 
 
 @internal.post("/locks/release")
 async def release_lock(request: Request, body: LockBody):
     st, proj, turn = _auth(request)
-    return await workflow.release_lock(st, proj, turn["role"], body.path, body.force)
+    return await workflow.release_lock(st, proj, turn["role"], body.path, body.force, turn.get("lane") or "")
 
 
 # ---- handoffs / standup / manager controls (M1c) -----------------------------------
@@ -327,7 +327,7 @@ async def save_standup(request: Request, body: StandupSaveBody):
 async def interrupt(request: Request, body: InterruptBody):
     st, proj, turn = _auth(request)
     _manager_only(turn, body.role)
-    ok = bool(st.scheduler and st.scheduler.stop(proj.id, body.role, "manager", body.reason or None))
+    ok = bool(st.scheduler and st.scheduler.stop(proj.id, body.role, "manager", body.reason or None, body.lane))
     return {"ok": ok, "running": ok}
 
 
@@ -336,10 +336,10 @@ async def checkpoint(request: Request, body: CheckpointBody):
     st, proj, turn = _auth(request)
     _manager_only(turn, body.role)
     reason = "checkpoint" + (f": {body.reason}" if body.reason else "")
-    if not await request_rotation(st, proj, body.role, reason, body.handoff):
+    if not await request_rotation(st, proj, body.role, reason, body.handoff, body.lane):
         raise HTTPException(409, "a rotation is already pending for that role")
     msg = proj.db.add_message("dm-" + body.role, "system", "System",
                               f"The Manager requested a checkpoint ({body.reason or 'no reason given'}); "
                               + ("a handoff turn is queued." if body.handoff else "the next wake starts a fresh session."), [], turn["id"])
     await proj.hub.broadcast("message", msg)
-    return proj.db.role_state(body.role)
+    return proj.db.role_state(body.role, body.lane)

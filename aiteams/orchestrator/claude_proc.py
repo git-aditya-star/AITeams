@@ -17,13 +17,14 @@ MCP_SERVER = str(PKG / "mcp_server.py")
 HOOK_TOOLS = "Bash|Edit|Write|MultiEdit|NotebookEdit|Skill|Artifact"  # F-36: reads are open, so no hook on Read|Grep|Glob
 
 
-TREE_ENV = ("AITEAMS_TREE", "AITEAMS_TREE_FEATURE", "AITEAMS_WORKTREES_ROOT")  # F-39 B2: where a feature's work lives
+TREE_ENV = ("AITEAMS_TREE", "AITEAMS_TREE_FEATURE", "AITEAMS_WORKTREES_ROOT",  # F-39 B2: where a feature's work lives
+            "AITEAMS_LANE")  # F-41: the lane the turn runs in (a feature key), unset on the main session
 
 
 def child_env(daemon_url: str, project_id: str, project_path: str, role: str, turn_id: int,
               ask_timeout_s: int = 600, turn_token: str = "", ask_plugins: list[str] | None = None,
               tree: str | None = None, tree_feature: str | None = None, worktrees_root: str | None = None,
-              subagent_model: str | None = None) -> dict:
+              subagent_model: str | None = None, lane: str = "") -> dict:
     env = dict(os.environ)
     env.pop("ANTHROPIC_API_KEY", None)
     env.pop("AITEAMS_TOKEN", None)  # the Master token never reaches a role
@@ -53,6 +54,8 @@ def child_env(daemon_url: str, project_id: str, project_path: str, role: str, tu
     # feature has a live tree also knows which one (the hook denies main-folder edits for it, build_cmd adds the directory)
     if subagent_model:  # F-42: a role's subagents (Agent tool) run on this model instead of the role's own
         env["CLAUDE_CODE_SUBAGENT_MODEL"] = subagent_model
+    if lane:  # F-41: a feature lane's turn knows its lane; the main session leaves it unset
+        env["AITEAMS_LANE"] = lane
     if worktrees_root:
         env["AITEAMS_WORKTREES_ROOT"] = worktrees_root
     if tree:

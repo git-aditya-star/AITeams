@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 
+from .. import lanes
 from ..config import ROLES, canonical_role
 from ..db import ProjectDB
 
@@ -42,11 +43,12 @@ def roles_to_wake(message: dict, conversation: dict) -> list[str]:
 def route(db: ProjectDB, message: dict, conversation: dict) -> list[dict]:
     """Create or merge wakes for a new message. Returns the affected wake rows."""
     origin = "master" if message["author"] == "master" else "role"
+    lane = lanes.lane_for(db, message["conversation_id"])  # F-41: a feature with its own worktree wakes the role's lane for it
     wakes = []
     for role in roles_to_wake(message, conversation):
-        existing = db.queued_wake(role)
+        existing = db.queued_wake(role, lane=lane)
         if existing:
             wakes.append(db.merge_wake(existing["id"], message["conversation_id"], [message["id"]], origin))
         else:
-            wakes.append(db.add_wake(role, message["conversation_id"], [message["id"]], origin))
+            wakes.append(db.add_wake(role, message["conversation_id"], [message["id"]], origin, lane=lane))
     return wakes

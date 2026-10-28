@@ -171,14 +171,19 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}},
     {"name": "interrupt",
      "description": "Manager only: SIGINT a role's running turn (its wake is dropped; a System line tells the role). "
+                    "A role may run in several sessions (a main one and one per feature, e.g. 'F-36'): without `lane` every "
+                    "running session of the role is stopped, with `lane` only that one ('' = the main session). "
                     "Use only for clearly wrong or runaway work.",
-     "inputSchema": {"type": "object", "properties": {"role": {"type": "string"}, "reason": {"type": "string"}},
+     "inputSchema": {"type": "object", "properties": {"role": {"type": "string"}, "reason": {"type": "string"},
+                                                     "lane": {"type": "string"}},
                      "required": ["role", "reason"]}},
     {"name": "checkpoint",
      "description": "Manager only: retire a role's session. With handoff=true (default) the role first writes a handoff; "
                     "handoff=false restarts it with only the chat digest (use when its memory is the problem).",
      "inputSchema": {"type": "object", "properties": {"role": {"type": "string"}, "reason": {"type": "string"},
-                                                     "handoff": {"type": "boolean", "default": True}},
+                                                     "handoff": {"type": "boolean", "default": True},
+                                                     "lane": {"type": "string", "description": "the session: a feature key "
+                                                               "such as 'F-36', or '' (default) for the role's main session"}},
                      "required": ["role", "reason"]}},
     {"name": "permission",
      "description": "Permission prompt tool used by Claude Code (internal).",
@@ -377,13 +382,16 @@ def tool_save_standup(a):
 
 
 def tool_interrupt(a):
-    res = http("POST", "/internal/interrupt", {"role": str(a.get("role") or ""), "reason": str(a.get("reason") or "")})
+    body = {"role": str(a.get("role") or ""), "reason": str(a.get("reason") or "")}
+    if a.get("lane") is not None:  # F-41: left out = every running session of the role
+        body["lane"] = str(a["lane"])
+    res = http("POST", "/internal/interrupt", body)
     return "interrupted %s" % a.get("role") if res.get("ok") else "%s is not running" % a.get("role")
 
 
 def tool_checkpoint(a):
     http("POST", "/internal/checkpoint", {"role": str(a.get("role") or ""), "reason": str(a.get("reason") or ""),
-                                          "handoff": bool(a.get("handoff", True))})
+                                          "handoff": bool(a.get("handoff", True)), "lane": str(a.get("lane") or "")})
     return "checkpoint requested for %s%s" % (a.get("role"), "" if a.get("handoff", True) else " (no handoff)")
 
 

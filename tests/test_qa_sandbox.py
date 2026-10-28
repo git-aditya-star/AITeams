@@ -499,3 +499,34 @@ def test_fire_approval_sends_a_brief_by_default_and_brief_null_an_old_style_row(
         msgs = c.get("/api/p/demo/messages", params={"conversation": "feature-1"}, headers=auth).json()
         done = next(m for m in msgs if m["approval"] and m["approval"]["id"] == b["id"])
         assert done["approval"]["brief"] == b["brief"] and done["text"].endswith(b["summary"])
+
+
+def test_fire_lane_turn_puts_a_role_on_a_feature_lane(sandbox):
+    """F-41: `lane_turn {role, feature, state}` makes /team list the lane, /turns carry it and the message frame say whose
+    session it came from; `message` takes an optional lane; a done turn clears the busy dot; reset clears the stand-in."""
+    mod, work, _ = sandbox
+    app = mod.build_app(8790, work, "demo")
+    auth = {"Authorization": "Bearer sb-token"}
+    with TestClient(app) as c:
+        with c.websocket_connect("/ws/p/demo?token=sb-token") as ws:
+            r = c.post("/qa/fire", json={"kind": "lane_turn", "role": "frontend", "feature": "F-1", "text": "On it"}, headers=auth).json()
+            frames = [ws.receive_json() for _ in range(4)]
+        assert r["lane"] == "F-1" and r["conversation"] == "feature-1" and r["turn"] and r["message"] and r["session"]
+        assert {f["event"] for f in frames} == {"hello", "turn_state", "message", "team"}
+        msg = next(f for f in frames if f["event"] == "message")["data"]
+        assert msg["lane"] == "F-1" and msg["author"] == "frontend" and msg["text"] == "On it"
+        roles = {x["role"]: x for x in c.get("/api/p/demo/team", headers=auth).json()["roles"]}
+        lane = roles["frontend"]["lanes"][0]
+        assert (lane["lane"], lane["state"], lane["turn_id"]) == ("F-1", "running", r["turn"]) and roles["frontend"]["state"] != "running"  # the role row is its main session
+        assert lane["context_tokens"] == 30000
+        turns = c.get("/api/p/demo/turns?role=frontend", headers=auth).json()
+        assert next(t for t in turns if t["id"] == r["turn"])["lane"] == "F-1"
+        done = c.post("/qa/fire", json={"kind": "lane_turn", "role": "frontend", "feature": "F-1", "state": "done"}, headers=auth).json()
+        lane = next(x for x in c.get("/api/p/demo/team", headers=auth).json()["roles"] if x["role"] == "frontend")["lanes"][0]
+        assert lane["state"] == "idle" and lane["turn_id"] == done["turn"]
+        assert c.post("/qa/fire", json={"kind": "lane_turn", "feature": "F-99"}, headers=auth).status_code == 404
+        assert c.post("/qa/fire", json={"kind": "lane_turn", "state": "queued"}, headers=auth).status_code == 400
+        m = c.post("/qa/fire", json={"kind": "message", "role": "qa", "text": "lane note", "lane": "F-1"}, headers=auth).json()
+        assert c.get(f"/api/p/demo/messages?conversation={m['conversation']}", headers=auth).json()[-1]["lane"] == "F-1"
+        c.post("/qa/fire", json={"kind": "lane_turn", "role": "backend", "feature": "F-1"}, headers=auth)
+        assert ("demo", "backend", "F-1") in app.state.app.scheduler.running

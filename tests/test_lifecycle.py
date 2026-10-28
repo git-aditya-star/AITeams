@@ -188,7 +188,7 @@ def test_scheduler_stop_and_handoff_first(db, home, monkeypatch):
         normal = proj.db.add_wake("backend", "dm-backend", [m["id"]], "master")
         handoff = proj.db.add_wake("backend", "dm-backend", [], "system", kind="handoff")
         s._tick()
-        runner = s.running[("p1", "backend")]
+        runner = s.running[("p1", "backend", "")]
         assert runner.wake["id"] == handoff["id"]  # handoff goes first even though the normal wake is older and master-origin
         assert s.stop("p1", "backend", "master") is True and runner.interrupt_reason == "master"
         await asyncio.gather(*[r.task for r in s.running.values()])
@@ -379,7 +379,7 @@ def test_rotation_and_the_cap_together_run_the_handoff_wake_first(db, home, monk
         s = sched_mod.Scheduler(st)
         st.scheduler = s
         s._tick()
-        runner = s.running[("p1", "backend")]
+        runner = s.running[("p1", "backend", "")]
         wake = runner.wake
         await asyncio.gather(*[r.task for r in s.running.values()])
         return wake

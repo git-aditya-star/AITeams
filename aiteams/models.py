@@ -142,6 +142,7 @@ class LockBody(BaseModel):
 
 class FreshStartBody(BaseModel):
     handoff: bool = True
+    lane: str = ""  # F-41: the session to rotate: "" = the role's main one, else a feature key ("F-36")
 
 
 class FeatureFreshStartBody(BaseModel):
@@ -168,9 +169,11 @@ class StandupSaveBody(BaseModel):
 class InterruptBody(BaseModel):
     role: str
     reason: str = ""
+    lane: str | None = None  # F-41: None = every running lane of the role; "" = its main session; else one feature lane
 
 
 class CheckpointBody(BaseModel):
     role: str
     reason: str = ""
     handoff: bool = True
+    lane: str = ""  # F-41: the session to checkpoint ("" = the role's main one)

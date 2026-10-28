@@ -57,6 +57,7 @@ class TurnRunner:
         self.state, self.project, self.wake = state, project, wake
         self.db = project.db
         self.role = wake["role"]
+        self.lane: str = wake.get("lane") or ""  # F-41: "" = the role's main session, else a feature key ("F-36")
         self.turn: dict | None = None
         self.proc: ClaudeProc | None = None
         self.interrupt_reason: str | None = None
@@ -76,7 +77,7 @@ class TurnRunner:
             self.proc.interrupt()
 
     async def run(self) -> dict:
-        db, hub, role = self.db, self.project.hub, self.role
+        db, hub, role, lane = self.db, self.project.hub, self.role, self.lane
         db.set_wake_state(self.wake["id"], "started")
         kind = self.kind
         message_ids = live_message_ids(db, self.wake["message_ids"]) if kind == "normal" else []
@@ -84,29 +85,32 @@ class TurnRunner:
             db.set_wake_state(self.wake["id"], "done")  # every message fell behind a fresh-start marker
             return {"state": "skipped", "id": None}
         handoff = None
-        rs = db.role_state(role)
-        session_id = db.active_session(role)
+        rs = db.role_state(role, lane)
+        session_id = db.active_session(role, lane)
         if kind == "handoff" and (session_id is None or not rs["rotate_reason"]):
             db.set_wake_state(self.wake["id"], "done")
-            db.set_role_state(role, rotate_handoff=0)
+            db.set_role_state(role, lane, rotate_handoff=0)
             return {"state": "skipped", "id": None}
         reason = "first turn"
         if rs["rotate_reason"] and not rs["rotate_handoff"] and kind == "normal":
             # Rotation is consumed by the next NORMAL turn only, so the handoff lands in a prompt that shows it.
-            db.set_role_state(role, rotate_reason=None, rotate_handoff=0)
+            db.set_role_state(role, lane, rotate_reason=None, rotate_handoff=0)
             if session_id is not None:
-                session_id, reason, handoff = None, rs["rotate_reason"], db.latest_handoff(role)
+                session_id, reason, handoff = None, rs["rotate_reason"], db.latest_handoff(role, lane)
+        if lane and session_id is None and kind == "normal" and handoff is None:
+            handoff = db.latest_handoff(role)  # F-41: a lane's fresh session starts with the main session's handoff as background
         resume = session_id is not None
         if session_id is None:
-            session_id = db.new_session(role, str(uuid.uuid4()), reason)
+            session_id = db.new_session(role, str(uuid.uuid4()), reason, lane)
             if reason != "first turn":
-                seq = db.session_info(role)["seq"]
-                await self._system_message(f"Fresh session #{seq} ({reason})")
-                row = db.add_activity("fresh_session", f"{role} started session #{seq} ({reason})", role,
+                seq = db.session_info(role, lane)["seq"]
+                where = f" for {lane}" if lane else ""
+                await self._system_message(f"Fresh session #{seq}{where} ({reason})")
+                row = db.add_activity("fresh_session", f"{role} started session #{seq}{where} ({reason})", role,
                                       conversation_id="dm-" + role)
                 await hub.broadcast("activity", row)
         turn_token = secrets.token_urlsafe(24)  # proves "turn N of role R" to /internal; only this child sees it
-        self.turn = db.create_turn(role, session_id, self.wake["origin"], self.wake["conversation_id"], kind, turn_token)
+        self.turn = db.create_turn(role, session_id, self.wake["origin"], self.wake["conversation_id"], kind, turn_token, lane)
         tid = self.turn["id"]
         self.turn = db.update_turn(tid, state="running", started_at=time.time(), wake_id=self.wake["id"])
         await hub.broadcast("turn_state", self.turn)
@@ -115,7 +119,7 @@ class TurnRunner:
 
         from ..workflow import lead_open_features  # late import: workflow imports this package
         mine = lead_open_features(db, role) if role in LEADS else None  # F-22: a Lead's prompt names its features
-        sys_file = write_system_prompt(self.project.path, self.project.name, role, mine)
+        sys_file = write_system_prompt(self.project.path, self.project.name, role, mine, lane)
         self.project.delivered[tid] = db.max_message_id()  # F-16: the prompt shows everything up to here
         since_id, unfiled = await self._history(kind, message_ids, session_id, resume, reason, tid)
         prompt = self._prompt(kind, message_ids, handoff, since_id, unfiled)
@@ -129,7 +133,7 @@ class TurnRunner:
             env = child_env(self.state.daemon_url, self.project.id, self.project.path, role, tid,
                             int(self.state.settings.get("ask_timeout_s", 600)), turn_token, ask_plugin_names(settings),
                             tree=tree, tree_feature=tree_feature, worktrees_root=branches.worktrees_root(self.project.path),
-                            subagent_model=subagent_model(self.state.settings))
+                            subagent_model=subagent_model(self.state.settings), lane=lane)
             cmd = build_cmd(settings, role, env, sys_file, session_id, resume, self.model, self.effort)
             await self._on_event({"type": "aiteams_cmd", "model": self.model, "effort": self.effort,
                                   "argv": display_argv(cmd)})
@@ -145,7 +149,7 @@ class TurnRunner:
             resume_failed = (result is None and not self.proc.saw_init and rc not in (0, None)
                              and any("session" in s.lower() for s in self.proc.stderr))
             if attempt == 1 and resume and resume_failed and self.interrupt_reason is None:
-                session_id = db.new_session(role, str(uuid.uuid4()), "resume failed")
+                session_id = db.new_session(role, str(uuid.uuid4()), "resume failed", lane)
                 db.update_turn(tid, session_id=session_id)
                 resume = False
                 await self._system_message(
@@ -207,7 +211,7 @@ class TurnRunner:
                 unfiled: list[str] | None = None) -> str:
         db, role = self.db, self.role
         if kind == "handoff":
-            return build_handoff_prompt(db, role, db.role_state(role)["rotate_reason"])
+            return build_handoff_prompt(db, role, db.role_state(role, self.lane)["rotate_reason"], self.lane)
         if kind in ("standup", "standup_compile"):
             su = db.standup(self.wake.get("ref") or 0) or {"id": self.wake.get("ref"), "requested_by": "?", "start_message_id": 0}
             if kind == "standup":
@@ -222,7 +226,7 @@ class TurnRunner:
             if kind == "brainstorm":
                 return build_brainstorm_prompt(db, self.project.path, role, bs)
             return build_brainstorm_compile_prompt(db, self.project.path, bs)
-        return build_wake_prompt(db, role, message_ids, handoff, since_id, unfiled)
+        return build_wake_prompt(db, role, message_ids, handoff, since_id, unfiled, self.lane)
 
     async def _stream(self) -> dict | None:
         """Read events until `result` or EOF; SIGINT on turn_timeout_s."""

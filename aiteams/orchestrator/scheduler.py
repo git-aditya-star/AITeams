@@ -1,4 +1,5 @@
-"""Global scheduler: one running turn per role, max_concurrent across projects, Master-first, pause."""
+"""Global scheduler: one running turn per (role, lane), max_concurrent across projects, max_lanes_per_role per role,
+Master-first, pause."""
 from __future__ import annotations
 
 import asyncio
@@ -13,7 +14,7 @@ from .turn import TurnRunner
 class Scheduler:
     def __init__(self, state):
         self.state = state
-        self.running: dict[tuple[str, str], TurnRunner] = {}
+        self.running: dict[tuple[str, str, str], TurnRunner] = {}  # (project id, role, lane); lane "" = the main session
         self.stopping = False
         self.flagged: set = set()  # F-38: (project id, "turn"|"wake", id) of the long turns already reported
         self._wake = asyncio.Event()
@@ -42,30 +43,30 @@ class Scheduler:
     def _tick(self) -> None:
         if self.stopping or self.state.rate_limit_active():
             return
-        cap = int(self.state.settings.get("max_concurrent", 3))
+        cap = int(self.state.settings.get("max_concurrent", 6))
+        per_role_cap = int(self.state.settings.get("max_lanes_per_role", 2))  # F-41: one role can't take the whole cap
         candidates = []
         for proj in self.state.projects.values():
             if proj.paused or proj.schema_ahead:
                 continue
-            per_role: dict[str, dict] = {}
+            per_lane: dict[tuple[str, str], dict] = {}
             for w in proj.db.queued_wakes():  # master-first, then FIFO
-                if (proj.id, w["role"]) in self.running:
+                lane = (w["role"], w.get("lane") or "")
+                if (proj.id, *lane) in self.running:
                     continue
-                cur = per_role.get(w["role"])
-                # A pending handoff turn goes first for its role; everything else waits for the fresh session.
+                cur = per_lane.get(lane)
+                # A pending handoff turn goes first for its lane; everything else waits for the fresh session.
                 if cur is None or (w["kind"] == "handoff" and cur["kind"] != "handoff"):
-                    per_role[w["role"]] = w
-            for w in per_role.values():
+                    per_lane[lane] = w
+            for w in per_lane.values():
                 candidates.append((0 if w["origin"] == "master" else 1, w["created_at"], proj, w))
         candidates.sort(key=lambda c: (c[0], c[1]))
-        started_roles = set()
         for _, _, proj, w in candidates:
             if len(self.running) >= cap:
                 break
-            key = (proj.id, w["role"])
-            if key in self.running or key in started_roles:
+            key = (proj.id, w["role"], w.get("lane") or "")
+            if key in self.running or sum(1 for k in self.running if k[:2] == key[:2]) >= per_role_cap:
                 continue
-            started_roles.add(key)
             # Mark started here (same loop slice) so a concurrent post cannot merge into a wake we already took.
             proj.db.set_wake_state(w["id"], "started")
             w = proj.db.wake(w["id"])
@@ -95,7 +96,7 @@ class Scheduler:
                 pass
         finally:
             self.running.pop(key, None)
-            await self.release_locks(runner.project, runner.role)
+            await self.release_locks(runner.project, runner.role, key[2])
             if runner.turn:
                 runner.project.delivered.pop(runner.turn["id"], None)  # F-16: the watermark lives for one turn
             try:
@@ -111,32 +112,33 @@ class Scheduler:
                     print("stalls error:", e)
             self.notify()
 
-    def stop(self, pid: str, role: str, reason: str, note: str | None = None) -> bool:
-        """SIGINT the role's running turn (Master Stop / Manager interrupt). False when idle."""
-        runner = self.running.get((pid, role))
-        if runner is None:
-            return False
-        runner.interrupt(reason, note)
-        return True
+    def stop(self, pid: str, role: str, reason: str, note: str | None = None, lane: str | None = None) -> bool:
+        """SIGINT the role's running turns (Master Stop / Manager interrupt): every running lane of the role, or just `lane`
+        ("" = the main session). False when none is running."""
+        runners = [r for (p, ro, ln), r in self.running.items() if (p, ro) == (pid, role) and lane in (None, ln)]
+        for runner in runners:
+            runner.interrupt(reason, note)
+        return bool(runners)
 
     # ---- recovery / shutdown ----------------------------------------------
-    async def release_locks(self, project, role: str) -> None:
-        """Locks live for one turn: drop the role's locks and tell the UI."""
+    async def release_locks(self, project, role: str, lane: str = "") -> None:
+        """Locks live for one turn: drop the (role, lane) holder's locks and tell the UI."""
         try:
-            if project.db.release_locks(role):
+            if project.db.release_locks(role, lane):
                 await project.hub.broadcast("locks", {"locks": project.db.locks()})
         except Exception:
             pass
 
     async def requeue_once(self, project, wake: dict | None, role: str) -> None:
         db = project.db
+        lane = (wake or {}).get("lane") or ""
         if wake and wake.get("kind", "normal") != "normal":
-            if wake["kind"] == "handoff" and db.role_state(role)["rotate_handoff"]:
-                db.add_wake(role, wake["conversation_id"], [], "system", kind="handoff")
+            if wake["kind"] == "handoff" and db.role_state(role, lane)["rotate_handoff"]:
+                db.add_wake(role, wake["conversation_id"], [], "system", kind="handoff", lane=lane)
             elif wake["kind"] in ("standup", "standup_compile", "brainstorm", "brainstorm_compile"):
-                db.add_wake(role, wake["conversation_id"], [], "system", kind=wake["kind"], ref=wake.get("ref"))
+                db.add_wake(role, wake["conversation_id"], [], "system", kind=wake["kind"], ref=wake.get("ref"), lane=lane)
         elif wake and wake.get("origin") != "system":
-            db.add_wake(role, wake["conversation_id"], wake["message_ids"], "system")
+            db.add_wake(role, wake["conversation_id"], wake["message_ids"], "system", lane=lane)
         else:
             msg = db.add_message("dm-" + role, "system", "System",
                                  f"A turn for {role} was interrupted twice; its wake was not re-queued.", [], None)
@@ -154,11 +156,11 @@ class Scheduler:
                 db.update_turn(t["id"], state="failed", ended_at=time.time(),
                                error=(t.get("error") or "") + " daemon restarted while running")
                 wake = db.wake(t["wake_id"]) if t.get("wake_id") else None
-                await self.release_locks(proj, t["role"])
+                await self.release_locks(proj, t["role"], t.get("lane") or "")
                 await self.requeue_once(proj, wake, t["role"])
-            for role in [r["role"] for r in db.q("SELECT role FROM role_state WHERE rotate_handoff=1")]:
-                if not db.queued_wake(role, "handoff"):
-                    db.add_wake(role, "dm-" + role, [], "system", kind="handoff")
+            for r in db.q("SELECT role, lane FROM role_state WHERE rotate_handoff=1"):
+                if not db.queued_wake(r["role"], "handoff", r["lane"]):
+                    db.add_wake(r["role"], "dm-" + r["role"], [], "system", kind="handoff", lane=r["lane"])
             try:  # F-38: once at daemon start, for a project that came up idle
                 await stalls.check_idle(self.state, proj)
             except Exception as e:

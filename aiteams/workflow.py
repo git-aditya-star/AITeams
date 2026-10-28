@@ -16,7 +16,7 @@ import time
 from fastapi import HTTPException
 
 from .config import LEADS, ROLES, canonical_role, effort_for, model_for, model_label, role_name, rotation_limit
-from . import branches, commit_graph
+from . import branches, commit_graph, lanes
 from .db import PHASES, WAKE_KINDS, ProjectDB
 from .runtime import Project
 
@@ -350,7 +350,7 @@ def feature_header(db: ProjectDB, project_path: str, feat: dict, with_sizes: boo
     lines.append("- voices: " + ", ".join(voices(db, feat)))
     locks = db.locks()
     if locks:
-        lines.append("- locks now: " + " · ".join(f"{l['path']} ({l['role']})" for l in locks))
+        lines.append("- locks now: " + " · ".join(f"{l['path']} ({lanes.label(l['role'], l.get('lane') or '')})" for l in locks))
     return "\n".join(lines)
 
 
@@ -412,6 +412,8 @@ async def set_feature(st, proj: Project, feat: dict, fields: dict, by: str) -> d
     if not changes:
         return feat
     feat = proj.db.update_feature(feat["id"], **changes)
+    if changes.get("phase") == "done" or changes.get("archived"):
+        await _broadcast_team(st, proj)  # F-41: its lane sessions just retired
     who = "Master" if by == "master" else by
     lines = []
     for k, v in changes.items():
@@ -432,6 +434,10 @@ async def set_feature(st, proj: Project, feat: dict, fields: dict, by: str) -> d
     return feat
 
 
+async def _broadcast_team(st, proj: Project) -> None:
+    await proj.hub.broadcast("team", {"roles": team_status(st, proj)})
+
+
 def lead_open_features(db: ProjectDB, role: str) -> list[str]:
     """F-22: keys of the open (not done, not archived) features whose Lead is `role`, oldest first."""
     return [f"F-{r['id']}" for r in db.q("SELECT id FROM features WHERE lead=? AND phase!='done' AND archived=0"
@@ -439,8 +445,8 @@ def lead_open_features(db: ProjectDB, role: str) -> list[str]:
 
 
 def _lead_busy(st, proj: Project, role: str) -> bool:
-    running = st.scheduler.running if st.scheduler else {}
-    return (proj.id, role) in running or any(proj.db.queued_wake(role, k) for k in WAKE_KINDS)
+    running = st.scheduler.running if st.scheduler else {}  # F-41: busy in any lane
+    return any(k[:2] == (proj.id, role) for k in running) or any(proj.db.queued_wake(role, k, None) for k in WAKE_KINDS)
 
 
 async def feature_lead(st, proj: Project, feat: dict) -> str:
@@ -914,6 +920,8 @@ async def decide_approval(st, proj: Project, aid: int, decision: str, note: str 
     if decision == "approve" and set_phase and feat and set_phase != feat["phase"]:
         feat = proj.db.update_feature(feat["id"], phase=set_phase)
         await proj.hub.broadcast("feature", feat)  # its `design` is already the new one
+        if set_phase == "done":
+            await _broadcast_team(st, proj)  # F-41: its lane sessions just retired
         extra = f" (phase → {set_phase})"
     else:
         await _broadcast_design(proj, a)
@@ -1152,6 +1160,7 @@ async def request_commit(st, proj: Project, role: str, turn_id: int | None, feat
         if b["gated"] and b["state"] != "approved":
             raise HTTPException(409, f"{feat['key']} has no confirmed branch yet; the Lead sends a Branch card "
                                      "(propose_branch) first")
+    req_lane = ((proj.db.turn(turn_id) or {}).get("lane") or "") if turn_id else ""  # F-41: the filing turn's lane
     reqs: list[int] = []
     for n in requires or []:
         r = proj.db.commit(int(n)) if str(n).lstrip("#").isdigit() else None
@@ -1180,9 +1189,10 @@ async def request_commit(st, proj: Project, role: str, turn_id: int | None, feat
             raise HTTPException(400, f"{rel} does not exist and is not tracked")
         # F-36: no locks outside the project; F-39 B2: a worktree file's lock key is its absolute realpath (the hook's)
         lock_key = None if os.path.isabs(rel) else rel if root == proj.path else os.path.realpath(full)
-        holder = proj.db.one("SELECT role FROM locks WHERE path=?", lock_key) if lock_key else None
-        if holder and holder["role"] != role:
-            raise HTTPException(409, f"{rel} is locked by {holder['role']}; ask them or @lead to unlock it first")
+        holder = proj.db.one("SELECT role, lane FROM locks WHERE path=?", lock_key) if lock_key else None
+        if holder and (holder["role"], holder["lane"] or "") != (role, req_lane):  # F-41: another lane of the role is another holder
+            raise HTTPException(409, f"{rel} is locked by {lanes.label(holder['role'], holder['lane'] or '')}; "
+                                     "ask them or @lead to unlock it first")
         rels.append(rel)
         hashes[rel] = _sha(root, rel)
     state = "master_review" if role in LEADS else "lead_review"
@@ -1636,11 +1646,13 @@ async def broadcast_locks(proj: Project) -> None:
     await proj.hub.broadcast("locks", {"locks": proj.db.locks()})
 
 
-async def acquire_lock(proj: Project, role: str, turn_id: int | None, path: str) -> dict:
+async def acquire_lock(proj: Project, role: str, turn_id: int | None, path: str, lane: str = "") -> dict:
     rel = _rel(proj.path, path)  # docs under .aiteams/features/ are lockable too
-    holder = proj.db.acquire_lock(rel, role, turn_id)
+    holder = proj.db.acquire_lock(rel, role, turn_id, lane)  # F-41: the holder is a role AND a lane
     if holder:
-        return {"ok": False, "path": rel, "holder": holder["role"], "since": holder["created_at"]}
+        hl = holder.get("lane") or ""
+        return {"ok": False, "path": rel, "holder": lanes.label(holder["role"], hl), "holder_role": holder["role"],
+                "holder_lane": hl, "since": holder["created_at"]}
     proj.db.touch_edit(rel, role)
     await broadcast_locks(proj)
     return {"ok": True, "path": rel}
@@ -1660,13 +1672,13 @@ def _rel(project_path: str, p: str) -> str:
     return os.path.relpath(rp, root)
 
 
-async def release_lock(st, proj: Project, role: str, path: str, force: bool) -> dict:
+async def release_lock(st, proj: Project, role: str, path: str, force: bool, lane: str = "") -> dict:
     rel = _rel(proj.path, path)
     holder = proj.db.one("SELECT * FROM locks WHERE path=?", rel)
     if holder is None:
         return {"ok": True, "path": rel, "released": False}
     holder = dict(holder)
-    if holder["role"] == role:
+    if holder["role"] == role and (holder["lane"] or "") == lane:
         proj.db.release_lock(rel)
     elif force and role in (*LEADS, "manager"):
         proj.db.release_lock(rel)
@@ -1674,7 +1686,8 @@ async def release_lock(st, proj: Project, role: str, path: str, force: bool) -> 
         await _post(st, proj, f"dm-{holder['role']}", role,
                     f"I force-unlocked `{rel}` (it was yours since {when}).", "Message", [holder["role"]])
     else:
-        raise HTTPException(403, f"{rel} is locked by {holder['role']}; only a Lead or the manager may force-unlock it")
+        raise HTTPException(403, f"{rel} is locked by {lanes.label(holder['role'], holder['lane'] or '')}; "
+                                 "only a Lead or the manager may force-unlock it")
     await broadcast_locks(proj)
     return {"ok": True, "path": rel, "released": True}
 
@@ -1829,28 +1842,58 @@ def _conv_short(db: ProjectDB, cid: str | None) -> dict | None:
     return {"conversation_id": cid, "label": label, "feature_key": feat["key"] if feat else None}
 
 
+def _lane_state(db: ProjectDB, running: dict, pid: str, role: str, lane: str) -> tuple[str, object]:
+    """("running" | "queued" | "idle", the runner) of one (role, lane)."""
+    runner = running.get((pid, role, lane))
+    return ("running" if runner else ("queued" if any(db.queued_wake(role, k, lane) for k in WAKE_KINDS) else "idle")), runner
+
+
+def _lane_meter(st, db: ProjectDB, role: str, lane: str) -> tuple[dict, list[dict], dict]:
+    """(session info, recent turns, context meter) of one (role, lane). F-42: the meter reads 100% when the session rotates."""
+    from .orchestrator.turn import context_window_from
+    info = db.session_info(role, lane)
+    turns = db.turns(role, limit=20, lane=lane)
+    mine = [t for t in turns if t["session_id"] == info["session_id"]]
+    ctx = next((t["context_tokens"] for t in mine if t.get("context_tokens")), 0) or 0
+    window = next((context_window_from(json.loads(t["result_json"]), None)
+                   for t in turns if t.get("result_json")), context_window_from(None))
+    limit = rotation_limit(st.settings, window)
+    return info, turns, {"context_tokens": ctx, "context_window": window, "context_limit": limit,
+                         "context_pct": (ctx / limit) if limit else 0.0}
+
+
+def _role_lanes(db: ProjectDB, running: dict, pid: str, role: str) -> list[str]:
+    """F-41: the feature lanes worth a chip for the role: an active feature session, a running turn or a queued wake."""
+    found = {ln for r, ln in db.active_lanes(role)}
+    found |= {k[2] for k in running if k[:2] == (pid, role) and k[2]}
+    found |= {w["lane"] for w in db.queued_wakes() if w["role"] == role and w.get("lane")}
+    return sorted(found, key=lambda ln: (int(ln[2:]) if ln[2:].isdigit() else 0, ln))
+
+
 def team_status(st, proj: Project) -> list[dict]:
     from . import stalls  # late import: stalls imports this module
-    from .orchestrator.turn import context_window_from
     db = proj.db
     running = st.scheduler.running if st.scheduler else {}
     out = []
     for role in ROLES:
-        info = db.session_info(role)
-        turns = db.turns(role, limit=20)
+        info, turns, meter = _lane_meter(st, db, role, "")  # the role row is its MAIN session; feature lanes are in `lanes`
         last = turns[0] if turns else None
-        runner = running.get((proj.id, role))
-        state = "running" if runner else ("queued" if any(db.queued_wake(role, k) for k in WAKE_KINDS) else "idle")
-        mine = [t for t in turns if t["session_id"] == info["session_id"]]
-        ctx = next((t["context_tokens"] for t in mine if t.get("context_tokens")), 0) or 0
+        state, runner = _lane_state(db, running, proj.id, role, "")
         model = model_for(st.settings, role)
-        window = next((context_window_from(json.loads(t["result_json"]), None)
-                       for t in turns if t.get("result_json")), context_window_from(None))
         rs = db.role_state(role)
-        limit = rotation_limit(st.settings, window)  # F-42: the meter reads 100% when the session rotates
-        out.append({"role": role, "state": state, "session_id": info["session_id"], "last_turn": last,
-                    "context_tokens": ctx, "context_window": window, "context_limit": limit,
-                    "context_pct": (ctx / limit) if limit else 0.0,
+        lane_rows = []
+        for ln in _role_lanes(db, running, proj.id, role):
+            linfo, lturns, lmeter = _lane_meter(st, db, role, ln)
+            lstate, lrunner = _lane_state(db, running, proj.id, role, ln)
+            lrs = db.role_state(role, ln)
+            lane_rows.append({"lane": ln, "state": lstate, "turn_id": (lrunner.turn["id"] if lrunner and lrunner.turn
+                                                                         else (lturns[0]["id"] if lturns else None)),
+                              "session_id": linfo["session_id"], "session_seq": linfo["seq"], **lmeter,
+                              "rotation": lrs["rotate_reason"], "rotation_handoff_pending": bool(lrs["rotate_handoff"]),
+                              "kind": (getattr(lrunner, "kind", None) if lrunner else None),
+                              "stuck": stalls.is_stuck(st, proj, role, lane=ln)})
+        out.append({"role": role, "state": state, "session_id": info["session_id"], "last_turn": last, **meter,
+                    "lanes": lane_rows,
                     "cost_today": db.cost_today(role), "model": model, "model_label": model_label(model),
                     "effort": effort_for(st.settings, role),
                     "session_seq": info["seq"], "fresh_starts": info["fresh_starts"],
@@ -1905,7 +1948,7 @@ async def _recheck(st, proj: Project, feature_id: int | None) -> None:
 def dashboard_features(st, proj: Project) -> list[dict]:
     db = proj.db
     running = st.scheduler.running if st.scheduler else {}
-    running_convs = {r.wake["conversation_id"]: role for (pid, role), r in running.items() if pid == proj.id}
+    running_convs = {r.wake["conversation_id"]: role for (pid, role, _), r in running.items() if pid == proj.id}
     queued_convs = {w["conversation_id"]: w["role"] for w in db.queued_wakes() if w["kind"] == "normal"}
     stale_s = float(st.settings.get("stale_hours", 4)) * 3600
     now = time.time()
@@ -1998,28 +2041,30 @@ async def write_handoff(st, proj: Project, role: str, turn: dict, text: str) -> 
     if not text:
         raise HTTPException(400, "text required")
     db = proj.db
-    rs = db.role_state(role)  # outside a rotation the handoff is saved on the role's own initiative
-    info = db.session_info(role)
+    lane = turn.get("lane") or ""  # F-41: the handoff belongs to the session the turn ran in
+    rs = db.role_state(role, lane)  # outside a rotation the handoff is saved on the role's own initiative
+    info = db.session_info(role, lane)
     d = handoffs_dir(proj.path, role)
     os.makedirs(d, exist_ok=True)
-    n = len(db.handoffs(role, 10000)) + 1
-    path = os.path.join(d, f"{n}.md")
+    n = len(db.handoffs(role, 10000, lane)) + 1
+    path = os.path.join(d, f"{lane}-{n}.md" if lane else f"{n}.md")
     reason = rs["rotate_reason"] or "own initiative"
-    last = db.turns(role, limit=1)
+    last = db.turns(role, limit=1, lane=lane)
     pct = None
     if last and last[0].get("context_tokens"):
         from .orchestrator.turn import context_window_from
         res = json.loads(last[0]["result_json"]) if last[0].get("result_json") else None
         pct = last[0]["context_tokens"] / (context_window_from(res, None) or 1)
-    header = (f"# Handoff — {role_name(role)}, session #{info['seq']}\n"
+    header = (f"# Handoff — {role_name(role)}, session #{info['seq']}" + (f" ({lane})" if lane else "") + "\n"
               f"written {time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime())}\nreason: {reason}\n"
               + (f"context: {pct:.0%}\n" if pct is not None else "") + "\n")
     with open(path, "w", encoding="utf-8") as f:
         f.write(header + text + "\n")
     rel = os.path.relpath(path, proj.path)
     msg = await _post(st, proj, f"dm-{role}", role, text, "Handoff", [], turn["id"])
-    h = db.add_handoff(role, info["session_id"] or turn["session_id"], n, path, msg["id"], reason, pct)
-    await _activity(proj, "handoff", f"{role} wrote handoff #{n} ({reason})", role, None, f"dm-{role}", f"handoff:{h['id']}")
+    h = db.add_handoff(role, info["session_id"] or turn["session_id"], n, path, msg["id"], reason, pct, lane)
+    await _activity(proj, "handoff", f"{lanes.label(role, lane)} wrote handoff #{n} ({reason})", role, None, f"dm-{role}",
+                    f"handoff:{h['id']}")
     return {"id": h["id"], "path": rel}
 
 

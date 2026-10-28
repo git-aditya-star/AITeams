@@ -60,7 +60,7 @@ def test_a_mention_with_no_reply_climbs_nudge_then_manager_then_stuck_and_stops(
     # the nudge is a System line: the same wait, not a new one
     assert stalls.find(proj, db.feature(f["id"]))["key"] == ("backend", f"msg:{m['id']}")
     assert db.feature(f["id"])["stall"] == {"who": "backend", "kind": "message", "ref": f"msg:{m['id']}", "step": 1,
-                                            "stuck": False, "since": row["created_at"]}
+                                            "stuck": False, "since": row["created_at"], "lane": ""}
     frames = [d for e, d in proj.hub.events if e == "feature" and d["id"] == f["id"]]
     assert frames and frames[-1]["stall"]["step"] == 1
     # second idle: the Manager is told once, in dm-manager, with the list
@@ -282,9 +282,9 @@ def test_the_project_must_be_idle_for_the_check_to_run(env):
     w = db.add_wake("qa", "dm-qa", [], "master")  # something queued
     assert stalls.is_idle(st, proj) is False and asyncio.run(stalls.check_idle(st, proj)) == []
     db.x("DELETE FROM wake_queue")
-    st.scheduler.running = {("p1", "qa"): object()}  # a turn running (a role blocked on a question counts too)
+    st.scheduler.running = {("p1", "qa", ""): object()}  # a turn running (a role blocked on a question counts too)
     assert stalls.is_idle(st, proj) is False and asyncio.run(stalls.check_idle(st, proj)) == []
-    st.scheduler.running = {("other-project", "qa"): object()}  # another project's turn does not matter
+    st.scheduler.running = {("other-project", "qa", ""): object()}  # another project's turn does not matter
     assert stalls.is_idle(st, proj) is True
     st.scheduler.running = {}
     db.set_kv("paused", True)
@@ -311,7 +311,7 @@ def test_the_scheduler_checks_once_when_the_last_turn_ends(db, home, monkeypatch
     calls = []
 
     async def fake_on_idle(st_, proj_):
-        calls.append(sorted(r for (p, r) in st_.scheduler.running))
+        calls.append(sorted(r for (p, r, _) in st_.scheduler.running))
         return []
     monkeypatch.setattr(stalls, "on_idle", fake_on_idle)
     monkeypatch.setattr(sched_mod, "TurnRunner", Staggered)
@@ -344,7 +344,7 @@ def test_the_scheduler_does_not_check_while_a_wake_is_queued_or_on_shutdown(db, 
         st.scheduler = s
         db.add_wake("qa", "dm-qa", [], "master")
         s._tick()
-        runner = s.running[("p1", "qa")]
+        runner = s.running[("p1", "qa", "")]
         if queue_more:
             db.add_wake("frontend", "dm-frontend", [], "master")  # a follow-up wake exists when qa ends
         if shutdown:
@@ -400,7 +400,7 @@ def test_a_running_turn_is_flagged_but_never_interrupted(env):
 
         def interrupt(self, *a):
             pytest.fail("a long turn is flagged, never stopped")
-    st.scheduler.running = {("p1", "backend"): Runner()}
+    st.scheduler.running = {("p1", "backend", ""): Runner()}
     lines = asyncio.run(stalls.flag_long_turns(st, proj, set()))
     assert lines == ["Backend's turn has been running for 30m; it was not stopped."]
     assert stalls.is_stuck(st, proj, "backend") is True and stalls.is_stuck(st, proj, "qa") is False

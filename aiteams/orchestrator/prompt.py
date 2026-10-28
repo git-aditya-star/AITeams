@@ -6,6 +6,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from .. import lanes
 from ..config import LEADS, ROLES, base_role, role_name
 from ..db import ProjectDB
 
@@ -50,7 +51,8 @@ def lead_line(role: str, features: list[str] | None) -> str | None:
             "Another Lead's feature is read-only for you.")
 
 
-def build_system_prompt(project_path: str, project_name: str, role: str, lead_features: list[str] | None = None) -> str:
+def build_system_prompt(project_path: str, project_name: str, role: str, lead_features: list[str] | None = None,
+                        lane: str = "") -> str:
     title = (f"# You are {role_name(role)} of the AITeams team on project \"{project_name}\"" if role in LEADS
              else f"# You are the {role_name(role)} of the AITeams team on project \"{project_name}\"")
     parts = [
@@ -59,6 +61,7 @@ def build_system_prompt(project_path: str, project_name: str, role: str, lead_fe
         f"- Git branch: {git_branch(project_path)}",
         f"- Roles on the team: {', '.join(ROLES)} (you are `{role}`; the human is the Master)",
         *([f"- {lead_line(role, lead_features)}"] if lead_line(role, lead_features) else []),
+        *([f"- {lanes.system_line(role_name(role), lane)}"] if lane else []),  # F-41: a feature lane works on that feature only
         "",
         role_prompt_text(project_path, role).strip(),
         "",
@@ -71,11 +74,12 @@ def build_system_prompt(project_path: str, project_name: str, role: str, lead_fe
     return "\n".join(parts) + "\n"
 
 
-def write_system_prompt(project_path: str, project_name: str, role: str, lead_features: list[str] | None = None) -> str:
+def write_system_prompt(project_path: str, project_name: str, role: str, lead_features: list[str] | None = None,
+                        lane: str = "") -> str:
     d = Path(project_path) / ".aiteams" / "prompts"
     d.mkdir(parents=True, exist_ok=True)
-    p = d / f"{role}.system.md"
-    p.write_text(build_system_prompt(project_path, project_name, role, lead_features))
+    p = d / (f"{role}.{lane}.system.md" if lane else f"{role}.system.md")  # F-41: one file per lane, so two never race
+    p.write_text(build_system_prompt(project_path, project_name, role, lead_features, lane))
     return str(p)
 
 
@@ -119,7 +123,7 @@ def live_message_ids(db: ProjectDB, message_ids: list[int]) -> list[int]:
 
 
 def build_wake_prompt(db: ProjectDB, role: str, message_ids: list[int], handoff: dict | None = None,
-                      since_id: int | None = None, unfiled: list[str] | None = None) -> str:
+                      since_id: int | None = None, unfiled: list[str] | None = None, lane: str = "") -> str:
     """The wake digest: the new messages, the feature header, and the focus conversation's recent history.
     F-42: `since_id` is set only for a resumed session whose earlier turn already showed that conversation up to that
     message id (`TurnRunner` decides): the history is then only what came after it, long bodies cut, because the session
@@ -131,11 +135,16 @@ def build_wake_prompt(db: ProjectDB, role: str, message_ids: list[int], handoff:
         by_conv.setdefault(m["conversation_id"], []).append(m)
     out = []
     if handoff:
-        info = db.session_info(role)
+        info = db.session_info(role, lane)
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(handoff["created_at"]))
-        out += [f"# Fresh session #{info['seq']} — handoff from your previous session "
-                f"(written {when}, reason: {handoff.get('reason') or 'rotation'})",
-                _read(Path(handoff["path"])).strip() or "(handoff file missing)", ""]
+        if lane and (handoff.get("lane") or "") != lane:  # F-41: a lane's first session reads the main session's handoff
+            out += [f"# Fresh session for {lane} — background: your main session's latest handoff (read-only; written {when})",
+                    f"You are in your session for {lane}. This is the context of your other session, not your task list.",
+                    _read(Path(handoff["path"])).strip() or "(handoff file missing)", ""]
+        else:
+            out += [f"# Fresh session #{info['seq']} — handoff from your previous session "
+                    f"(written {when}, reason: {handoff.get('reason') or 'rotation'})",
+                    _read(Path(handoff["path"])).strip() or "(handoff file missing)", ""]
     if unfiled:
         from ..workflow import unfiled_text  # late import: workflow imports this package
         out += ["# You have unfiled edits (changed on disk, in no open commit request)", unfiled_text(unfiled),
@@ -180,12 +189,12 @@ def _conv_label(db: ProjectDB, cid: str) -> str:
     return f"{conv['title']} ({conv['kind']}, id `{cid}`)"
 
 
-def build_handoff_prompt(db: ProjectDB, role: str, reason: str | None) -> str:
+def build_handoff_prompt(db: ProjectDB, role: str, reason: str | None, lane: str = "") -> str:
     from ..workflow import unfiled_edits, unfiled_text  # late import: workflow imports this package
-    info = db.session_info(role)
+    info = db.session_info(role, lane)
     unfiled = unfiled_text(unfiled_edits(db, db.project_path, role))
     return "\n".join([
-        f"# Handoff turn for {role_name(role)} (session #{info['seq']})",
+        f"# Handoff turn for {role_name(role)} (session #{info['seq']}" + (f", your session for {lane})" if lane else ")"),
         f"Reason: {reason or 'rotation'}. This session is being retired; your next wake starts a fresh session"
         " that only knows what you write now.",
         "",
