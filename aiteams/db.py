@@ -8,7 +8,7 @@ import threading
 import time
 from pathlib import Path
 
-from .config import ROLES
+from .config import MAX_TURNS_ERROR, ROLES
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversations(
@@ -427,6 +427,17 @@ class ProjectDB:
                      " VALUES(?,?,?,?,?,?,?,?)", role, session_id, "queued", origin, conversation_id, time.time(), kind,
                      token)
         return self.turn(tid)
+
+    def cap_streak(self, role: str) -> int:
+        """F-37: how many of the role's most recent ended normal turns, newest first, stopped at the max-turns cap
+        (state done, error "max turns reached"). Any other ended turn (done, failed, interrupted) ends the streak."""
+        n = 0
+        for r in self.q("SELECT state, error FROM turns WHERE role=? AND kind='normal' AND state IN"
+                        " ('done','failed','interrupted') ORDER BY id DESC LIMIT 100", role):
+            if r["state"] != "done" or r["error"] != MAX_TURNS_ERROR:
+                break
+            n += 1
+        return n
 
     def turns_since(self, role: str, since: float, kind: str = "normal", ended: bool = True) -> list[dict]:
         sql = "SELECT * FROM turns WHERE role=? AND created_at>? AND kind=?"

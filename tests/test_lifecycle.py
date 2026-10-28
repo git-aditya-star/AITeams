@@ -29,10 +29,10 @@ def setup(db, home, monkeypatch, events, **settings):
     return st, proj
 
 
-def ended_turn(db, role, state="done", kind="normal", ctx=None, result=None, conv="dm-" + "backend"):
+def ended_turn(db, role, state="done", kind="normal", ctx=None, result=None, conv="dm-" + "backend", error=None):
     t = db.create_turn(role, db.active_session(role) or "s", "master", conv, kind)
     return db.update_turn(t["id"], state=state, started_at=1.0, ended_at=2.0, context_tokens=ctx,
-                          result_json=json.dumps(result) if result else None)
+                          result_json=json.dumps(result) if result else None, error=error)
 
 
 def test_context_over_threshold_queues_handoff_turn(db, home, monkeypatch):
@@ -216,3 +216,218 @@ def test_standup_turn_does_not_consume_rotation(db, home, monkeypatch):
     m = db.add_message("dm-backend", "master", "Message", "go", [], None)
     t2 = asyncio.run(TurnRunner(st, proj, db.add_wake("backend", "dm-backend", [m["id"]], "master")).run())
     assert t2["session_id"] != "old" and db.role_state("backend")["rotate_reason"] is None
+
+
+# ---- F-37: a normal turn that stopped at the --max-turns cap is continued, up to a limit ----------------------------------
+CAPPED = "max turns reached"
+
+
+class Notifier:
+    running: dict = {}
+
+    def __init__(self):
+        self.notified = 0
+
+    def notify(self):
+        self.notified += 1
+
+
+def capped(db, st, proj, role="backend", conv="dm-backend", **kw):
+    t = ended_turn(db, role, error=CAPPED, conv=conv, **kw)
+    asyncio.run(lifecycle.after_turn(st, proj, FinishedRunner(proj, t)))
+    return t
+
+
+def test_a_capped_turn_posts_a_system_line_and_wakes_the_role_again(db, home, monkeypatch):
+    st, proj = setup(db, home, monkeypatch, [], max_turns=50, max_turn_continues=2)
+    st.scheduler = Notifier()
+    db.new_session("backend", "s1", "first turn")
+    f = db.create_feature("Export")
+    capped(db, st, proj, conv=f["conversation_id"])
+    line = db.messages(f["conversation_id"])[-1]
+    assert (line["author"], line["type"], line["mentions"]) == ("system", "System", ["backend"])
+    assert line["text"] == ("Backend's turn stopped at the 50-step limit before it finished; continuing automatically (1 of 2). "
+                            "Backend: check your files and this chat, finish what you were doing, then file or report.")
+    wakes = db.queued_wakes()
+    assert len(wakes) == 1 and wakes[0]["role"] == "backend" and wakes[0]["kind"] == "normal"
+    assert (wakes[0]["origin"], wakes[0]["conversation_id"], wakes[0]["message_ids"]) == ("system", f["conversation_id"], [line["id"]])
+    act = db.activity(1)[0]
+    assert (act["kind"], act["role"], act["conversation_id"]) == ("max_turns", "backend", f["conversation_id"])
+    assert act["text"].startswith("Backend's turn stopped at the 50-step limit")
+    events = [e for e, _ in proj.hub.events]
+    assert "message" in events and "activity" in events and "receipt" in events
+    assert st.scheduler.notified == 1
+    assert db.role_state("backend")["fail_streak"] == 0  # a capped turn is not a failure
+
+
+def test_the_continuation_merges_into_a_queued_wake_instead_of_adding_one(db, home, monkeypatch):
+    st, proj = setup(db, home, monkeypatch, [])
+    db.new_session("backend", "s1", "first turn")
+    m = db.add_message("dm-backend", "master", "Message", "also this", [], None)
+    queued = db.add_wake("backend", "dm-backend", [m["id"]], "master")
+    capped(db, st, proj)
+    wakes = db.queued_wakes()
+    assert [w["id"] for w in wakes] == [queued["id"]]  # no second wake
+    line = db.messages("dm-backend")[-1]
+    assert wakes[0]["message_ids"] == [m["id"], line["id"]] and wakes[0]["origin"] == "master"  # keeps the Master's priority
+
+
+def test_the_default_limit_is_100_steps_and_two_continues(db, home, monkeypatch):
+    st, proj = setup(db, home, monkeypatch, [])
+    db.new_session("backend", "s1", "first turn")
+    capped(db, st, proj)
+    assert "stopped at the 100-step limit" in db.messages("dm-backend")[-1]["text"] and "(1 of 2)" in db.messages("dm-backend")[-1]["text"]
+
+
+def test_after_the_limit_the_role_is_not_woken_and_the_manager_is(db, home, monkeypatch):
+    st, proj = setup(db, home, monkeypatch, [], max_turns=50, max_turn_continues=2)
+    db.new_session("backend", "s1", "first turn")
+    for i in (1, 2):
+        capped(db, st, proj)
+        assert f"continuing automatically ({i} of 2)" in db.messages("dm-backend")[-1]["text"]
+        db.x("DELETE FROM wake_queue")  # the role ran its continuation and capped again
+    capped(db, st, proj)
+    line = db.messages("dm-backend")[-1]
+    assert line["text"] == "Backend hit the 50-step limit 3 turns in a row; not continuing automatically. @manager please check."
+    assert (line["author"], line["mentions"]) == ("system", ["manager"])
+    assert db.queued_wake("backend") is None
+    w = db.queued_wake("manager")
+    assert w["message_ids"] == [line["id"]] and w["origin"] == "system" and w["conversation_id"] == "dm-backend"
+    assert db.activity(1)[0]["kind"] == "max_turns" and "3 turns in a row" in db.activity(1)[0]["text"]
+    capped(db, st, proj)  # a fourth: still the Manager, one merged wake
+    assert [w["role"] for w in db.queued_wakes()] == ["manager"] and len(db.queued_wake("manager")["message_ids"]) == 2
+
+
+def test_the_manager_hitting_the_cap_too_often_is_reported_to_the_master_and_wakes_nobody(db, home, monkeypatch):
+    st, proj = setup(db, home, monkeypatch, [], max_turn_continues=1)
+    db.new_session("manager", "s1", "first turn")
+    for _ in range(2):
+        capped(db, st, proj, role="manager", conv="dm-manager")
+    db.x("DELETE FROM wake_queue")
+    capped(db, st, proj, role="manager", conv="dm-manager")
+    line = db.messages("dm-manager")[-1]
+    assert line["text"].endswith("3 turns in a row; not continuing automatically. @master please check.") and line["mentions"] == ["master"]
+    assert db.queued_wakes() == []  # the Manager's stall is not handed to the Manager
+
+
+def test_an_ordinary_turn_between_capped_ones_resets_the_count(db, home, monkeypatch):
+    st, proj = setup(db, home, monkeypatch, [], max_turn_continues=2)
+    db.new_session("backend", "s1", "first turn")
+    capped(db, st, proj)
+    capped(db, st, proj)
+    assert "(2 of 2)" in db.messages("dm-backend")[-1]["text"]
+    for state in ("done", "failed", "interrupted"):  # anything that is not a capped turn ends the streak
+        db.x("DELETE FROM wake_queue")
+        asyncio.run(lifecycle.after_turn(st, proj, FinishedRunner(proj, ended_turn(db, "backend", state))))
+        capped(db, st, proj)
+        assert "(1 of 2)" in db.messages("dm-backend")[-1]["text"], state
+        capped(db, st, proj)  # and it counts up again from there
+        assert "(2 of 2)" in db.messages("dm-backend")[-1]["text"], state
+
+
+def test_cap_streak_counts_only_this_roles_ended_normal_turns(db):
+    db.new_session("backend", "s1", "first turn")
+    assert db.cap_streak("backend") == 0
+    ended_turn(db, "backend", error=CAPPED)
+    ended_turn(db, "qa", state="done")  # another role's turn does not interrupt it
+    ended_turn(db, "backend", kind="handoff", error=CAPPED)  # not a normal turn: neither counted nor breaking
+    ended_turn(db, "backend", error=CAPPED)
+    running = ended_turn(db, "backend", state="running")  # an unfinished turn is ignored
+    assert db.cap_streak("backend") == 2 and db.cap_streak("qa") == 0 and db.turn(running["id"])["state"] == "running"
+    ended_turn(db, "backend", state="failed", error=CAPPED)  # only a DONE turn with the cap error counts
+    assert db.cap_streak("backend") == 0
+    ended_turn(db, "backend", error=CAPPED)
+    assert db.cap_streak("backend") == 1
+
+
+def test_turns_that_are_not_continued(db, home, monkeypatch):
+    st, proj = setup(db, home, monkeypatch, [])
+    db.new_session("backend", "s1", "first turn")
+    # stopped by the Master or the Manager: the turn is interrupted, the Stop line stays the only line
+    for reason in ("master", "manager"):
+        t = ended_turn(db, "backend", state="interrupted")
+        asyncio.run(lifecycle.after_turn(st, proj, FinishedRunner(proj, t, reason=reason)))
+    # even if the turn row says capped, an interrupt reason wins
+    t = ended_turn(db, "backend", error=CAPPED)
+    asyncio.run(lifecycle.after_turn(st, proj, FinishedRunner(proj, t, reason="master")))
+    # a capped handoff, standup, brainstorm turn; a successful turn; a failed one
+    for kind in ("handoff", "standup", "brainstorm"):
+        t = ended_turn(db, "backend", kind=kind, error=CAPPED)
+        asyncio.run(lifecycle.after_turn(st, proj, FinishedRunner(proj, t, kind=kind)))
+    asyncio.run(lifecycle.after_turn(st, proj, FinishedRunner(proj, ended_turn(db, "backend", "done"))))
+    asyncio.run(lifecycle.after_turn(st, proj, FinishedRunner(proj, ended_turn(db, "backend", "failed", error="boom"))))
+    assert db.queued_wakes() == []
+    assert not [m for m in db.messages("dm-backend") if "step limit" in m["text"]]
+    assert not [a for a in db.activity() if a["kind"] == "max_turns"]
+
+
+def test_rotation_and_the_cap_together_run_the_handoff_wake_first(db, home, monkeypatch):
+    from tests.test_scheduler import StubRunner
+    st, proj = setup(db, home, monkeypatch, [], rotate_pct=0.5)
+    db.new_session("backend", "s1", "first turn")
+    capped(db, st, proj, ctx=700, result={"modelUsage": {"m": {"contextWindow": 1000}}})
+    rs = db.role_state("backend")
+    assert rs["rotate_reason"] == "context 70%" and rs["rotate_handoff"] == 1
+    handoff, cont = db.queued_wake("backend", "handoff"), db.queued_wake("backend")
+    assert handoff and cont and cont["message_ids"] == [db.messages("dm-backend")[-1]["id"]]  # both are queued
+    monkeypatch.setattr(sched_mod, "TurnRunner", StubRunner)
+
+    async def first_running():
+        st.settings["max_concurrent"] = 3
+        s = sched_mod.Scheduler(st)
+        st.scheduler = s
+        s._tick()
+        runner = s.running[("p1", "backend")]
+        wake = runner.wake
+        await asyncio.gather(*[r.task for r in s.running.values()])
+        return wake
+    assert asyncio.run(first_running())["id"] == handoff["id"]  # the handoff runs first; the continuation then starts the fresh session
+
+
+def test_a_real_capped_turn_is_recorded_as_done_and_continues(db, home, monkeypatch):
+    """The whole path: claude ends with error_max_turns, TurnRunner stores state done + "max turns reached", after_turn continues."""
+    st, proj = setup(db, home, monkeypatch, [INIT, ASSISTANT, {**RESULT, "subtype": "error_max_turns", "is_error": False}],
+                     max_turns=7)
+    m = db.add_message("dm-backend", "master", "Message", "build it", [], None)
+    w = db.add_wake("backend", "dm-backend", [m["id"]], "master")
+    t = asyncio.run(TurnRunner(st, proj, w).run())
+    assert (t["state"], t["error"]) == ("done", "max turns reached")
+    db.set_wake_state(w["id"], "done")
+    runner = FinishedRunner(proj, t)
+    asyncio.run(lifecycle.after_turn(st, proj, runner))
+    line = db.messages("dm-backend")[-1]
+    assert "stopped at the 7-step limit" in line["text"] and "(1 of 2)" in line["text"]
+    assert db.queued_wake("backend")["message_ids"] == [line["id"]]
+
+
+def test_the_new_defaults_load_and_a_pinned_value_wins(home):
+    from aiteams import config
+    assert config.DEFAULT_SETTINGS["max_turns"] == 100 and config.DEFAULT_SETTINGS["max_turn_continues"] == 2
+    s = config.load_settings()
+    assert s["max_turns"] == 100 and s["max_turn_continues"] == 2
+    (home / "settings.json").write_text(json.dumps({"max_concurrent": 0, "max_turns": 40}))  # the live file pins 40
+    assert config.load_settings()["max_turns"] == 40 and config.load_settings()["max_turn_continues"] == 2
+    saved = config.save_settings({"max_turn_continues": 3, "not_a_setting": 1})
+    assert saved["max_turn_continues"] == 3 and "not_a_setting" not in saved
+    assert config.load_settings()["max_turn_continues"] == 3 and config.load_settings()["max_turns"] == 40
+
+
+def test_system_wake_posts_a_system_line_and_queues_or_merges_a_normal_wake(db, home, monkeypatch):
+    """F-37: the reusable step (F-38 calls it too): System line mentioning the role + a normal wake with origin system."""
+    st, proj = setup(db, home, monkeypatch, [])
+    st.scheduler = Notifier()
+    f = db.create_feature("Export")
+    conv = f["conversation_id"]
+    msg = asyncio.run(lifecycle.system_wake(st, proj, "qa", conv, "Please look again.", 7))
+    assert (msg["author"], msg["type"], msg["mentions"], msg["text"], msg["turn_id"]) == ("system", "System", ["qa"], "Please look again.", 7)
+    w = db.queued_wake("qa")
+    assert (w["kind"], w["origin"], w["conversation_id"], w["message_ids"]) == ("normal", "system", conv, [msg["id"]])
+    assert st.scheduler.notified == 1 and [e for e, d in proj.hub.events if e == "message"][-1:] == ["message"]
+    assert ("receipt", {"message_id": msg["id"], "role": "qa", "state": "queued"}) in proj.hub.events
+    second = asyncio.run(lifecycle.system_wake(st, proj, "qa", "dm-qa", "And this.", None))  # merges, one wake
+    wakes = [x for x in db.queued_wakes() if x["role"] == "qa"]
+    assert len(wakes) == 1 and wakes[0]["message_ids"] == [msg["id"], second["id"]] and wakes[0]["conversation_id"] == "dm-qa"
+    assert st.scheduler.notified == 2
+    st.scheduler = None  # no scheduler (tests, shutdown): nothing to notify, nothing fails
+    asyncio.run(lifecycle.system_wake(st, proj, "frontend", "dm-frontend", "x"))
+    assert db.queued_wake("frontend")

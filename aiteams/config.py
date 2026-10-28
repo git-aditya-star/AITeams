@@ -53,7 +53,8 @@ DEFAULT_SETTINGS = {
     "efforts": {},
     "max_concurrent": 3,
     "ask_timeout_s": 600,
-    "max_turns": 40,
+    "max_turns": 100,  # F-37: claude's --max-turns for a normal turn; turn_timeout_s is the real wall-clock guard
+    "max_turn_continues": 2,  # F-37: how many capped turns in a row a role is re-woken automatically
     "turn_timeout_s": 1200,
     "rotate_pct": 0.6,
     "stale_hours": 4,
@@ -62,6 +63,7 @@ DEFAULT_SETTINGS = {
     # Empty by default (upgrade included): an unlisted plugin is left to Claude Code's own default.
     "plugins": [],
 }
+MAX_TURNS_ERROR = "max turns reached"  # the `error` of a turn that ended with claude's error_max_turns (state stays done)
 PLUGIN_ID_RE = re.compile(r"^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$")
 
 

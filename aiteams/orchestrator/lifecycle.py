@@ -4,7 +4,8 @@ from __future__ import annotations
 import json
 import time
 
-from ..config import ROLES
+from ..config import MAX_TURNS_ERROR, ROLES, role_name
+from . import receipts
 from .turn import context_window_from
 
 
@@ -34,6 +35,49 @@ async def request_rotation(st, proj, role: str, reason: str, handoff: bool) -> b
     if st.scheduler:
         st.scheduler.notify()
     return True
+
+
+async def system_wake(st, proj, role: str, conversation_id: str, text: str, turn_id: int | None = None) -> dict:
+    """F-37: post a System line in `conversation_id` that mentions `role` and wake that role with it. A System line never
+    wakes anyone through the router, so the wake is queued here with origin `system`: merged into the role's queued
+    normal wake if it has one (like router.route; a Master-origin wake keeps its priority), else a new one. Marks the
+    message queued for the role, broadcasts it and notifies the scheduler. Returns the message."""
+    db = proj.db
+    msg = db.add_message(conversation_id, "system", "System", text, [role], turn_id)
+    existing = db.queued_wake(role)
+    if existing:
+        db.merge_wake(existing["id"], conversation_id, [msg["id"]], "system")
+    else:
+        db.add_wake(role, conversation_id, [msg["id"]], "system")
+    await receipts.mark(db, proj.hub, [msg["id"]], role, "queued")
+    await proj.hub.broadcast("message", db.message(msg["id"]))
+    if st.scheduler:
+        st.scheduler.notify()
+    return db.message(msg["id"])
+
+
+async def _continue_capped(st, proj, role: str, turn: dict) -> None:
+    """F-37: a normal turn that stopped at the --max-turns cap used to end silently (state done, nothing woken), with the
+    work half done in the tree. Re-wake the role with a System line, up to `max_turn_continues` capped turns in a row;
+    after that tell the Manager instead (and the Master, for the Manager's own stall, which wakes nobody)."""
+    db = proj.db
+    n, limit = db.cap_streak(role), int(st.settings.get("max_turn_continues", 2))
+    cap = int(st.settings.get("max_turns", 100))
+    conv = turn.get("conversation_id") or "dm-" + role
+    name = role_name(role)
+    if n <= limit:
+        text = (f"{name}'s turn stopped at the {cap}-step limit before it finished; continuing automatically ({n} of {limit}). "
+                f"{name}: check your files and this chat, finish what you were doing, then file or report.")
+        await system_wake(st, proj, role, conv, text, turn["id"])
+    elif role != "manager":
+        text = f"{name} hit the {cap}-step limit {n} turns in a row; not continuing automatically. @manager please check."
+        await system_wake(st, proj, "manager", conv, text, turn["id"])
+    else:  # the Manager's own stall can't be handed to the Manager
+        text = f"{name} hit the {cap}-step limit {n} turns in a row; not continuing automatically. @master please check."
+        msg = db.add_message(conv, "system", "System", text, ["master"], turn["id"])
+        await proj.hub.broadcast("message", db.message(msg["id"]))
+    row = db.add_activity("max_turns", text.split(". ")[0] + ".", role, conversation_id=conv)
+    await proj.hub.broadcast("activity", row)
 
 
 async def after_turn(st, proj, runner) -> None:
@@ -79,6 +123,9 @@ async def after_turn(st, proj, runner) -> None:
         pct = turn["context_tokens"] / window
         if pct >= float(settings.get("rotate_pct", 0.6)):
             await request_rotation(st, proj, role, f"context {pct:.0%}", handoff=True)
+
+    if kind == "normal" and state == "done" and not reason and turn.get("error") == MAX_TURNS_ERROR:
+        await _continue_capped(st, proj, role, turn)  # after the rotation check: a handoff wake queued above runs first
 
     if kind == "handoff":
         db.set_role_state(role, rotate_handoff=0)

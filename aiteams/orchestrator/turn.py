@@ -7,7 +7,7 @@ import secrets
 import time
 import uuid
 
-from ..config import LEADS, ask_plugin_names, effort_for, model_for
+from ..config import LEADS, MAX_TURNS_ERROR, ask_plugin_names, effort_for, model_for
 from ..plugins import check_plugins
 from . import receipts
 from .claude_proc import ClaudeProc, build_cmd, child_env, display_argv
@@ -45,7 +45,7 @@ def classify(result: dict | None, interrupted_by_us: bool) -> tuple[str, str | N
     if sub == "success":
         return "done", None
     if sub == "error_max_turns":
-        return "done", "max turns reached"
+        return "done", MAX_TURNS_ERROR
     msg = result.get("result") if isinstance(result.get("result"), str) else None
     errs = result.get("errors")
     return "failed", msg or (json.dumps(errs) if errs else sub) or "error"
