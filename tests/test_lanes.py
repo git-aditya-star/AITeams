@@ -162,8 +162,8 @@ def test_two_lanes_of_a_role_start_together_and_a_second_wake_waits_for_its_own_
 
 
 def test_a_role_runs_at_most_max_lanes_per_role_lanes_at_once(db, home, monkeypatch):
-    st, proj, s = sched(db, monkeypatch, max_concurrent=6)  # max_lanes_per_role defaults to 2
-    assert config.DEFAULT_SETTINGS["max_lanes_per_role"] == 2 and config.DEFAULT_SETTINGS["max_concurrent"] == 6
+    st, proj, s = sched(db, monkeypatch, max_concurrent=None)  # max_lanes_per_role defaults to 2
+    assert config.DEFAULT_SETTINGS["max_lanes_per_role"] == 2 and config.DEFAULT_SETTINGS["max_concurrent"] is None
     a, b = treed(db, "a"), treed(db, "b")
     for conv in ("general", a["conversation_id"], b["conversation_id"]):
         route_to(db, conv, "frontend")
@@ -174,14 +174,46 @@ def test_a_role_runs_at_most_max_lanes_per_role_lanes_at_once(db, home, monkeypa
     assert len([w for w in db.queued_wakes() if w["role"] == "frontend"]) == 1
 
 
-def test_the_total_cap_holds_a_seventh_turn_back(db, home, monkeypatch):
-    st, proj, s = sched(db, monkeypatch)  # max_concurrent 6
-    st.settings["max_concurrent"] = 6
-    for role in config.ROLES:  # seven roles, one wake each
+def wake_every_role(db, extra_lanes=()):
+    for role in config.ROLES:  # seven roles, one wake each (the main lane)
         route_to(db, "general", role, author="master")
+    for conv in extra_lanes:
+        route_to(db, conv, "frontend")
+
+
+@pytest.mark.parametrize("absent", [False, True])
+def test_with_no_total_cap_more_than_six_turns_start_at_once_within_the_lane_rules(db, home, monkeypatch, absent):
+    """F-41: `max_concurrent` null (or no key at all) is no daemon-wide cap: still one turn per (role, lane) and at most
+    max_lanes_per_role lanes of a role."""
+    st, proj, s = sched(db, monkeypatch, max_concurrent=None)
+    if absent:
+        del st.settings["max_concurrent"]
+    a, b = treed(db, "a"), treed(db, "b")
+    wake_every_role(db, [a["conversation_id"], b["conversation_id"]])
     assert len(config.ROLES) == 7
     started = run_tick(s)
-    assert len(started) == 6 and len([w for w in db.queued_wakes() if w["kind"] == "normal"]) == 1
+    assert len(started) == 8  # seven main sessions + frontend's first extra lane
+    assert len({k for k in started if k[1] == "frontend"}) == 2  # max_lanes_per_role (2): the third frontend lane waits
+    assert len(started) == len(set(started))  # one turn per (role, lane)
+    assert len([w for w in db.queued_wakes() if w["kind"] == "normal"]) == 1
+
+
+def test_a_total_cap_of_zero_pauses_and_a_whole_number_caps_at_n(db, home, monkeypatch):
+    st, proj, s = sched(db, monkeypatch, max_concurrent=0)  # paused: the QA sandbox's encoding
+    wake_every_role(db)
+    assert run_tick(s) == set() and len(db.queued_wakes()) == 7
+    st.settings["max_concurrent"] = 3
+    assert len(run_tick(s)) == 3 and len([w for w in db.queued_wakes() if w["kind"] == "normal"]) == 4
+    st.settings["max_concurrent"] = 6  # a cap above the work: nothing is held back
+    assert len(run_tick(s)) == 4 and not db.queued_wakes()
+
+
+def test_a_total_cap_serves_the_masters_wakes_first(db, home, monkeypatch):
+    st, proj, s = sched(db, monkeypatch, max_concurrent=2)
+    route_to(db, "general", "qa", author="lead")
+    route_to(db, "general", "backend", author="lead")
+    route_to(db, "general", "product", author="master")
+    assert {k[1] for k in run_tick(s)} >= {"product"} and len(s.running) <= 2
 
 
 def test_a_pending_handoff_goes_first_in_its_own_lane_only(db, home, monkeypatch):
@@ -549,14 +581,54 @@ def test_the_manager_interrupts_one_lane_or_all_and_checkpoints_one_lane(client,
 
 
 # ---- settings --------------------------------------------------------------------------------------------------------
-@pytest.mark.parametrize("key,top", [("max_concurrent", 12), ("max_lanes_per_role", 6)])
-def test_the_lane_caps_are_whole_numbers_from_one_and_an_unchanged_stored_value_passes(key, top):
-    for ok in (1, top):
+def test_max_lanes_per_role_is_a_whole_number_from_one_to_six_and_an_unchanged_stored_value_passes():
+    key = "max_lanes_per_role"
+    for ok in (1, 2, 6):
         assert config.validate_role_settings({key: ok})[key] == ok
-    for bad in (0, top + 1, -1, True, "3", 2.5, None):
+    for bad in (0, 7, -1, True, "3", 2.5, None):
         with pytest.raises(ValueError):
             config.validate_role_settings({key: bad})
+    assert config.validate_role_settings({key: 0}, {key: 0})[key] == 0
+
+
+def test_max_concurrent_is_null_for_no_cap_or_a_whole_number_from_one_to_ninety_nine():
+    key = "max_concurrent"
+    for ok in (None, 1, 6, 12, 99):
+        assert config.validate_role_settings({key: ok})[key] == ok
+    for bad in (0, -1, 100, True, "3", "x", "", 2.5, [1]):
+        with pytest.raises(ValueError, match="1 to 99, or null for no limit"):
+            config.validate_role_settings({key: bad})
     assert config.validate_role_settings({key: 0}, {key: 0})[key] == 0  # the dialog re-sends a stored 0 (a paused sandbox)
+    assert config.validate_role_settings({key: 12}, {key: 12})[key] == 12  # ... or an old cap
+    assert config.DEFAULT_SETTINGS[key] is None
+
+
+def test_a_settings_put_clears_or_sets_the_total_cap_and_it_survives_a_restart(home):
+    app = create_app(7799, write_daemon_json=False)
+    with TestClient(app, headers=AUTH) as c:
+        assert c.put("/api/settings", json={"max_concurrent": 4}).json()["max_concurrent"] == 4
+        assert config.load_settings()["max_concurrent"] == 4
+        r = c.put("/api/settings", json={"max_concurrent": None})
+        assert r.status_code == 200 and r.json()["max_concurrent"] is None
+        assert json.loads((home / "settings.json").read_text())["max_concurrent"] is None  # the file says no cap
+        assert config.load_settings()["max_concurrent"] is None  # a fresh load = a daemon restart: still no number filled in
+        assert c.get("/api/settings").json()["max_concurrent"] is None
+        for bad in (0, 100, -1, "x"):
+            r = c.put("/api/settings", json={"max_concurrent": bad})
+            assert r.status_code == 400 and "1 to 99, or null for no limit" in r.json()["detail"]
+        assert c.put("/api/settings", json={"max_lanes_per_role": 3}).json()["max_concurrent"] is None  # an unrelated PUT keeps it
+        assert st_of(c).settings["max_concurrent"] is None  # the running daemon applies it too
+
+
+def st_of(client):
+    return client.app.state.app
+
+
+def test_a_settings_file_without_the_key_means_no_cap_and_an_old_number_stays_a_cap(home):
+    (home / "settings.json").write_text(json.dumps({"ask_timeout_s": 2}))
+    assert config.load_settings()["max_concurrent"] is None
+    (home / "settings.json").write_text(json.dumps({"max_concurrent": 12}))  # what a hand-edited file may still say
+    assert config.load_settings()["max_concurrent"] == 12
 
 
 # ---- the heavy-run lock ------------------------------------------------------------------------------------------------

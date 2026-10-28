@@ -1,5 +1,5 @@
-"""Global scheduler: one running turn per (role, lane), max_concurrent across projects, max_lanes_per_role per role,
-Master-first, pause."""
+"""Global scheduler: one running turn per (role, lane), max_lanes_per_role per role, Master-first, pause. There is no daemon-wide
+cap by default: `max_concurrent` is an optional limit across projects (None/absent = none, N = at most N, 0 = paused)."""
 from __future__ import annotations
 
 import asyncio
@@ -43,7 +43,8 @@ class Scheduler:
     def _tick(self) -> None:
         if self.stopping or self.state.rate_limit_active():
             return
-        cap = int(self.state.settings.get("max_concurrent", 6))
+        cap = self.state.settings.get("max_concurrent")  # None = no daemon-wide cap, 0 = paused, N = at most N turns
+        cap = None if cap is None else int(cap)
         per_role_cap = int(self.state.settings.get("max_lanes_per_role", 2))  # F-41: one role can't take the whole cap
         candidates = []
         for proj in self.state.projects.values():
@@ -62,7 +63,7 @@ class Scheduler:
                 candidates.append((0 if w["origin"] == "master" else 1, w["created_at"], proj, w))
         candidates.sort(key=lambda c: (c[0], c[1]))
         for _, _, proj, w in candidates:
-            if len(self.running) >= cap:
+            if cap is not None and len(self.running) >= cap:
                 break
             key = (proj.id, w["role"], w.get("lane") or "")
             if key in self.running or sum(1 for k in self.running if k[:2] == key[:2]) >= per_role_cap:

@@ -72,7 +72,9 @@ untagged messages in a channel or feature, which go to the Manager. Roles only t
 so everything they do is visible. A running role is never interrupted by a new message; it gets the
 new messages at its next wake as a digest.
 
-At most three roles run at once across all projects (`max_concurrent`). Your messages jump the queue.
+A role runs one turn at a time per session, and at most two of its sessions (its main one and feature sessions) run at once
+(`max_lanes_per_role`, 1-6). There is no overall limit on turns across roles unless you set one (`max_concurrent`, 1-99; `null`
+removes it; `0` pauses everything). Your messages jump the queue.
 
 ## 5. The Inbox
 

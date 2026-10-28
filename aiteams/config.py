@@ -51,8 +51,10 @@ DEFAULT_SETTINGS = {
     "models": {},
     "default_effort": None,
     "efforts": {},
-    "max_concurrent": 6,  # F-41: turns running at once across the daemon (each role's feature lanes count, up to the next)
-    "max_lanes_per_role": 2,  # F-41: lanes of one role (its main session included) that may run at once
+    # F-41: an optional cap on turns running at once across the daemon. None (absent or null) = no cap, the default: the limits
+    # that remain are one turn per (role, lane) and max_lanes_per_role. A whole number 1-99 = a cap; 0 = paused (the QA sandbox).
+    "max_concurrent": None,
+    "max_lanes_per_role": 2,  # F-41: lanes of one role (its main session included) that may run at once: the guard on machine load
     "ask_timeout_s": 600,
     "max_turns": 100,  # F-37: claude's --max-turns for a normal turn; turn_timeout_s is the real wall-clock guard
     "max_turn_continues": 2,  # F-37: how many capped turns in a row a role is re-woken automatically
@@ -335,10 +337,16 @@ def validate_role_settings(body: dict, current: dict | None = None) -> dict:
         out["plugins"] = validate_plugins(out["plugins"])
     if "wake_history" in out and out["wake_history"] not in WAKE_HISTORY:
         raise ValueError(f"wake_history must be one of {', '.join(WAKE_HISTORY)}")
-    for key, top in (("max_concurrent", 12), ("max_lanes_per_role", 6)):  # F-41: 1 or more, so something can always run
-        if key in out and not (key in current and out[key] == current[key]) and (
-                isinstance(out[key], bool) or not isinstance(out[key], int) or not 1 <= out[key] <= top):
-            raise ValueError(f"{key} must be a whole number from 1 to {top}")
+    # F-41: a value equal to the stored one passes, so a re-sent paused `0` (the sandbox) or an old cap isn't refused
+    if "max_concurrent" in out and out["max_concurrent"] is not None and not (
+            "max_concurrent" in current and out["max_concurrent"] == current["max_concurrent"]) and (
+            isinstance(out["max_concurrent"], bool) or not isinstance(out["max_concurrent"], int)
+            or not 1 <= out["max_concurrent"] <= 99):
+        raise ValueError("max_concurrent must be a whole number from 1 to 99, or null for no limit")
+    if "max_lanes_per_role" in out and not ("max_lanes_per_role" in current and out["max_lanes_per_role"] == current["max_lanes_per_role"]) and (
+            isinstance(out["max_lanes_per_role"], bool) or not isinstance(out["max_lanes_per_role"], int)
+            or not 1 <= out["max_lanes_per_role"] <= 6):
+        raise ValueError("max_lanes_per_role must be a whole number from 1 to 6")
     for key in ("rotate_tokens", "skill_desc_chars"):  # F-42: whole numbers, 0 = off
         if key in out and (isinstance(out[key], bool) or not isinstance(out[key], int) or out[key] < 0):
             raise ValueError(f"{key} must be a whole number, 0 or more (0 turns it off)")
