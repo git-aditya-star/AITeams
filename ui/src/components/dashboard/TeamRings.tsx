@@ -1,5 +1,5 @@
 import type { TeamRole } from '../../api'
-import { RING_STROKE, ROLES, TONE_TEXT, ringTone, ringWord, roleName } from '../../roles'
+import { RING_STROKE, ROLES, TONE_TEXT, contextNote, contextPct, ringTone, ringWord, roleName } from '../../roles'
 import Avatar from '../Avatar'
 import RoleActions from '../RoleActions'
 import { Tip } from '../ui/tooltip'
@@ -15,9 +15,8 @@ export function teamHeadline(byRole: Record<string, TeamRole>) {
   return n('running') ? `${n('running')} working` : n('queued') ? `${n('queued')} queued` : 'all idle'
 }
 
-const pctOf = (t: TeamRole | undefined) => Math.min(1, Math.max(0, t?.context_pct || 0))
-
-const hover = (t: TeamRole | undefined) => (t ? [t.model_label || t.model, `session #${t.session_seq ?? '—'}`, `fresh starts ${t.fresh_starts ?? 0}`].join(' · ') : '')
+const hover = (t: TeamRole | undefined) =>
+  t ? [t.model_label || t.model, `session #${t.session_seq ?? '—'}`, `fresh starts ${t.fresh_starts ?? 0}`, contextNote(t)].filter(Boolean).join(' · ') : ''
 
 // F-18: one block per role: the avatar in a ring (arc = context used, colour = state; red when the last turn was
 // cut short), the name under it, the state word in the ring colour, and "F-n · 34%" (the feature it is on, or "—",
@@ -30,7 +29,7 @@ export default function TeamRings({ byRole }: { byRole: Record<string, TeamRole>
       <div className="grid grid-cols-3 gap-x-1 gap-y-3 @[18rem]:grid-cols-4">
         {ROLES.map((r) => {
           const t = byRole[r]
-          const pct = pctOf(t)
+          const pct = contextPct(t)
           const tone = ringTone(t)
           return (
             <RoleActions

@@ -1,6 +1,6 @@
 import { Settings } from 'lucide-react'
 import { useState } from 'react'
-import { ROLES, dotClass, roleName, stateWord } from '../roles'
+import { ROLES, contextNote, contextPct, dotClass, roleName, stateWord } from '../roles'
 import { useAppSelector } from '../store'
 import { selectTeamByRole } from '../store/selectors'
 import RoleSettingsDialog from './RoleSettingsDialog'
@@ -18,7 +18,9 @@ export default function TeamStrip({ onSelect }: { onSelect: (role: string) => vo
           <Tip
             key={r}
             content={
-              t ? `${t.model_label || t.model} · ${t.effort ? `${t.effort} effort` : 'default effort'} · ${stateWord(t)}${t.stuck ? ' · stuck: running or queued for a long time, not stopped' : ''}` : r
+              t
+                ? `${t.model_label || t.model} · ${t.effort ? `${t.effort} effort` : 'default effort'} · ${stateWord(t)}${t.stuck ? ' · stuck: running or queued for a long time, not stopped' : ''}${contextNote(t) ? ` · context full, ${contextNote(t)}` : ''}`
+                : r
             }
           >
             <button
@@ -35,7 +37,7 @@ export default function TeamStrip({ onSelect }: { onSelect: (role: string) => vo
                       stuck
                     </span>
                   )}
-                  <span>{Math.round((t.context_pct || 0) * 100)}%</span>
+                  <span>{Math.round(contextPct(t) * 100)}%</span>
                 </>
               )}
             </button>

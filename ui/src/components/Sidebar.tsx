@@ -1,5 +1,5 @@
 import type { Feature } from '../api'
-import { ROLES, dotClass, meterClass, phaseChip, roleName } from '../roles'
+import { ROLES, contextNote, contextPct, dotClass, meterClass, phaseChip, roleName } from '../roles'
 import { useAppDispatch, useAppSelector } from '../store'
 import { selectActiveFeatures, selectHistoryCount, selectInboxBadge, selectTeamByRole } from '../store/selectors'
 import { setPaused } from '../store/thunks'
@@ -108,15 +108,15 @@ export default function Sidebar({
           <div className="px-3 text-caption uppercase tracking-wide text-gray-500 font-semibold mb-1">Direct messages</div>
           {ROLES.map((r) => {
             const t = byRole[r]
-            const pct = Math.min(1, Math.max(0, t?.context_pct || 0))
+            const pct = contextPct(t)
             return row(
               `dm-${r}`,
               <span className="flex items-center gap-2">
                 <span className={`w-2 h-2 rounded-full shrink-0 ${dotClass(t?.state || 'idle')}`} />
                 <span>{roleName(r)}</span>
               </span>,
-              <Tip content={t ? `context ${Math.round(pct * 100)}%` : undefined}>
-                <span className="block ml-4 mt-1 h-[3px] rounded-sm bg-gray-200 overflow-hidden">
+              <Tip content={t ? `context ${Math.round(pct * 100)}%${contextNote(t) ? ` · ${contextNote(t)}` : ''}` : undefined}>
+                <span data-ctx-meter={r} className="block ml-4 mt-1 h-[3px] rounded-sm bg-gray-200 overflow-hidden">
                   <span className={`block h-full ${meterClass(pct)}`} style={{ width: `${pct * 100}%` }} />
                 </span>
               </Tip>,

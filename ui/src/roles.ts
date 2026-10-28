@@ -59,8 +59,16 @@ export const stateWord = (t: { state: string; kind?: string | null } | undefined
   return t.state
 }
 
+// F-42: the cut-offs are relative to the rotation limit (150k tokens): amber from 70% (105k), red from 90% (135k), i.e. rotation is close.
 export const meterClass = (pct: number) =>
-  pct >= 0.6 ? 'bg-red-500' : pct >= 0.4 ? 'bg-amber-400' : 'bg-green-500'
+  pct >= 0.9 ? 'bg-red-500' : pct >= 0.7 ? 'bg-amber-400' : 'bg-green-500'
+
+// F-42: `context_pct` reads against the rotation limit (150k tokens), so an old session can read 395% until its next turn ends and
+// it rotates. Every place that prints or draws it shows at most 100%; at 100% the tooltip says when it rotates.
+type Meter = { state?: string; context_pct?: number | null }
+export const contextPct = (t: Meter | undefined) => Math.min(1, Math.max(0, t?.context_pct || 0))
+export const contextNote = (t: Meter | undefined) =>
+  contextPct(t) < 1 ? '' : t?.state === 'running' ? 'rotates after this turn' : 'rotates after its next turn'
 
 export const PHASES = ['intake', 'spec', 'design', 'build', 'qa', 'done'] as const
 
