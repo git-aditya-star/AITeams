@@ -35,6 +35,13 @@ export default function MessageRow({ m, highlight = false, markMaster = true }: 
         <div className="flex items-baseline gap-2">
           {/* F-31: the name truncates before the time, the chip or the number ever wrap or get pushed out */}
           <span className="min-w-0 truncate font-bold">{roleName(m.author)}</span>
+          {/* F-41: a role writing from its session for one feature reads "Frontend · F-36" */}
+          {m.lane && (
+            <span data-msg-lane={m.lane} className="flex shrink-0 items-baseline gap-1.5">
+              <span className="text-gray-400">·</span>
+              <span className="rounded-sm bg-gray-100 px-1 text-caption text-gray-600">{m.lane}</span>
+            </span>
+          )}
           <span className="shrink-0 text-caption text-gray-400">{fmtTime(m.created_at)}</span>
           {m.type && m.type !== 'Message' && (
             <Badge className={TYPE_CHIP[m.type] || TYPE_CHIP.System}>{m.type}</Badge>

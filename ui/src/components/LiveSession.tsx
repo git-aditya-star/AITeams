@@ -2,10 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Turn, TurnEvent } from '../api'
 import { api, fmtDuration, fmtTokens } from '../api'
 import { DENY, editDiff, expandable, toolBody, toolLine, toolSummary, writeRows, type DiffRow, type ToolResult } from '../lib/terminal'
+import { dotClass, laneLabel, roleName, stateWord } from '../roles'
+import { useAppSelector } from '../store'
+import { selectRole } from '../store/selectors'
 import type { WsFrame } from '../ws'
 import Markdown from './Markdown'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
 import { Toggle } from './ui/toggle'
 
 // F-33: one block per thing the terminal shows. A tool call is ONE block: its `tool_result` fills it in by `tool_use_id`.
@@ -139,6 +143,8 @@ function foldThinking(blocks: Block[], running: boolean): Block[] {
 }
 
 // ---------------------------------------------------------------- the terminal pane (dark)
+
+const MAIN = '__main' // Radix Select items can't have an empty value, so the main session's is a sentinel
 
 const CAP = 50_000 // an expanded output longer than this is cut, so a huge Read cannot freeze the page
 const capped = (t: string) => (t.length > CAP ? `${t.slice(0, CAP)}\n… (${t.length - CAP} more characters)` : t)
@@ -311,16 +317,24 @@ function BlockView({ b, running, root }: { b: Block; running: boolean; root: str
   }
 }
 
+// F-41: a role has its main session ('') and one session per feature that has its own worktree ('F-36'). This view shows one of them;
+// `lane` is the one chosen (a URL param); changing it reloads the turn list and shows that session's newest turn.
 export default function LiveSession({
   pid,
   role,
+  lane,
+  onLane,
   subscribe,
 }: {
   pid: string
   role: string
+  lane: string
+  onLane: (lane: string) => void
   subscribe: (fn: (f: WsFrame) => void) => () => void
 }) {
-  const [turns, setTurns] = useState<Turn[]>([])
+  const team = useAppSelector((s) => selectRole(s, role))
+  const [all, setTurns] = useState<Turn[]>([]) // every session's turns; `turns` below is the chosen session's
+  const turns = useMemo(() => all.filter((t) => (t.lane || '') === lane), [all, lane])
   const [selected, setSelected] = useState<number | null>(null)
   const [blocks, setBlocks] = useState<Block[]>([])
   const [now, setNow] = useState(Date.now() / 1000)
@@ -338,9 +352,10 @@ export default function LiveSession({
     setSelected(null)
     api.turns(pid, role).then((ts) => {
       setTurns(ts)
-      if (ts.length) setSelected(ts[0].id)
+      const mine = ts.find((t) => (t.lane || '') === lane)
+      if (mine) setSelected(mine.id)
     })
-  }, [pid, role])
+  }, [pid, role, lane])
 
   // Load the selected turn's events; buffer WS events that arrive mid-fetch.
   useEffect(() => {
@@ -376,7 +391,7 @@ export default function LiveSession({
             const next = i >= 0 ? ts.map((x) => (x.id === t.id ? t : x)) : [t, ...ts]
             return next.sort((a, b) => b.id - a.id)
           })
-          if (follow.current) setSelected((s) => (s == null || t.id > s ? t.id : s))
+          if (follow.current && (t.lane || '') === lane) setSelected((s) => (s == null || t.id > s ? t.id : s))
         } else if (f.event === 'turn_event') {
           const ev = f.data as TurnEvent
           if (ev.turn_id !== selected) return
@@ -386,8 +401,21 @@ export default function LiveSession({
           setBlocks((b) => apply(b, ev))
         }
       }),
-    [subscribe, role, selected],
+    [subscribe, role, lane, selected],
   )
+
+  // The picker lists the main session, every active feature session, and any session whose turns are still on screen (a closed one).
+  const sessions = useMemo(() => {
+    const keys = new Set<string>(team?.lanes?.map((l) => l.lane))
+    for (const t of all) if (t.lane) keys.add(t.lane)
+    if (lane) keys.add(lane)
+    return [...keys].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+  }, [team?.lanes, all, lane])
+  const sessionState = (l: string) => {
+    if (!l) return stateWord(team)
+    const live = team?.lanes?.find((x) => x.lane === l)
+    return live ? stateWord(live) : 'closed'
+  }
 
   const sel = turns.find((t) => t.id === selected) || null
   const running = turns.some((t) => t.state === 'running')
@@ -416,8 +444,29 @@ export default function LiveSession({
   }
 
   return (
-    <div className="flex-1 flex min-h-0" data-live-session>
+    <div className="flex-1 flex min-h-0" data-live-session={lane || 'main'}>
       <div className="w-[240px] shrink-0 border-r border-gray-200 overflow-y-auto">
+        {sessions.length > 0 && (
+          <div className="sticky top-0 z-10 border-b border-gray-200 bg-white p-2">
+            <Select value={lane || MAIN} onValueChange={(v) => onLane(v === MAIN ? '' : v)}>
+              <SelectTrigger size="sm" aria-label="Session" data-session-picker className="w-full">
+                <SelectValue>{lane ? laneLabel(role, lane) : `${roleName(role)} (main)`}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {['', ...sessions].map((l) => (
+                  <SelectItem key={l || MAIN} value={l || MAIN} data-session-option={l || 'main'}>
+                    {/* Radix wraps an item's content in an inline span, so the row's own flex goes in here */}
+                    <span className="flex items-center gap-2">
+                      <span className={`size-2 shrink-0 rounded-full ${dotClass(sessionState(l))}`} />
+                      <span>{l ? laneLabel(role, l) : `${roleName(role)} (main)`}</span>
+                      <span className="text-caption text-gray-400">{sessionState(l)}</span>
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
         {turns.length === 0 && <div className="p-3 text-caption text-gray-400">no turns yet</div>}
         {turns.map((t) => (
           <button

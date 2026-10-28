@@ -1,5 +1,5 @@
 import type { Stall } from '../api'
-import { roleName } from '../roles'
+import { laneLabel } from '../roles'
 import { Badge } from './ui/badge'
 import { Tip } from './ui/tooltip'
 
@@ -17,10 +17,13 @@ const spanText = (since: number) => {
   return `${Math.round(s / 86400)} d`
 }
 
+// F-41: a stall on a role's feature session names it ("Frontend · F-36"); on its main session it is just the role.
+const whoLabel = (s: Stall) => laneLabel(s.who, s.lane)
+
 const reason = (s: Stall) => {
   const n = s.ref.split(':')[1]
   if (s.kind === 'review') return `Commit request #${n} waits on its review`
-  if (s.kind === 'message') return `Message #${n} asks ${roleName(s.who)} to act, with no reply`
+  if (s.kind === 'message') return `Message #${n} asks ${whoLabel(s)} to act, with no reply`
   return `Message #${n} mentions nobody`
 }
 
@@ -30,7 +33,7 @@ const stallTip = (s: Stall) => `${reason(s)} · waiting ${spanText(s.since)} · 
 
 export default function StallChip({ stall, compact = false }: { stall: Stall | null | undefined; compact?: boolean }) {
   if (!stall) return null
-  const who = roleName(stall.who)
+  const who = whoLabel(stall)
   const text = compact ? `${stall.stuck ? 'stuck' : 'waiting'} · ${who}` : `${stall.stuck ? 'Stuck · ' : ''}Waiting on ${who}`
   return (
     <Tip content={stallTip(stall)}>

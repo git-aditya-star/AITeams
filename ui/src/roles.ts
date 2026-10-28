@@ -10,6 +10,9 @@ export const isLead = (r: string) => (LEADS as string[]).includes(r)
 const NAMES: Record<string, string> = { master: 'Master', lead: 'Lead 1', 'lead-2': 'Lead 2' }
 export const roleName = (r: string) => NAMES[r] || r.charAt(0).toUpperCase() + r.slice(1)
 
+// F-41: a role's session for one feature reads "Frontend · F-36"; its main session (lane '' or none) is just "Frontend".
+export const laneLabel = (role: string, lane?: string | null) => (lane ? `${roleName(role)} · ${lane}` : roleName(role))
+
 // What a person types after the @: `@lead-1` is an alias for `lead`, `@lead-2` is Lead 2 (the daemon's MENTION_RE
 // accepts `@name-<digit>`). A bare `@lead` still works; in a feature it reaches that feature's Lead.
 export const MENTIONABLE = ROLES.map((r) => (r === 'lead' ? 'lead-1' : r))

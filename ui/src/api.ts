@@ -152,6 +152,7 @@ export interface BranchCheck {
 export type StallKind = 'review' | 'message' | 'unaddressed'
 export interface Stall {
   who: string
+  lane?: string // F-41: the role's feature session ('' or absent = its main session)
   kind: StallKind
   ref: string
   step: 1 | 2 | 3
@@ -298,6 +299,7 @@ export interface Message {
   created_at: number
   receipts: Receipt[]
   reactions?: Reaction[]
+  lane?: string // F-41: the author's session: '' (main) or a feature key such as 'F-36'
   ref?: string | null
   approval?: Approval | null
   commit?: Commit | null
@@ -350,6 +352,17 @@ export interface Turn {
   error: string | null
   kind?: WakeKind | string
   prompt?: string | null
+  lane?: string // F-41: the session it ran in: '' (main) or a feature key
+}
+
+// F-41: a role's session for one feature (its own worktree). The role row itself is the main session.
+export interface TeamLane {
+  lane: string
+  state: RoleState
+  context_pct: number
+  turn_id?: number | null
+  kind?: WakeKind | string | null
+  stuck?: boolean
 }
 
 export interface TeamRole {
@@ -371,6 +384,7 @@ export interface TeamRole {
   current?: { conversation_id: string; label: string; feature_key: string | null } | null
   kind?: WakeKind | string | null
   stuck?: boolean // F-38: its turn has run, or its wake has been queued, for a long time (flagged, never stopped)
+  lanes?: TeamLane[] // F-41: its active feature sessions, one per feature that has its own worktree
 }
 
 // M1c: activity feed, standups, handoffs, dashboard.
@@ -560,6 +574,8 @@ export interface RoleSettings {
   default_effort: string | null
   models: Record<string, string>
   efforts: Record<string, string>
+  max_concurrent?: number // F-41: turns running at once, across all roles (default 6)
+  max_lanes_per_role?: number // F-41: sessions of one role running at once (default 2)
   plugins?: PluginRow[] // F-23
   [k: string]: unknown
 }

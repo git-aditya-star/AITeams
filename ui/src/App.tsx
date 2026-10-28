@@ -41,6 +41,7 @@ export default function App() {
   const current = params.get('c') || 'dashboard'
   const tabParam = params.get('tab')
   const tab: Tab = tabParam === 'live' ? 'live' : tabParam === 'docs' ? 'docs' : 'chat'
+  const lane = params.get('lane') || '' // F-41: which of the role's sessions the Live view shows ('' = main)
   const highlight = Number(params.get('m')) || null
   const review = Number(params.get('review')) || null
 
@@ -67,11 +68,12 @@ export default function App() {
   }, [])
 
   const select = useCallback(
-    (id: string, t?: Tab, m?: number) => {
+    (id: string, t?: Tab, m?: number, l?: string) => {
       const p = new URLSearchParams()
       if (id !== 'dashboard') p.set('c', id)
       if (t && t !== 'chat') p.set('tab', t)
       if (m) p.set('m', String(m))
+      if (l) p.set('lane', l)
       setParams(p)
     },
     [setParams],
@@ -167,7 +169,7 @@ export default function App() {
         <Sidebar current={current} onPickProject={(id) => nav(`/p/${id}`)} onSelect={(id) => select(id)} onNewTask={newTask} />
         <main className="relative flex-1 flex flex-col min-w-0 h-full">
           <Banners onAnswer={(q) => select(`dm-${q.role}`)} />
-          <TeamStrip onSelect={(r) => select(`dm-${r}`)} />
+          <TeamStrip onSelect={(r) => select(`dm-${r}`)} onSelectLane={(r, l) => select(`dm-${r}`, 'live', undefined, l)} />
           {feature ? (
             <FeatureHeader feature={feature} tab={tab === 'docs' ? 'docs' : 'chat'} onTab={(t) => select(current, t)} />
           ) : (
@@ -197,7 +199,7 @@ export default function App() {
           ) : feature && tab === 'docs' ? (
             <FeatureDocs pid={pid} featureId={feature.id} refreshKey={messages.length} />
           ) : dmRole && tab === 'live' ? (
-            <LiveSession pid={pid} role={dmRole} subscribe={subscribe} />
+            <LiveSession pid={pid} role={dmRole} lane={lane} onLane={(l) => select(current, 'live', undefined, l)} subscribe={subscribe} />
           ) : (
             <>
               <MessageList

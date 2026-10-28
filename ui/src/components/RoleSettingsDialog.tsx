@@ -21,7 +21,18 @@ type Row = { model: string; effort: string }
 // F-23: `key` keeps a plugin row's identity while its id is being typed; `plugins` is null when the daemon predates
 // the endpoint (the tab says so and Save leaves the list alone).
 type PluginDraft = { key: number; id: string; on: boolean; ask: boolean }
-type Draft = { def: Row; roles: Record<string, Row>; plugins: PluginDraft[] | null; status: Record<string, PluginStatus> }
+// F-41: `limits` are the two load numbers as typed; `base` is what the daemon had, so only an edited one is sent (a stored 0, the sandbox's
+// "scheduler off", is left alone).
+type Limits = { turns: string; lanes: string }
+type Draft = { def: Row; roles: Record<string, Row>; plugins: PluginDraft[] | null; status: Record<string, PluginStatus>; limits: Limits; base: Limits }
+const TURNS_MAX = 12
+const LANES_MAX = 6
+const whole = (v: string, max: number) => /^\d+$/.test(v.trim()) && Number(v) >= 1 && Number(v) <= max
+
+const limits = (s: { max_concurrent?: number; max_lanes_per_role?: number }): Limits => ({
+  turns: String(s.max_concurrent ?? 6),
+  lanes: String(s.max_lanes_per_role ?? 2),
+})
 
 // F-9: global model + effort per role, saved with one PUT /api/settings; applies from each role's next turn.
 // F-23: the Plugins tab edits the one plugin list in the same draft and the same PUT.
@@ -50,6 +61,8 @@ export default function RoleSettingsDialog({ open, onOpenChange }: { open: boole
           roles: Object.fromEntries(o.roles.map((r) => [r, { model: s.models?.[r] || INHERIT, effort: s.efforts?.[r] || INHERIT }])),
           plugins: p ? p.rows.map((r) => ({ key: ++keys.current, ...r })) : null,
           status: p?.status ?? {},
+          limits: limits(s),
+          base: limits(s),
         })
       })
       .catch((e) => setErr(e?.message || 'could not load settings'))
@@ -82,6 +95,8 @@ export default function RoleSettingsDialog({ open, onOpenChange }: { open: boole
       return { ...d, def: row, roles }
     })
 
+  const setLimit = (patch: Partial<Limits>) => setDraft((d) => (d ? { ...d, limits: { ...d.limits, ...patch } } : d))
+
   const setPlugins = (f: (rows: PluginDraft[]) => PluginDraft[]) => setDraft((d) => (d && d.plugins ? { ...d, plugins: f(d.plugins) } : d))
   const setPlugin = (key: number, patch: Partial<PluginDraft>) => setPlugins((rows) => rows.map((r) => (r.key === key ? { ...r, ...patch } : r)))
   const addPlugin = () => {
@@ -102,6 +117,9 @@ export default function RoleSettingsDialog({ open, onOpenChange }: { open: boole
 
   const save = async () => {
     if (!draft) return
+    const { limits: l, base } = draft
+    if (l.turns !== base.turns && !whole(l.turns, TURNS_MAX)) return setErr(`Turns at once must be a whole number from 1 to ${TURNS_MAX}`)
+    if (l.lanes !== base.lanes && !whole(l.lanes, LANES_MAX)) return setErr(`Sessions per role must be a whole number from 1 to ${LANES_MAX}`)
     setBusy(true)
     setErr(null)
     try {
@@ -112,6 +130,8 @@ export default function RoleSettingsDialog({ open, onOpenChange }: { open: boole
         default_effort: draft.def.effort === INHERIT ? null : draft.def.effort,
         models: pick('model'),
         efforts: pick('effort'),
+        ...(l.turns !== base.turns ? { max_concurrent: Number(l.turns) } : {}),
+        ...(l.lanes !== base.lanes ? { max_lanes_per_role: Number(l.lanes) } : {}),
         // A blank row is an unfinished one: drop it rather than send an id the server would refuse.
         ...(draft.plugins ? { plugins: draft.plugins.filter((r) => r.id.trim()).map((r) => ({ id: r.id.trim(), on: r.on, ask: r.ask })) } : {}),
       })
@@ -274,6 +294,38 @@ export default function RoleSettingsDialog({ open, onOpenChange }: { open: boole
                   })}
                 </tbody>
               </table>
+              <div data-settings-load className="mt-4 grid grid-cols-[minmax(0,1fr)_4.5rem] items-center gap-x-4 gap-y-3 border-t border-gray-100 pt-3">
+                <label htmlFor="turns-at-once" className="min-w-0">
+                  <span className="block text-meta font-medium text-gray-800">Turns at once</span>
+                  <span className="block text-caption text-gray-500">
+                    How many role turns run together, across all roles. More finish work sooner and use your plan's limit faster. Extra work waits its turn.
+                  </span>
+                </label>
+                <Input
+                  id="turns-at-once"
+                  type="number"
+                  min={1}
+                  max={TURNS_MAX}
+                  value={draft.limits.turns}
+                  className="text-center"
+                  onChange={(e) => setLimit({ turns: e.target.value })}
+                />
+                <label htmlFor="sessions-per-role" className="min-w-0">
+                  <span className="block text-meta font-medium text-gray-800">Sessions per role</span>
+                  <span className="block text-caption text-gray-500">
+                    How many sessions of one role may run at once: its main session and one per feature with its own worktree.
+                  </span>
+                </label>
+                <Input
+                  id="sessions-per-role"
+                  type="number"
+                  min={1}
+                  max={LANES_MAX}
+                  value={draft.limits.lanes}
+                  className="text-center"
+                  onChange={(e) => setLimit({ lanes: e.target.value })}
+                />
+              </div>
             </TabsContent>
             <TabsContent value="plugins" data-plugins>
               {pluginsTab()}
