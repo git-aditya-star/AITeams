@@ -439,6 +439,22 @@ class ProjectDB:
             n += 1
         return n
 
+    def prompt_watermark(self, session_id: str, conversation_id: str, before_turn: int) -> int | None:
+        """F-42: the newest message id an earlier normal turn of this session showed with `conversation_id` as its focus, or
+        None. Only turns that really ran count (done, no "no assistant output" error; a capped turn did run): a turn that
+        failed or never processed its prompt left no history in the session."""
+        r = self.one("SELECT MAX(prompt_max_id) AS m FROM turns WHERE session_id=? AND prompt_conv=? AND id<? AND kind='normal'"
+                     " AND state='done' AND (error IS NULL OR error=?)", session_id, conversation_id, before_turn, MAX_TURNS_ERROR)
+        return r["m"] if r and r["m"] is not None else None
+
+    def first_measured_turn(self, session_id: str, turn_id: int, kinds: tuple[str, ...]) -> bool:
+        """F-42: True when no earlier turn of `kinds` in this session recorded a context size, i.e. `turn_id` is the session's
+        first one (rotation never fires on it, so an oversized start can't loop)."""
+        marks = ",".join("?" * len(kinds))
+        r = self.one(f"SELECT 1 FROM turns WHERE session_id=? AND id<? AND kind IN ({marks}) AND context_tokens IS NOT NULL LIMIT 1",
+                     session_id, turn_id, *kinds)
+        return r is None
+
     def turns_since(self, role: str, since: float, kind: str = "normal", ended: bool = True) -> list[dict]:
         sql = "SELECT * FROM turns WHERE role=? AND created_at>? AND kind=?"
         if ended:
@@ -896,6 +912,10 @@ class ProjectDB:
     def touch_edit(self, path: str, role: str) -> None:
         self.x("INSERT OR REPLACE INTO file_edits(path, role, updated_at) VALUES(?,?,?)", path, role, time.time())
 
+    def file_edits_by(self, role: str) -> list[str]:
+        """F-42: the paths this role was the last to edit (project-relative, or an absolute worktree path), newest first."""
+        return [r["path"] for r in self.q("SELECT path FROM file_edits WHERE role=? ORDER BY updated_at DESC, path", role)]
+
     def file_edits_for(self, prefix: str) -> dict[str, dict]:
         rows = self.q("SELECT * FROM file_edits WHERE path LIKE ?", prefix.replace("%", "%%") + "%")
         return {r["path"]: dict(r) for r in rows}
@@ -1037,6 +1057,13 @@ def _migration_10(conn: sqlite3.Connection) -> None:
                  " approval_id INTEGER NULL, turn_id INTEGER NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL)")
 
 
+def _migration_15(conn: sqlite3.Connection) -> None:
+    """F-42: what a normal turn's wake prompt showed: the newest message id at prompt time and the conversation whose history
+    it printed, so the next wake of the same resumed session carries only what came after. Old rows stay NULL (full history)."""
+    conn.execute("ALTER TABLE turns ADD COLUMN prompt_max_id INTEGER NULL")
+    conn.execute("ALTER TABLE turns ADD COLUMN prompt_conv TEXT NULL")
+
+
 MIGRATIONS: list = [
     _migration_1,
     "ALTER TABLE turns ADD COLUMN token TEXT",
@@ -1061,4 +1088,5 @@ MIGRATIONS: list = [
     _migration_13,
     # F-40: the three-part brief of an approval (JSON {what, if_approved, tradeoffs, doc}); rows filed before it stay NULL
     "ALTER TABLE approvals ADD COLUMN brief TEXT NULL",
+    _migration_15,
 ]

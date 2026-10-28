@@ -194,9 +194,9 @@ def test_watermark_set_at_prompt_and_cleared_at_turn_end(db, home, monkeypatch):
     seen = {}
     real = turn_mod.TurnRunner._prompt
 
-    def spy(self, kind, ids, handoff):
+    def spy(self, kind, ids, handoff, *rest):
         seen["wm"] = proj.delivered.get(self.turn["id"])
-        return real(self, kind, ids, handoff)
+        return real(self, kind, ids, handoff, *rest)
     monkeypatch.setattr(turn_mod.TurnRunner, "_prompt", spy)
     s = sched_mod.Scheduler(st)
     runner = turn_mod.TurnRunner(st, proj, proj.db.add_wake("qa", "dm-qa", [m["id"]], "master"))

@@ -9,7 +9,7 @@ import signal
 import sys
 from pathlib import Path
 
-from ..config import plugin_rows
+from ..config import plugin_rows, skill_desc_chars
 
 PKG = Path(__file__).resolve().parent.parent
 HOOK = str(PKG / "hooks" / "pretooluse.py")
@@ -22,10 +22,12 @@ TREE_ENV = ("AITEAMS_TREE", "AITEAMS_TREE_FEATURE", "AITEAMS_WORKTREES_ROOT")  #
 
 def child_env(daemon_url: str, project_id: str, project_path: str, role: str, turn_id: int,
               ask_timeout_s: int = 600, turn_token: str = "", ask_plugins: list[str] | None = None,
-              tree: str | None = None, tree_feature: str | None = None, worktrees_root: str | None = None) -> dict:
+              tree: str | None = None, tree_feature: str | None = None, worktrees_root: str | None = None,
+              subagent_model: str | None = None) -> dict:
     env = dict(os.environ)
     env.pop("ANTHROPIC_API_KEY", None)
     env.pop("AITEAMS_TOKEN", None)  # the Master token never reaches a role
+    env.pop("CLAUDE_CODE_SUBAGENT_MODEL", None)  # F-42: the `subagent_model` setting alone decides (empty = the role's model)
     for k in TREE_ENV:  # never inherited: a turn on no feature (or on one without a tree) is exactly today's turn
         env.pop(k, None)
     env.update({
@@ -49,6 +51,8 @@ def child_env(daemon_url: str, project_id: str, project_path: str, role: str, tu
     })
     # F-39 B2: every turn knows where worktrees live (the hook locks a file there by its absolute path); a turn whose focus
     # feature has a live tree also knows which one (the hook denies main-folder edits for it, build_cmd adds the directory)
+    if subagent_model:  # F-42: a role's subagents (Agent tool) run on this model instead of the role's own
+        env["CLAUDE_CODE_SUBAGENT_MODEL"] = subagent_model
     if worktrees_root:
         env["AITEAMS_WORKTREES_ROOT"] = worktrees_root
     if tree:
@@ -77,6 +81,11 @@ def build_cmd(settings: dict, role: str, env: dict, system_prompt_file: str, ses
     rows = plugin_rows(settings)
     if rows:
         hook_settings["enabledPlugins"] = {r["id"]: r["on"] for r in rows}
+    # F-42 cut 4: each skill stays listed and invocable, with its description cut to this many characters (Claude Code's own
+    # default is 1536); 0 leaves the key out
+    chars = skill_desc_chars(settings)
+    if chars:
+        hook_settings["skillListingMaxDescChars"] = chars
     mcp = {"mcpServers": {"aiteams": {"command": py, "args": ["-B", MCP_SERVER], "env": aiteams_env(env)}}}
     cmd = ["claude", "-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose",
            "--include-partial-messages", "--include-hook-events",

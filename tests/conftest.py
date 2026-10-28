@@ -12,6 +12,8 @@ TURN_ENV = ("AITEAMS_DAEMON_URL", "AITEAMS_PROJECT", "AITEAMS_ROLE", "AITEAMS_TU
             "AITEAMS_PROJECT_PATH", "AITEAMS_ASK_TIMEOUT_S", "AITEAMS_ASK_PLUGINS",
             # F-39 B2: the feature's worktree (and where every worktree lives) is in the env of a role's turn
             "AITEAMS_TREE", "AITEAMS_TREE_FEATURE", "AITEAMS_WORKTREES_ROOT",
+            # F-42: the spawn env sets the subagents' model from the `subagent_model` setting; a turn's own value must not leak in
+            "CLAUDE_CODE_SUBAGENT_MODEL",
             # F-29: every role turn now carries the Artifact switch; tests that check "switch not set" must not inherit it
             "CLAUDE_CODE_ARTIFACT", "CLAUDE_CODE_ARTIFACT_AUTO_OPEN")
 for _k in TURN_ENV:

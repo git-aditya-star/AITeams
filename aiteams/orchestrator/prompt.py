@@ -11,6 +11,7 @@ from ..db import ProjectDB
 
 ROLES_DIR = Path(__file__).resolve().parent.parent / "roles"
 LAST_N = 20
+TRIM_LINES = 15  # F-42: a resumed session's "also in" bodies longer than this are cut (the pointer fetches the rest)
 
 
 def _read(path: Path) -> str:
@@ -78,13 +79,27 @@ def write_system_prompt(project_path: str, project_name: str, role: str, lead_fe
     return str(p)
 
 
-def _fmt(m: dict) -> str:
+def _body(m: dict, trim_for: str | None) -> str:
+    """The message text; with `trim_for` (the role reading it on a resumed session) a body over TRIM_LINES lines is cut and
+    ends with the exact call that returns it whole. Never cut: a message that @mentions the role (a Decision to it
+    included) or the Master's own words."""
+    text = m["text"]
+    if not trim_for or m["author"] == "master" or trim_for in m.get("mentions", []):
+        return text
+    lines = text.split("\n")
+    if len(lines) <= TRIM_LINES:
+        return text
+    return ("\n".join(lines[:TRIM_LINES])
+            + f"\n… ({len(lines) - TRIM_LINES} more lines — get_messages({m['conversation_id']}, before={m['id'] + 1}, limit=1))")
+
+
+def _fmt(m: dict, trim_for: str | None = None) -> str:
     t = time.strftime("%H:%M", time.localtime(m["created_at"]))
     mentions = " ".join("@" + r for r in m.get("mentions", []))
     head = f"[{t}] #{m['id']} {m['author']} ({m['type']})"
     if mentions:
         head += " " + mentions
-    line = f"{head}: {m['text']}"
+    line = f"{head}: {_body(m, trim_for)}"
     if m.get("reactions"):
         line += "  [" + " · ".join(f"{r['emoji']} {', '.join(r['roles'])}" for r in m["reactions"]) + "]"
     return line
@@ -103,7 +118,13 @@ def live_message_ids(db: ProjectDB, message_ids: list[int]) -> list[int]:
     return [m["id"] for m in db.messages_by_ids(message_ids) if m["id"] > db.reset_after(m["conversation_id"])]
 
 
-def build_wake_prompt(db: ProjectDB, role: str, message_ids: list[int], handoff: dict | None = None) -> str:
+def build_wake_prompt(db: ProjectDB, role: str, message_ids: list[int], handoff: dict | None = None,
+                      since_id: int | None = None, unfiled: list[str] | None = None) -> str:
+    """The wake digest: the new messages, the feature header, and the focus conversation's recent history.
+    F-42: `since_id` is set only for a resumed session whose earlier turn already showed that conversation up to that
+    message id (`TurnRunner` decides): the history is then only what came after it, long bodies cut, because the session
+    already holds the rest. None = today's prompt, the last 20 messages. `unfiled`: the role's dirty, unfiled files, listed
+    on a fresh session so the work a rotation would drop is still in front of it."""
     msgs = db.messages_by_ids(message_ids)
     by_conv: dict[str, list[dict]] = {}
     for m in msgs:
@@ -115,6 +136,10 @@ def build_wake_prompt(db: ProjectDB, role: str, message_ids: list[int], handoff:
         out += [f"# Fresh session #{info['seq']} — handoff from your previous session "
                 f"(written {when}, reason: {handoff.get('reason') or 'rotation'})",
                 _read(Path(handoff["path"])).strip() or "(handoff file missing)", ""]
+    if unfiled:
+        from ..workflow import unfiled_text  # late import: workflow imports this package
+        out += ["# You have unfiled edits (changed on disk, in no open commit request)", unfiled_text(unfiled),
+                "Finish and file them with `request_commit`, or say why they wait; a fresh session doesn't remember them.", ""]
     out.append(f"# New messages for {role_name(role)}")
     for cid, ms in by_conv.items():
         out.append("\n## " + _conv_label(db, cid))
@@ -125,8 +150,16 @@ def build_wake_prompt(db: ProjectDB, role: str, message_ids: list[int], handoff:
         if feat:
             from ..workflow import feature_header
             out.append("\n" + feature_header(db, db.project_path, feat))
-        out.append(f"\n# Conversation: {_conv_label(db, focus)} — last {LAST_N} messages")
-        out += [_fmt(m) for m in db.messages(focus, limit=LAST_N, after=db.reset_after(focus))]
+        if since_id is None:
+            out.append(f"\n# Conversation: {_conv_label(db, focus)} — last {LAST_N} messages")
+            out += [_fmt(m) for m in db.messages(focus, limit=LAST_N, after=db.reset_after(focus))]
+        else:
+            listed = {m["id"] for m in msgs}
+            fresh = [m for m in db.messages(focus, limit=LAST_N, after=max(since_id, db.reset_after(focus)))
+                     if m["id"] not in listed]
+            out.append(f"\n# Also in {_conv_label(db, focus)} since your last turn"
+                       " (what came before is already in your session; `get_messages` fetches more)")
+            out += [_fmt(m, trim_for=role) for m in fresh] or ["(nothing else; everything earlier is in your session)"]
     out += [
         "",
         "# Instructions",
@@ -148,7 +181,9 @@ def _conv_label(db: ProjectDB, cid: str) -> str:
 
 
 def build_handoff_prompt(db: ProjectDB, role: str, reason: str | None) -> str:
+    from ..workflow import unfiled_edits, unfiled_text  # late import: workflow imports this package
     info = db.session_info(role)
+    unfiled = unfiled_text(unfiled_edits(db, db.project_path, role))
     return "\n".join([
         f"# Handoff turn for {role_name(role)} (session #{info['seq']})",
         f"Reason: {reason or 'rotation'}. This session is being retired; your next wake starts a fresh session"
@@ -160,6 +195,9 @@ def build_handoff_prompt(db: ProjectDB, role: str, reason: str | None) -> str:
         "- decisions and gotchas your future self must not re-learn",
         "- next steps, in order",
         "- open questions and who owes you an answer",
+        *(["", "You have unfiled edits: these files changed on disk and are in no open commit request. Name each one in the"
+               " handoff (what it holds and whether it is ready to file); the daemon lists them again in your fresh session:",
+           unfiled] if unfiled else []),
         "",
         "Do no other work: no edits, no messages, no commits. Then end your turn.",
     ]) + "\n"

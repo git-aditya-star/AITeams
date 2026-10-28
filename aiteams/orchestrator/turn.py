@@ -8,7 +8,7 @@ import time
 import uuid
 
 from .. import branches
-from ..config import LEADS, MAX_TURNS_ERROR, ask_plugin_names, effort_for, model_for
+from ..config import LEADS, MAX_TURNS_ERROR, ask_plugin_names, effort_for, model_for, subagent_model, wake_history
 from ..plugins import check_plugins
 from . import receipts
 from .claude_proc import ClaudeProc, build_cmd, child_env, display_argv
@@ -117,8 +117,9 @@ class TurnRunner:
         mine = lead_open_features(db, role) if role in LEADS else None  # F-22: a Lead's prompt names its features
         sys_file = write_system_prompt(self.project.path, self.project.name, role, mine)
         self.project.delivered[tid] = db.max_message_id()  # F-16: the prompt shows everything up to here
-        prompt = self._prompt(kind, message_ids, handoff)
-        db.update_turn(tid, prompt=prompt)
+        since_id, unfiled = await self._history(kind, message_ids, session_id, resume, reason, tid)
+        prompt = self._prompt(kind, message_ids, handoff, since_id, unfiled)
+        db.update_turn(tid, prompt=prompt, **self._watermark(kind, message_ids, tid))
         settings = dict(self.state.settings)
         if kind != "normal":
             settings["max_turns"] = min(int(settings.get("max_turns", 40)), 10)
@@ -127,7 +128,8 @@ class TurnRunner:
         for attempt in (1, 2):
             env = child_env(self.state.daemon_url, self.project.id, self.project.path, role, tid,
                             int(self.state.settings.get("ask_timeout_s", 600)), turn_token, ask_plugin_names(settings),
-                            tree=tree, tree_feature=tree_feature, worktrees_root=branches.worktrees_root(self.project.path))
+                            tree=tree, tree_feature=tree_feature, worktrees_root=branches.worktrees_root(self.project.path),
+                            subagent_model=subagent_model(self.state.settings))
             cmd = build_cmd(settings, role, env, sys_file, session_id, resume, self.model, self.effort)
             await self._on_event({"type": "aiteams_cmd", "model": self.model, "effort": self.effort,
                                   "argv": display_argv(cmd)})
@@ -149,6 +151,10 @@ class TurnRunner:
                 await self._system_message(
                     f"Could not resume session for {role}; started a fresh session. stderr: "
                     + " | ".join(self.proc.stderr[-3:])[:500])
+                # F-42: the fresh session holds nothing, so it gets the full history (and the unfiled list), not the trimmed one
+                since_id, unfiled = await self._history(kind, message_ids, session_id, False, "resume failed", tid)
+                prompt = self._prompt(kind, message_ids, handoff, since_id, unfiled)
+                db.update_turn(tid, prompt=prompt)
                 continue
             break
         state, error = classify(result, self.interrupt_reason is not None)
@@ -170,7 +176,35 @@ class TurnRunner:
         tree = branches.tree_for(self.db, feat["id"]) if feat else None
         return (feat["key"], tree) if tree else (None, None)
 
-    def _prompt(self, kind: str, message_ids: list[int], handoff: dict | None) -> str:
+    def _focus(self, message_ids: list[int]) -> str | None:
+        return focus_conversation(self.db.messages_by_ids(message_ids))
+
+    async def _history(self, kind: str, message_ids: list[int], session_id: str, resume: bool, reason: str,
+                       tid: int) -> tuple[int | None, list[str] | None]:
+        """F-42: (since_id, unfiled) for a normal wake prompt. `since_id`: on a resumed session with `wake_history` "new",
+        the newest message id an earlier turn of THIS session already showed of the focus conversation, so the prompt
+        carries only what came after; None (the full last 20, today's prompt) on a fresh session, a first wake in that
+        conversation, a turn with no watermark (older rows) or `wake_history: full`. `unfiled`: on a fresh session after a
+        rotation, the role's dirty files that no open commit request lists."""
+        if kind != "normal":
+            return None, None
+        if not resume:
+            if reason == "first turn":
+                return None, None
+            from ..workflow import unfiled_edits  # late import: workflow imports this package
+            return None, await asyncio.to_thread(unfiled_edits, self.db, self.project.path, self.role) or None
+        if wake_history(self.state.settings) != "new":
+            return None, None
+        focus = self._focus(message_ids)
+        return (self.db.prompt_watermark(session_id, focus, tid) if focus else None), None
+
+    def _watermark(self, kind: str, message_ids: list[int], tid: int) -> dict:
+        """What this turn's wake prompt showed, for the next wake of the session (turns.prompt_max_id / prompt_conv)."""
+        focus = self._focus(message_ids) if kind == "normal" else None
+        return {"prompt_max_id": self.project.delivered.get(tid), "prompt_conv": focus} if focus else {}
+
+    def _prompt(self, kind: str, message_ids: list[int], handoff: dict | None, since_id: int | None = None,
+                unfiled: list[str] | None = None) -> str:
         db, role = self.db, self.role
         if kind == "handoff":
             return build_handoff_prompt(db, role, db.role_state(role)["rotate_reason"])
@@ -188,7 +222,7 @@ class TurnRunner:
             if kind == "brainstorm":
                 return build_brainstorm_prompt(db, self.project.path, role, bs)
             return build_brainstorm_compile_prompt(db, self.project.path, bs)
-        return build_wake_prompt(db, role, message_ids, handoff)
+        return build_wake_prompt(db, role, message_ids, handoff, since_id, unfiled)
 
     async def _stream(self) -> dict | None:
         """Read events until `result` or EOF; SIGINT on turn_timeout_s."""

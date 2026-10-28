@@ -58,12 +58,18 @@ DEFAULT_SETTINGS = {
     "turn_timeout_s": 1200,
     "stuck_turn_s": 1200,  # F-38: a turn running or a wake queued this long is flagged to the Manager (never stopped)
     "rotate_pct": 0.6,
+    # F-42: what a role turn re-reads. All four are read per turn (a change applies from the next turn); each has an off switch.
+    "rotate_tokens": 150000,  # rotate at min(this, rotate_pct x window) tokens of context; 0 = the percentage alone
+    "wake_history": "new",  # a resumed session's wake carries only what it hasn't seen; "full" = the last 20 every time
+    "subagent_model": "sonnet",  # CLAUDE_CODE_SUBAGENT_MODEL for a role's subagents; "" = they run on the role's model
+    "skill_desc_chars": 80,  # skillListingMaxDescChars: each skill's description in the listing; 0 = Claude Code's own 1536
     "stale_hours": 4,
     "fail_streak_rotate": 3,
     # F-23: one global plugin list for every role's turn, [{"id": "name@marketplace", "on": bool, "ask": bool}].
     # Empty by default (upgrade included): an unlisted plugin is left to Claude Code's own default.
     "plugins": [],
 }
+WAKE_HISTORY = ("new", "full")
 MAX_TURNS_ERROR = "max turns reached"  # the `error` of a turn that ended with claude's error_max_turns (state stays done)
 PLUGIN_ID_RE = re.compile(r"^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$")
 
@@ -205,6 +211,39 @@ def effort_for(settings: dict, role: str) -> str | None:
     return level if level in EFFORT_SUPPORT.get(model_for(settings, role), EFFORTS) else None
 
 
+def _int_setting(settings: dict, key: str) -> int:
+    """A non-negative int setting; a hand-edited bad value (text, a bool, negative) falls back to the default."""
+    v = settings.get(key)
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+        v = DEFAULT_SETTINGS[key]
+    return int(v)
+
+
+def rotation_limit(settings: dict, window: int) -> int:
+    """F-42: the context size (tokens) at which a session rotates: min(rotate_tokens, rotate_pct x window); rotate_tokens
+    0 leaves the percentage alone. The same number the team strip's context meter is relative to."""
+    pct = settings.get("rotate_pct")
+    pct = float(pct) if isinstance(pct, (int, float)) and not isinstance(pct, bool) and pct > 0 else DEFAULT_SETTINGS["rotate_pct"]
+    limit = int(pct * max(int(window or 0), 1))
+    fixed = _int_setting(settings, "rotate_tokens")
+    return max(min(limit, fixed) if fixed else limit, 1)
+
+
+def wake_history(settings: dict) -> str:
+    v = settings.get("wake_history")
+    return v if v in WAKE_HISTORY else DEFAULT_SETTINGS["wake_history"]
+
+
+def subagent_model(settings: dict) -> str:
+    """F-42: the model a role's subagents run on ("" = the role's own); a non-string is the default."""
+    v = settings.get("subagent_model", DEFAULT_SETTINGS["subagent_model"])
+    return v.strip() if isinstance(v, str) else DEFAULT_SETTINGS["subagent_model"]
+
+
+def skill_desc_chars(settings: dict) -> int:
+    return _int_setting(settings, "skill_desc_chars")
+
+
 def model_label(model: str) -> str:
     """Friendly label for an offered ID, else the raw ID (a saved ID that is no longer offered)."""
     return MODEL_LABELS.get(model, model)
@@ -293,4 +332,16 @@ def validate_role_settings(body: dict, current: dict | None = None) -> dict:
         out[key] = clean
     if "plugins" in out:
         out["plugins"] = validate_plugins(out["plugins"])
+    if "wake_history" in out and out["wake_history"] not in WAKE_HISTORY:
+        raise ValueError(f"wake_history must be one of {', '.join(WAKE_HISTORY)}")
+    for key in ("rotate_tokens", "skill_desc_chars"):  # F-42: whole numbers, 0 = off
+        if key in out and (isinstance(out[key], bool) or not isinstance(out[key], int) or out[key] < 0):
+            raise ValueError(f"{key} must be a whole number, 0 or more (0 turns it off)")
+    if "subagent_model" in out:
+        v = out["subagent_model"]
+        if v is None:
+            v = ""
+        if not isinstance(v, str) or len(v.strip()) > 80 or any(c.isspace() for c in v.strip()):
+            raise ValueError("subagent_model must be a model alias or id (no spaces), or empty to use each role's own model")
+        out["subagent_model"] = v.strip()
     return out

@@ -15,7 +15,7 @@ import time
 
 from fastapi import HTTPException
 
-from .config import LEADS, ROLES, canonical_role, effort_for, model_for, model_label, role_name
+from .config import LEADS, ROLES, canonical_role, effort_for, model_for, model_label, role_name, rotation_limit
 from . import branches, commit_graph
 from .db import PHASES, WAKE_KINDS, ProjectDB
 from .runtime import Project
@@ -1043,6 +1043,69 @@ def _repo_groups(project_path: str, files: list[str]) -> list[tuple[str, list[st
     return sorted(groups.items(), key=lambda g: (g[0] != mine, g[0]))
 
 
+UNFILED_SHOWN = 15
+
+
+def _dirty_files(repo: str) -> set[str]:
+    """Absolute realpaths of the files `git status` of `repo` reports (modified, deleted, new; renames by their new path)."""
+    try:
+        r = _git(repo, "status", "--porcelain", "-z", "--untracked-files=all")
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    if r.returncode != 0:
+        return set()
+    top = _repo_top(repo) or repo
+    out, parts = set(), iter(r.stdout.split("\0"))
+    for entry in parts:
+        if len(entry) < 4:
+            continue
+        out.add(os.path.realpath(os.path.join(top, entry[3:])))
+        if entry[0] in "RC":  # the next field is the rename's old path
+            next(parts, None)
+    return out
+
+
+def unfiled_edits(db: ProjectDB, project_path: str, role: str) -> list[str]:
+    """F-42: the files `role` was the last to edit that are still dirty in git (modified, deleted or new) and are not in an
+    open commit request: work a rotated session would otherwise forget. Paths as the role knows them: project-relative, or
+    absolute for a file in a feature's worktree. A request's files resolve against its feature's tree (F-39 B2). Gitignored
+    files (docs, notes) are never dirty. One `git status` per repo involved; a git failure lists nothing."""
+    listed: set[str] = set()
+    for state in PENDING_COMMIT_STATES:
+        for c in db.commits(state, limit=1000):
+            base = branches.tree_for(db, c["feature_id"]) or project_path
+            listed |= {os.path.realpath(f if os.path.isabs(f) else os.path.join(base, f)) for f in c["files"]}
+    root = os.path.realpath(project_path)
+    wt = branches.worktrees_root(project_path)
+    repos: dict[str, set[str]] = {}  # the dirty files of each repo, read once
+    out = []
+    for p in db.file_edits_by(role):
+        full = os.path.realpath(p if os.path.isabs(p) else os.path.join(project_path, p))
+        if full in listed:
+            continue
+        if full == root or full.startswith(root + os.sep):
+            repo = root
+        elif full.startswith(wt + os.sep):  # <worktrees root>/f<n>/...: that feature's tree
+            repo = os.path.join(wt, full[len(wt) + 1:].split(os.sep, 1)[0])
+        else:
+            repo = _repo_top(os.path.dirname(full)) or os.path.dirname(full)
+        if repo not in repos:
+            repos[repo] = _dirty_files(repo)
+        if full in repos[repo]:
+            out.append(p)
+    return out
+
+
+def unfiled_text(paths: list[str]) -> str:
+    """The bullet list for `unfiled_edits` ("" when there are none); capped so it can't bloat a prompt."""
+    if not paths:
+        return ""
+    lines = [f"- {p}" for p in paths[:UNFILED_SHOWN]]
+    if len(paths) > UNFILED_SHOWN:
+        lines.append(f"- … and {len(paths) - UNFILED_SHOWN} more")
+    return "\n".join(lines)
+
+
 def _diff_hint(project_path: str, files: list[str], root: str | None = None) -> str:
     """The Lead's review commands for a request: `git diff HEAD -- <project files>`, and one `git -C <repo> diff HEAD --
     <files>` for each other repo it touches (F-36: an outside file is listed by its absolute path). F-39 B2: `root` is
@@ -1784,9 +1847,10 @@ def team_status(st, proj: Project) -> list[dict]:
         window = next((context_window_from(json.loads(t["result_json"]), None)
                        for t in turns if t.get("result_json")), context_window_from(None))
         rs = db.role_state(role)
+        limit = rotation_limit(st.settings, window)  # F-42: the meter reads 100% when the session rotates
         out.append({"role": role, "state": state, "session_id": info["session_id"], "last_turn": last,
-                    "context_tokens": ctx, "context_window": window,
-                    "context_pct": (ctx / window) if window else 0.0,
+                    "context_tokens": ctx, "context_window": window, "context_limit": limit,
+                    "context_pct": (ctx / limit) if limit else 0.0,
                     "cost_today": db.cost_today(role), "model": model, "model_label": model_label(model),
                     "effort": effort_for(st.settings, role),
                     "session_seq": info["seq"], "fresh_starts": info["fresh_starts"],

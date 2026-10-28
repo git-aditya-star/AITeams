@@ -38,10 +38,11 @@ def ended_turn(db, role, state="done", kind="normal", ctx=None, result=None, con
 def test_context_over_threshold_queues_handoff_turn(db, home, monkeypatch):
     st, proj = setup(db, home, monkeypatch, [], rotate_pct=0.5)
     db.new_session("backend", "s1", "first turn")
+    ended_turn(db, "backend", ctx=100)  # F-42: a session's first turn never rotates, so this one is the second
     t = ended_turn(db, "backend", ctx=600, result={"modelUsage": {"m": {"contextWindow": 1000}}})
     asyncio.run(lifecycle.after_turn(st, proj, FinishedRunner(proj, t)))
     rs = db.role_state("backend")
-    assert rs["rotate_reason"] == "context 60%" and rs["rotate_handoff"] == 1
+    assert rs["rotate_reason"] == "context 600 tokens (limit 500)" and rs["rotate_handoff"] == 1
     w = db.queued_wake("backend", "handoff")
     assert w and w["origin"] == "system" and w["conversation_id"] == "dm-backend"
     assert db.queued_wake("backend") is None  # normal wakes never see handoff wakes
@@ -365,9 +366,10 @@ def test_rotation_and_the_cap_together_run_the_handoff_wake_first(db, home, monk
     from tests.test_scheduler import StubRunner
     st, proj = setup(db, home, monkeypatch, [], rotate_pct=0.5)
     db.new_session("backend", "s1", "first turn")
+    ended_turn(db, "backend", ctx=100)  # F-42: not the session's first turn
     capped(db, st, proj, ctx=700, result={"modelUsage": {"m": {"contextWindow": 1000}}})
     rs = db.role_state("backend")
-    assert rs["rotate_reason"] == "context 70%" and rs["rotate_handoff"] == 1
+    assert rs["rotate_reason"] == "context 700 tokens (limit 500)" and rs["rotate_handoff"] == 1
     handoff, cont = db.queued_wake("backend", "handoff"), db.queued_wake("backend")
     assert handoff and cont and cont["message_ids"] == [db.messages("dm-backend")[-1]["id"]]  # both are queued
     monkeypatch.setattr(sched_mod, "TurnRunner", StubRunner)

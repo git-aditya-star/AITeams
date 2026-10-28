@@ -140,9 +140,10 @@ def test_team_context_from_active_session_only(client, pid):
     db = proj.db
     db.new_session("backend", "s1", "first turn")
     t = db.create_turn("backend", "s1", "master", "dm-backend")
-    db.update_turn(t["id"], state="done", context_tokens=150000, result_json=json.dumps({"modelUsage": {"m": {"contextWindow": 200000}}}))
+    # F-42: the meter is relative to the rotation limit, min(150k, 60% of the window) = 120k on a 200k window
+    db.update_turn(t["id"], state="done", context_tokens=90000, result_json=json.dumps({"modelUsage": {"m": {"contextWindow": 200000}}}))
     be = next(x for x in client.get(f"/api/p/{pid}/team").json()["roles"] if x["role"] == "backend")
-    assert be["context_pct"] == 0.75 and be["session_seq"] == 1 and be["current"]["label"] == "DM backend"
+    assert be["context_pct"] == 0.75 and be["context_limit"] == 120000 and be["session_seq"] == 1 and be["current"]["label"] == "DM backend"
     db.new_session("backend", "s2", "context 75%")
     be = next(x for x in client.get(f"/api/p/{pid}/team").json()["roles"] if x["role"] == "backend")
     assert be["context_tokens"] == 0 and be["context_pct"] == 0 and be["session_seq"] == 2 and be["fresh_starts"] == 1

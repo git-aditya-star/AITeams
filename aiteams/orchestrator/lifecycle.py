@@ -4,9 +4,17 @@ from __future__ import annotations
 import json
 import time
 
-from ..config import MAX_TURNS_ERROR, ROLES, role_name
+from ..config import MAX_TURNS_ERROR, ROLES, role_name, rotation_limit
 from . import receipts
 from .turn import context_window_from
+
+
+ROTATION_KINDS = ("normal", "standup", "brainstorm")  # the turns whose context size can rotate a session
+
+
+def _k(tokens: int) -> str:
+    """152000 -> "152k" (the rotation reason and the activity line)."""
+    return f"{tokens / 1000:.0f}k" if tokens >= 1000 else str(tokens)
 
 
 async def _dm(proj, role: str, text: str, turn_id: int | None = None) -> None:
@@ -117,12 +125,19 @@ async def after_turn(st, proj, runner) -> None:
             db.set_role_state(role, fail_streak=0)
 
     rs = db.role_state(role)
-    if kind in ("normal", "standup", "brainstorm") and state == "done" and not rs["rotate_reason"] and turn.get("context_tokens"):
+    if kind in ROTATION_KINDS and state == "done" and not rs["rotate_reason"] and turn.get("context_tokens"):
         result = json.loads(turn["result_json"]) if turn.get("result_json") else None
         window = context_window_from(result, runner.model) or 1
-        pct = turn["context_tokens"] / window
-        if pct >= float(settings.get("rotate_pct", 0.6)):
-            await request_rotation(st, proj, role, f"context {pct:.0%}", handoff=True)
+        ctx, limit = turn["context_tokens"], rotation_limit(settings, window)  # F-42: min(rotate_tokens, rotate_pct x window)
+        if ctx >= limit:
+            text = f"context {_k(ctx)} tokens (limit {_k(limit)})"
+            if db.first_measured_turn(turn["session_id"], turn["id"], ROTATION_KINDS):
+                # a session's first turn never rotates: an oversized start (a big handoff or base) must not loop
+                row = db.add_activity("rotation_skipped", f"{role}: {text}; its first turn in this session, not rotating", role,
+                                      conversation_id=turn.get("conversation_id"))
+                await proj.hub.broadcast("activity", row)
+            else:
+                await request_rotation(st, proj, role, text, handoff=True)
 
     if kind == "normal" and state == "done" and not reason and turn.get("error") == MAX_TURNS_ERROR:
         await _continue_capped(st, proj, role, turn)  # after the rotation check: a handoff wake queued above runs first
