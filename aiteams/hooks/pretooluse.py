@@ -4,7 +4,11 @@
 F-36: roles work like a terminal user outside the project. A write, `rm -rf` or read of any path outside the project root
 is allowed with no lock and no check, and so is every read inside it (no Read/Grep/Glob hook at all). What stays:
 the git guard (it matches the command, so it holds in any repo), the daemon guards, the Skill and Artifact gates, and
-inside the project the .aiteams/ rule, the project-notes rules and the file locks."""
+inside the project the .aiteams/ rule, the project-notes rules and the file locks.
+
+F-39 B2: a feature's code lives in its own worktree (AITeams-worktrees/<project>/f<n>), added to the turn with --add-dir.
+A file there is locked like a project file, keyed by its absolute realpath (AITEAMS_WORKTREES_ROOT is set on every turn).
+When the turn's feature has a tree (AITEAMS_TREE), editing the main folder's code is denied: the work belongs in the tree."""
 import json
 import os
 import re
@@ -15,6 +19,9 @@ import urllib.parse
 import urllib.request
 
 PROJECT = os.path.realpath(os.environ.get("AITEAMS_PROJECT_PATH") or os.getcwd())
+WORKTREES = os.path.realpath(os.environ["AITEAMS_WORKTREES_ROOT"]) if os.environ.get("AITEAMS_WORKTREES_ROOT") else None
+TREE = os.path.realpath(os.environ["AITEAMS_TREE"]) if os.environ.get("AITEAMS_TREE") else None
+TREE_FEATURE = os.environ.get("AITEAMS_TREE_FEATURE") or "this feature"
 HOME_AITEAMS = os.environ.get("AITEAMS_HOME") or os.path.join(os.path.expanduser("~"), ".aiteams")
 LOG_MAX = 200
 
@@ -109,6 +116,9 @@ def check_write(data, inp):
         return
     full = p if os.path.isabs(p) else os.path.join(data.get("cwd") or os.getcwd(), p)
     rp = os.path.realpath(full)
+    if WORKTREES and rp.startswith(WORKTREES + os.sep):
+        check_lock(rp)  # F-39 B2: a worktree file is locked by its absolute realpath (two features' trees never collide)
+        return
     if not inside_project(rp):
         return  # F-36: outside the project there is no rule and no lock (locks cover project files only)
     rel = os.path.relpath(rp, PROJECT)
@@ -126,6 +136,8 @@ def check_write(data, inp):
         # Notes are never locked: the plugin's Stop hook makes a role refresh a stale note before its turn ends,
         # and a lock held by another running role would wedge that turn until --max-turns.
         return
+    if TREE and not (rel == ".aiteams" or rel.startswith(".aiteams" + os.sep)):
+        deny("%s works in %s; edit %s instead." % (TREE_FEATURE, TREE, os.path.join(TREE, rel)))
     check_lock(rel)
 
 

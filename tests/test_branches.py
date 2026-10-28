@@ -3,6 +3,7 @@ the warnings, the feature's `branch`, the header line and the Master's /branches
 import os
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -356,7 +357,9 @@ def gated(client, pid):
 
 
 def file_commit(client, pid, repo, name, feature="F-1", role="lead"):
-    (repo / name).write_text(name + "\n")
+    # B2: a request's paths are relative to the feature's worktree once it has one, so the file is written there
+    tree = branches.tree_for(proj_of(client, pid).db, int(feature[2:])) if feature else None
+    (Path(tree) if tree else repo).joinpath(name).write_text(name + "\n")
     return client.post("/internal/commits", json={"feature": feature, "files": [name], "message": f"add {name}"},
                        headers=hdr(client, pid, role))
 

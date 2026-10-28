@@ -245,7 +245,7 @@ def test_the_committing_set_is_held_around_the_git_call_and_always_released(clie
     a = make(client, pid, repo, "commit", role="backend")
     seen = []
 
-    def fake(path, files, message):
+    def fake(path, files, message, expect=None):
         seen.append(set(proj.committing))
         return True, "abc1234"
     monkeypatch.setattr(workflow, "_commit_sync", fake)
@@ -253,7 +253,7 @@ def test_the_committing_set_is_held_around_the_git_call_and_always_released(clie
     assert seen == [{a}] and proj.committing == set() and proj.db.commit(a)["state"] == "committed"
     b = make(client, pid, repo, "commit", role="backend")
 
-    def boom(path, files, message):
+    def boom(path, files, message, expect=None):
         seen.append(set(proj.committing))
         raise RuntimeError("git went away")
     monkeypatch.setattr(workflow, "_commit_sync", boom)

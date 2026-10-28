@@ -938,13 +938,27 @@ async def decide_approval(st, proj: Project, aid: int, decision: str, note: str 
 
 
 # ---- commits -----------------------------------------------------------------
-def normalize_path(project_path: str, p: str) -> str:
+def work_root(proj: Project, feature_id: int | None) -> str:
+    """F-39 B2: the folder a feature's request paths are resolved against, checked and committed in: its live worktree, else
+    the project (no feature, `current` mode, an older feature). `project_path` below is that root wherever it is passed."""
+    return branches.tree_for(proj.db, feature_id) or proj.path
+
+
+def normalize_path(project_path: str, p: str, main: str | None = None) -> str:
+    """`project_path` is the root the request resolves against (a feature's tree, else the project). `main` is the project
+    folder: on a treed feature a path inside it is refused (the work lives in the tree)."""
     p = (p or "").strip()
     if not p:
         raise HTTPException(400, "empty path")
     full = p if os.path.isabs(p) else os.path.join(project_path, p)
     rp = os.path.realpath(full)
     root = os.path.realpath(project_path)
+    if main is not None and os.path.realpath(main) != root:
+        mp = os.path.realpath(main)
+        if rp == mp or rp.startswith(mp + os.sep):
+            rel = os.path.relpath(rp, mp)
+            raise HTTPException(400, f"{p} is in the main folder, but this feature commits from its worktree {root}: list "
+                                     f"{os.path.join(root, rel)} or {rel}")
     if not (rp == root or rp.startswith(root + os.sep)):
         # F-36: a file outside the project is committed in its own repo, so it is stored as its absolute realpath
         if ".git" in rp.split(os.sep):
@@ -1029,13 +1043,14 @@ def _repo_groups(project_path: str, files: list[str]) -> list[tuple[str, list[st
     return sorted(groups.items(), key=lambda g: (g[0] != mine, g[0]))
 
 
-def _diff_hint(project_path: str, files: list[str]) -> str:
+def _diff_hint(project_path: str, files: list[str], root: str | None = None) -> str:
     """The Lead's review commands for a request: `git diff HEAD -- <project files>`, and one `git -C <repo> diff HEAD --
-    <files>` for each other repo it touches (F-36: an outside file is listed by its absolute path)."""
-    root = os.path.realpath(project_path)
-    mine = _repo_top(root) or root
+    <files>` for each other repo it touches (F-36: an outside file is listed by its absolute path). F-39 B2: `root` is
+    the feature's worktree, whose files are diffed with `git -C <tree>` (the Lead's cwd is the project)."""
+    pr = os.path.realpath(project_path)
+    mine = _repo_top(pr) or pr
     parts = []
-    for repo, paths in _repo_groups(project_path, files):
+    for repo, paths in _repo_groups(root or project_path, files):
         parts.append(f"`git diff HEAD -- {' '.join(paths)}`" if repo == mine
                      else f"`git -C {repo} diff HEAD -- {' '.join(paths)}`")
     return " and ".join(parts)
@@ -1083,23 +1098,30 @@ async def request_commit(st, proj: Project, role: str, turn_id: int | None, feat
                                         else f" (it was {r['note']})" if r is not None else ""))
         if r["id"] not in reqs:
             reqs.append(r["id"])
+    root = work_root(proj, feat["id"] if feat else None)  # F-39 B2: paths are relative to the feature's worktree
+    row = proj.db.feature_branch(feat["id"]) if feat else None
+    if row and row["tree"] and row["tree_state"] == "live" and root == proj.path:
+        raise HTTPException(409, f"{feat['key']} works in {row['tree']}, but that folder is gone; ask the Lead to sort out "
+                                 "its worktree before filing")
     rels, hashes = [], {}
     for f in files:
-        rel = await asyncio.to_thread(normalize_path, proj.path, f)  # F-36: an outside file asks its repo
+        rel = await asyncio.to_thread(normalize_path, root, f, proj.path)  # F-36: an outside file asks its repo
         if rel in rels:
             continue
-        if rel != "." and await asyncio.to_thread(_ignored, proj.path, rel):
+        if rel != "." and await asyncio.to_thread(_ignored, root, rel):
             raise HTTPException(400, f"{rel} is gitignored (build output is not committed)")
-        full = os.path.join(proj.path, rel)
+        full = os.path.join(root, rel)
         if rel == "." or os.path.isdir(full):
             raise HTTPException(400, f"{rel} is a directory; list files one by one")
-        if not os.path.isfile(full) and not await asyncio.to_thread(_tracked, proj.path, rel):
+        if not os.path.isfile(full) and not await asyncio.to_thread(_tracked, root, rel):
             raise HTTPException(400, f"{rel} does not exist and is not tracked")
-        holder = None if os.path.isabs(rel) else proj.db.one("SELECT role FROM locks WHERE path=?", rel)  # F-36: no locks outside
+        # F-36: no locks outside the project; F-39 B2: a worktree file's lock key is its absolute realpath (the hook's)
+        lock_key = None if os.path.isabs(rel) else rel if root == proj.path else os.path.realpath(full)
+        holder = proj.db.one("SELECT role FROM locks WHERE path=?", lock_key) if lock_key else None
         if holder and holder["role"] != role:
             raise HTTPException(409, f"{rel} is locked by {holder['role']}; ask them or @lead to unlock it first")
         rels.append(rel)
-        hashes[rel] = _sha(proj.path, rel)
+        hashes[rel] = _sha(root, rel)
     state = "master_review" if role in LEADS else "lead_review"
     db = proj.db
     # a re-file supersedes the same role's pending requests in this feature whose files it covers, and (F-11) a
@@ -1119,7 +1141,7 @@ async def request_commit(st, proj: Project, role: str, turn_id: int | None, feat
     c = db.create_commit(feat["id"] if feat else None, role, turn_id, rels, message, hashes, state, reqs)
     conv = feat["conversation_id"] if feat else f"dm-{role}"
     mentions = ["lead"] if state == "lead_review" else []
-    hint = await asyncio.to_thread(_diff_hint, proj.path, rels) if state == "lead_review" else None
+    hint = await asyncio.to_thread(_diff_hint, proj.path, rels, root) if state == "lead_review" else None
     msg = await _post(st, proj, conv, role, _commit_text(c, feat, hint), "Commit", mentions, turn_id, f"commit:{c['id']}")
     c = db.update_commit(c["id"], message_id=msg["id"])
     await proj.hub.broadcast("commit", c)
@@ -1194,7 +1216,13 @@ def group_files(db: ProjectDB, cid: int) -> dict:
     for m in g:
         files += [f for f in m["files"] if f not in files]
     ids = [m["id"] for m in g]
-    return {"ids": ids, "files": files, "overlap": group_overlap(db, set(ids), files)}
+    # F-39 B2: the worktree and branch the files live in, for the review script (None: the project's own folder, or the
+    # group spans features that work in different places, which `mixed` says)
+    where = {(branches.tree_for(db, m["feature_id"]) if m["feature_id"] else None,
+              (db.feature_branch(m["feature_id"]) or {}).get("branch") if m["feature_id"] else None) for m in g}
+    tree, branch = where.pop() if len(where) == 1 else (None, None)
+    return {"ids": ids, "files": files, "overlap": group_overlap(db, set(ids), files), "tree": tree, "branch": branch,
+            "mixed": len(where) > 0}
 
 
 def group_overlap(db: ProjectDB, ids: set[int], files: list[str]) -> list[dict]:
@@ -1309,7 +1337,7 @@ async def commit_diff(proj: Project, cid: int) -> dict:
     c = proj.db.commit(cid)
     if c is None:
         raise HTTPException(404, "unknown commit")
-    out = await asyncio.to_thread(_diff_sync, proj.path, c)
+    out = await asyncio.to_thread(_diff_sync, work_root(proj, c["feature_id"]), c)
     feature = proj.db.feature(c["feature_id"])["key"] if c["feature_id"] else None
     return {**out, "commit": {**c, "feature": feature}, "overlap": _overlap(proj.db, c)}
 
@@ -1347,10 +1375,37 @@ def _commit_repo(repo: str, files: list[str], message: str) -> tuple[bool, str]:
     return True, _git(repo, "rev-parse", "--short", "HEAD").stdout.strip()
 
 
-def _commit_sync(project_path: str, files: list[str], message: str) -> tuple[bool, str]:
+def _branch_problem(root: str, expect: tuple[str, str, str] | None) -> str | None:
+    """F-39 B2: before committing, the folder the work lives in must still be on the feature's recorded branch (a role that
+    ran `git checkout` in the tree, or a main folder moved off a `current` branch). `expect` = (feature key, branch, label)."""
+    if not expect:
+        return None
+    key, branch, label = expect
+    cur = branches.current_branch(root)
+    return None if cur == branch else f"{label} is on {cur or 'a detached HEAD'}, {key}'s branch is {branch}"
+
+
+def _commit_ctx(proj: Project, c: dict) -> tuple[str, tuple[str, str, str] | None]:
+    """F-39 B2: (the root a request's paths live in, what its feature's branch must be) for a commit request. A feature
+    with an approved branch is checked in its worktree, or in the main folder for `current` mode; no feature or no branch
+    row means no check and the project as the root."""
+    root = work_root(proj, c["feature_id"])
+    row = proj.db.feature_branch(c["feature_id"]) if c["feature_id"] else None
+    if not row:
+        return root, None
+    label = "the main folder" if root == proj.path else "the tree"
+    return root, (f"F-{c['feature_id']}", row["branch"], label)
+
+
+def _commit_sync(project_path: str, files: list[str], message: str,
+                 expect: tuple[str, str, str] | None = None) -> tuple[bool, str]:
     """F-36: one commit per repo the files live in, the project's repo first, with the same message. If any repo fails,
     every repo this call touched is rolled back, so nothing is left half-committed. Returns (ok, the shas as text: the
-    project's `a1b2c3d`, then `<repo dir>@<sha>` for each other repo; or the failure output)."""
+    project's `a1b2c3d`, then `<repo dir>@<sha>` for each other repo; or the failure output). `project_path` is the
+    root the files resolve against (F-39 B2: the feature's worktree), checked against `expect` first."""
+    bad = _branch_problem(project_path, expect)
+    if bad:
+        return False, bad
     groups = _repo_groups(project_path, files)
     snaps = {repo: _head(repo) for repo, _ in groups}
     mine = _repo_top(project_path) or os.path.realpath(project_path)
@@ -1406,20 +1461,22 @@ async def decide_commit(st, proj: Project, cid: int, decision: str, message: str
         await _post(st, proj, conv, "master", f"{at} Commit #{cid} rejected: {note or '(no note)'}", "Decision", who)
         await _activity(proj, "commit", f"Commit #{cid} rejected by the Master", c["role"], c["feature_id"], conv, f"commit:{cid}")
     else:
-        stale = [f for f in c["files"] if _sha(proj.path, f) != c["hashes"].get(f)]
+        root, expect = _commit_ctx(proj, c)  # F-39 B2: the feature's worktree and branch
+        stale = [f for f in c["files"] if _sha(root, f) != c["hashes"].get(f)]
         if stale and not force:
             raise HTTPException(409, {"stale": stale})
         msg_text = (message or "").strip() or c["message"]
         proj.committing.add(cid)  # F-34: no withdrawing while it is being written
         try:
-            ok, out = await asyncio.to_thread(_commit_sync, proj.path, c["files"], msg_text)
+            ok, out = await asyncio.to_thread(_commit_sync, root, c["files"], msg_text, expect)
         finally:
             proj.committing.discard(cid)
         if ok:
             c = proj.db.update_commit(cid, state="committed", sha=out, message=msg_text, note=note or None)
             subject = msg_text.splitlines()[0]
-            await _post(st, proj, conv, "master", f"@lead Committed `{out}`: {subject}", "Decision", list(COMMITTED_MENTIONS))
-            await _activity(proj, "commit", f"Committed {out}: {subject}", c["role"], c["feature_id"], conv, f"commit:{cid}")
+            on = f" on {expect[1]}" if expect else ""
+            await _post(st, proj, conv, "master", f"@lead Committed `{out}`{on}: {subject}", "Decision", list(COMMITTED_MENTIONS))
+            await _activity(proj, "commit", f"Committed {out}{on}: {subject}", c["role"], c["feature_id"], conv, f"commit:{cid}")
         else:
             c = proj.db.update_commit(cid, state="failed", note=out, message=msg_text)
             await _post(st, proj, conv, "master", f"{at} Commit #{cid} failed:\n```\n{out}\n```", "Decision", who)
@@ -1429,21 +1486,27 @@ async def decide_commit(st, proj: Project, cid: int, decision: str, message: str
     return c
 
 
-def _group_commit_sync(project_path: str, members: list[dict]) -> tuple[list[str], dict | None, str]:
+def _group_commit_sync(ctx: dict[int, tuple[str, tuple[str, str, str] | None]],
+                       members: list[dict]) -> tuple[list[str], dict | None, str]:
     """Commit each member in order; on a failure roll HEAD and the index of every repo the group touches back to where
     it was before the first member (the working tree is never touched). F-36: members may span several repos, so one
-    snapshot per repo is taken up front. Returns (the sha text of each committed member, the failed member or None,
-    git output)."""
+    snapshot per repo is taken up front. F-39 B2: `ctx` maps a member's id to (its root, its branch check): members of
+    different features resolve in their own worktrees, and every branch is checked before anything is committed.
+    Returns (the sha text of each committed member, the failed member or None, git output)."""
+    for m in members:
+        bad = _branch_problem(*ctx[m["id"]])
+        if bad:
+            return [], m, bad
     snaps: dict[str, str] = {}
     touched: dict[str, list[str]] = {}
     for m in members:
-        for repo, paths in _repo_groups(project_path, m["files"]):
+        for repo, paths in _repo_groups(ctx[m["id"]][0], m["files"]):
             snaps.setdefault(repo, _head(repo))
             touched.setdefault(repo, [])
             touched[repo] += [p for p in paths if p not in touched[repo]]
     shas = []
     for m in members:
-        ok, out = _commit_sync(project_path, m["files"], m["message"])
+        ok, out = _commit_sync(ctx[m["id"]][0], m["files"], m["message"])
         if not ok:
             for repo, paths in touched.items():
                 _rollback(repo, snaps[repo], paths)
@@ -1459,12 +1522,14 @@ async def _commit_group(st, proj: Project, members: list[dict], note: str | None
     if bad:
         raise HTTPException(409, {"group": [{"id": m["id"], "state": m["state"]} for m in members],
                                   "detail": f"#{bad[0]['id']} is {bad[0]['state']}"})
-    stale = {str(m["id"]): s for m in members if (s := [f for f in m["files"] if _sha(proj.path, f) != m["hashes"].get(f)])}
+    ctx = {m["id"]: _commit_ctx(proj, m) for m in members}  # F-39 B2: each member's worktree and branch
+    stale = {str(m["id"]): s for m in members
+             if (s := [f for f in m["files"] if _sha(ctx[m["id"]][0], f) != m["hashes"].get(f)])}
     if stale and not force:
         raise HTTPException(409, {"stale": stale})
     proj.committing.update(m["id"] for m in members)  # F-34: no withdrawing while they are being written
     try:
-        shas, failed, out = await asyncio.to_thread(_group_commit_sync, proj.path, members)
+        shas, failed, out = await asyncio.to_thread(_group_commit_sync, ctx, members)
     finally:
         proj.committing.difference_update(m["id"] for m in members)
     label = " + ".join(f"#{m['id']}" for m in members)
@@ -1484,8 +1549,10 @@ async def _commit_group(st, proj: Project, members: list[dict], note: str | None
             m = db.update_commit(m["id"], state="committed", sha=sha, note=note or None)
             mconv = db.feature(m["feature_id"])["conversation_id"] if m["feature_id"] else f"dm-{m['role']}"
             subject = m["message"].splitlines()[0]
-            await _post(st, proj, mconv, "master", f"@lead Committed `{sha}`: {subject}", "Decision", list(COMMITTED_MENTIONS))
-            await _activity(proj, "commit", f"Committed {sha}: {subject}", m["role"], m["feature_id"], mconv,
+            expect = ctx[m["id"]][1]
+            on = f" on {expect[1]}" if expect else ""
+            await _post(st, proj, mconv, "master", f"@lead Committed `{sha}`{on}: {subject}", "Decision", list(COMMITTED_MENTIONS))
+            await _activity(proj, "commit", f"Committed {sha}{on}: {subject}", m["role"], m["feature_id"], mconv,
                             f"commit:{m['id']}")
         await _post(st, proj, conv, "system", f"Group {label} committed.", "System", [],
                     ref=f"{COMMIT_EVENT}{first['id']}")
@@ -1517,9 +1584,14 @@ async def acquire_lock(proj: Project, role: str, turn_id: int | None, path: str)
 
 
 def _rel(project_path: str, p: str) -> str:
+    """A lock's key: a project file's path relative to the project; F-39 B2: a file in a feature's worktree (under
+    AITeams-worktrees/<project>) is keyed by its absolute realpath, so two features' trees never collide."""
     full = p if os.path.isabs(p) else os.path.join(project_path, p)
     rp = os.path.realpath(full)
     root = os.path.realpath(project_path)
+    wt = branches.worktrees_root(project_path)
+    if rp.startswith(wt + os.sep):
+        return rp
     if not (rp == root or rp.startswith(root + os.sep)):
         raise HTTPException(400, f"{p} is outside the project")
     return os.path.relpath(rp, root)

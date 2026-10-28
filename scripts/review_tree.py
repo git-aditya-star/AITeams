@@ -13,6 +13,11 @@ passed. Prints `pytest: …` and `e2e: …` summary lines to quote in a review n
 one `overlap: …` line per other open request that shares a file with the request or group, and (F-36) one
 `external: <path> (repo <top>): …` line per file outside the project: those can't be in the clean tree, so the tests run
 on the project part only and the line gives the command that shows the file's diff.
+
+F-39 B2: a request on a feature with its own worktree is reviewed on that branch: the clean tree is built at the tree's HEAD
+(not the project's), with the request's files copied from the feature's tree, and the header line says
+`review    #N: k file(s) on <branch>@<sha> in <path>`. A group spanning features that work in different places can't be
+built from one tree, so the files are taken from the project folder and a `mixed:` line says so.
 """
 from __future__ import annotations
 
@@ -29,6 +34,9 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+WHERE: dict = {}  # F-39 B2: {tree, branch, mixed} of the group last read by group_files (empty when it is monkeypatched)
 
 
 def group_files(cid: int) -> tuple[list[int], list[str], list[dict]]:
@@ -50,6 +58,8 @@ def group_files(cid: int) -> tuple[list[int], list[str], list[dict]]:
         sys.exit(f"review_tree: commit #{cid}: daemon said {e.code}: {detail}")
     except (urllib.error.URLError, OSError) as e:
         sys.exit(f"review_tree: daemon unreachable: {e}")
+    WHERE.clear()
+    WHERE.update({k: res.get(k) for k in ("tree", "branch", "mixed")})
     return res["ids"], res["files"], res.get("overlap") or []
 
 
@@ -138,10 +148,13 @@ def with_failures(summary: str, failed: list[str], tag: str) -> str:
     return "\n".join([summary, *(f"{tag}: {f}" for f in failed)])
 
 
-def prepare(repo: Path, tree: Path, files: list[str]) -> None:
-    git(repo, "worktree", "add", "--detach", str(tree), "HEAD")
+def prepare(repo: Path, tree: Path, files: list[str], src_root: Path | None = None) -> None:
+    """The throwaway worktree at `src_root`'s HEAD (the feature's tree, or `repo`) plus the listed files copied from `src_root`.
+    The tooling links (.venv, ui/node_modules) always come from `repo`, the main folder."""
+    src_root = src_root or repo
+    git(src_root, "worktree", "add", "--detach", str(tree), "HEAD")
     for f in files:
-        src, dst = repo / f, tree / f
+        src, dst = src_root / f, tree / f
         if src.is_file():
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
@@ -188,6 +201,16 @@ def main(argv: list[str] | None = None) -> int:
     files = [f for f in files if not os.path.isabs(f)]
     repo = Path(args.repo)
     label = '#' + ' + #'.join(map(str, ids)) if ids else 'files'
+    where = dict(WHERE) if args.commit is not None else {}  # F-39 B2: the feature's worktree and branch
+    src_root, on, mixed = None, "HEAD", []
+    if where.get("mixed"):
+        mixed = ["mixed: the group spans features that work in different places; the files are taken from the project folder"]
+    elif where.get("tree") and Path(where["tree"]).is_dir():
+        src_root = Path(where["tree"])
+        head = git(src_root, "rev-parse", "--short", "HEAD").stdout.strip()
+        on = f"{where.get('branch') or 'the tree'}@{head}"
+    elif where.get("tree"):
+        mixed = [f"mixed: the feature's worktree {where['tree']} is not on this machine; the files are taken from the project folder"]
     if external and not files:
         print(f"review    {label}: no project files, only {len(external)} external file(s)")
         for line in [*overlap_lines(overlap), *external_lines(external)]:
@@ -195,12 +218,12 @@ def main(argv: list[str] | None = None) -> int:
         print("pytest: skipped, the request has no project files")
         return 0
     tree = Path(tempfile.mkdtemp(prefix="aiteams-review-")) / "tree"
-    print(f"review    {label}: {len(files)} file(s) on HEAD in {tree}")
-    for line in [*overlap_lines(overlap), *external_lines(external)]:
+    print(f"review    {label}: {len(files)} file(s) on {on} in {tree}")
+    for line in [*mixed, *overlap_lines(overlap), *external_lines(external)]:
         print(line)
     ok = True
     try:
-        prepare(repo, tree, files)
+        prepare(repo, tree, files, src_root)
         passed, line = run_pytest(tree)
         ok &= passed
         print(line)

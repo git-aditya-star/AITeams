@@ -7,13 +7,14 @@ import secrets
 import time
 import uuid
 
+from .. import branches
 from ..config import LEADS, MAX_TURNS_ERROR, ask_plugin_names, effort_for, model_for
 from ..plugins import check_plugins
 from . import receipts
 from .claude_proc import ClaudeProc, build_cmd, child_env, display_argv
 from .prompt import (build_brainstorm_compile_prompt, build_brainstorm_prompt, build_compile_prompt,
-                     build_handoff_prompt, build_standup_prompt, build_wake_prompt, live_message_ids,
-                     write_system_prompt)
+                     build_handoff_prompt, build_standup_prompt, build_wake_prompt, focus_conversation,
+                     live_message_ids, write_system_prompt)
 
 DEFAULT_CONTEXT_WINDOW = 200000
 
@@ -122,9 +123,11 @@ class TurnRunner:
         if kind != "normal":
             settings["max_turns"] = min(int(settings.get("max_turns", 40)), 10)
         result, rc = None, None
+        tree_feature, tree = self._tree(kind, message_ids)
         for attempt in (1, 2):
             env = child_env(self.state.daemon_url, self.project.id, self.project.path, role, tid,
-                            int(self.state.settings.get("ask_timeout_s", 600)), turn_token, ask_plugin_names(settings))
+                            int(self.state.settings.get("ask_timeout_s", 600)), turn_token, ask_plugin_names(settings),
+                            tree=tree, tree_feature=tree_feature, worktrees_root=branches.worktrees_root(self.project.path))
             cmd = build_cmd(settings, role, env, sys_file, session_id, resume, self.model, self.effort)
             await self._on_event({"type": "aiteams_cmd", "model": self.model, "effort": self.effort,
                                   "argv": display_argv(cmd)})
@@ -156,6 +159,17 @@ class TurnRunner:
         return await self._end(result, rc, state, error)
 
     # ---- internals -----------------------------------------------------
+    def _tree(self, kind: str, message_ids: list[int]) -> tuple[str | None, str | None]:
+        """F-39 B2: (feature key, its live worktree) for the feature the wake prompt focuses on (the same
+        `focus_conversation` the prompt uses), else (None, None): a turn with no feature, a standup or a feature without a
+        tree is exactly today's turn."""
+        if kind != "normal":
+            return None, None
+        focus = focus_conversation(self.db.messages_by_ids(message_ids))
+        feat = self.db.feature(focus) if focus and (self.db.conversation(focus) or {}).get("kind") == "feature" else None
+        tree = branches.tree_for(self.db, feat["id"]) if feat else None
+        return (feat["key"], tree) if tree else (None, None)
+
     def _prompt(self, kind: str, message_ids: list[int], handoff: dict | None) -> str:
         db, role = self.db, self.role
         if kind == "handoff":

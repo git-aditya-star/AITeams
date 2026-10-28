@@ -53,10 +53,24 @@ def tilde(path: str | None) -> str:
     return ("~" + path[len(home):]) if path and (path == home or path.startswith(home + os.sep)) else (path or "")
 
 
+def worktrees_root(project_path: str) -> str:
+    """The folder holding every feature's worktree: `<parent>/AITeams-worktrees/<project dir>` (a turn's AITEAMS_WORKTREES_ROOT)."""
+    root = os.path.realpath(project_path)
+    return os.path.join(os.path.dirname(root), "AITeams-worktrees", os.path.basename(root))
+
+
 def tree_path(project_path: str, n: int) -> str:
     """Where feature F-n's worktree goes: next to the project, `<parent>/AITeams-worktrees/<project dir>/f<n>`."""
-    root = os.path.realpath(project_path)
-    return os.path.join(os.path.dirname(root), "AITeams-worktrees", os.path.basename(root), f"f{n}")
+    return os.path.join(worktrees_root(project_path), f"f{n}")
+
+
+def tree_for(db, feature_id: int | None) -> str | None:
+    """F-39 B2: the directory a feature's work is edited, tested and committed in: its live worktree, if the folder is still
+    there. None for no feature, no approved branch, `current` mode (the main folder) and a removed or kept-but-gone tree."""
+    row = db.feature_branch(feature_id) if feature_id is not None else None
+    if row and row["tree"] and row["tree_state"] == "live" and os.path.isdir(row["tree"]):
+        return row["tree"]
+    return None
 
 
 def default_base(repo: str) -> str:

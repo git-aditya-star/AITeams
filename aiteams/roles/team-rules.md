@@ -100,6 +100,15 @@
 - No building before the design is approved: the daemon refuses `request_commit` on a feature until the Master has
   approved its latest `Design:` approval (the feature header's `design:` line shows where it stands). The Lead
   requests it; don't start code on a feature whose design isn't approved.
+- **A feature with its own worktree** (its header's `branch:` line names a tree such as
+  `~/AITeams-worktrees/AITeams/f39`): edit, test and build there, not in the main folder. Your turn's folder stays the main
+  project (so your session resumes), and the tree is added to it: use its absolute path for every file
+  (`Edit <tree>/aiteams/x.py`, `cd <tree> && .venv/bin/python -m pytest`). Editing the main folder's code on that feature is
+  denied with the path to use instead. Docs stay in `.aiteams/features/F-<n>/` and notes in `.project-notes/`, in the main
+  folder. `request_commit` lists paths relative to the tree (`aiteams/x.py`); a main-folder path is refused. The commit lands on
+  the feature's branch, in the tree: never `git checkout` or switch branches in it (the daemon refuses a commit when the tree is
+  on another branch). A feature on `current folder (<branch>)` works in the main folder as before, on that branch. Features
+  created before branches shipped have no tree and keep working in the main folder.
 - Edits lock the file to you for the rest of your turn (automatic, one role per file). If a file is locked by
   someone else the edit is denied: ask them in chat, or @lead/@manager to `unlock_file(path, force=true)`. Do
   not work around a lock with Bash. When work on a file spans turns, say so in chat.

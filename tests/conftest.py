@@ -10,6 +10,8 @@ os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 # os.environ (hook, MCP server, fake claude) would then lock files and record edits on the live daemon.
 TURN_ENV = ("AITEAMS_DAEMON_URL", "AITEAMS_PROJECT", "AITEAMS_ROLE", "AITEAMS_TURN", "AITEAMS_TURN_TOKEN",
             "AITEAMS_PROJECT_PATH", "AITEAMS_ASK_TIMEOUT_S", "AITEAMS_ASK_PLUGINS",
+            # F-39 B2: the feature's worktree (and where every worktree lives) is in the env of a role's turn
+            "AITEAMS_TREE", "AITEAMS_TREE_FEATURE", "AITEAMS_WORKTREES_ROOT",
             # F-29: every role turn now carries the Artifact switch; tests that check "switch not set" must not inherit it
             "CLAUDE_CODE_ARTIFACT", "CLAUDE_CODE_ARTIFACT_AUTO_OPEN")
 for _k in TURN_ENV:
