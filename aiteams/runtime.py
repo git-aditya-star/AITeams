@@ -31,6 +31,9 @@ class Project:
         self.pending_questions: dict[int, asyncio.Future] = {}
         # F-16: running turn id -> highest message id it has been shown (prompt, then new_messages / the guard)
         self.delivered: dict[int, int] = {}
+        # F-34: commit request ids whose git commit is running right now (decide_commit, _commit_group); a request in
+        # here can't be withdrawn, since its files are being written to history
+        self.committing: set[int] = set()
 
     @property
     def paused(self) -> bool:

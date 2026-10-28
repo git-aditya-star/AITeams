@@ -105,6 +105,12 @@ class InternalCommitBody(BaseModel):
     requires: list[int] = []  # F-11: open requests this one can't land without
 
 
+class InternalWithdrawBody(BaseModel):
+    kind: str
+    id: int
+    reason: str = ""  # an empty one is a 400 with a sentence (workflow.withdraw_request), not a 422
+
+
 class InternalReviewBody(BaseModel):
     decision: str
     note: str | None = None

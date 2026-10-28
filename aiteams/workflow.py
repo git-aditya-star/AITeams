@@ -25,7 +25,7 @@ def _activity(proj: Project, kind: str, text: str, role=None, feature_id=None, c
     row = proj.db.add_activity(kind, text, role, feature_id, conversation_id, ref)
     return proj.hub.broadcast("activity", row)
 
-COMMIT_STATES = ("lead_review", "master_review", "rejected", "committed", "failed")
+COMMIT_STATES = ("lead_review", "master_review", "rejected", "committed", "failed", "withdrawn")
 
 
 def _post(st, proj, conversation, author, text, type_, mentions, turn_id=None, ref=None):
@@ -626,20 +626,58 @@ def _compiling_brainstorm(db: ProjectDB, role: str, turn_id: int | None) -> dict
     return bs
 
 
-async def withdraw_question(st, proj: Project, role: str, qid: int) -> dict:
+# F-34: kind -> (label in chat, hub frame / activity kind)
+WITHDRAW_KINDS = {"approval": ("Approval", "approval"), "commit": ("Commit request", "commit"), "card": ("Card", "question")}
+WITHDRAW_REASON_MAX = 200
+
+
+async def withdraw_request(st, proj: Project, role: str, kind: str, rid: int, reason: str) -> dict:
+    """F-34: a role pulls back a request it sent (or, as the feature's Lead, any in its feature) that the Master hasn't
+    decided: an approval, a commit request or a question card. It leaves the Inbox, keeps its row as `withdrawn` with the
+    reason, and a System line says who withdrew it and why. The checks and the store run without an await in between,
+    so nothing can change under them."""
     db = proj.db
-    q = db.question(qid)
-    if q is None or q.get("kind") != "card":
-        raise HTTPException(404, f"unknown card #{qid}")
-    if q["role"] != role:
-        raise HTTPException(403, f"card #{qid} belongs to {q['role']}")
-    if q["state"] != "pending":
-        raise HTTPException(409, f"card #{qid} is {q['state']}")
-    q = db.withdraw_question(qid)
-    await _post(st, proj, q["conversation_id"], "system", f"Card #{qid} withdrawn by {role}.", "System", [])
-    await proj.hub.broadcast("question", q)
+    reason = (reason or "").strip()
+    if not reason or "\n" in reason or "\r" in reason:
+        raise HTTPException(400, "give a one-line reason (no line breaks); it is shown in chat")
+    reason = reason[:WITHDRAW_REASON_MAX]
+    if kind not in WITHDRAW_KINDS:
+        raise HTTPException(400, "kind must be approval|commit|card")
+    item = {"approval": db.approval, "commit": db.commit, "card": db.question}[kind](rid)
+    if item is None or (kind == "card" and item.get("kind") != "card"):
+        raise HTTPException(404, f"unknown {kind} #{rid}")
+    feat = db.feature(item["feature_id"]) if item.get("feature_id") else None
+    lead = feat["lead"] if feat else None  # the feature's own Lead; never the F-22 claim path
+    if role not in (item["role"], lead):
+        who = item["role"] if not lead or lead == item["role"] else f"{item['role']} or {lead}"
+        raise HTTPException(403, f"only {who} can withdraw {kind} #{rid}")
+    if item["state"] not in (PENDING_COMMIT_STATES if kind == "commit" else ("pending",)):
+        raise HTTPException(409, f"{kind} #{rid} is {item['state']}")
+    if kind == "commit":
+        if rid in proj.committing:
+            raise HTTPException(409, f"commit #{rid} is being committed")
+        for d in db.linked_commits():
+            if d["state"] in PENDING_COMMIT_STATES and rid in d["requires"]:
+                raise HTTPException(409, f"#{d['id']} requires #{rid}: withdraw or re-file #{d['id']} first")
+        item = db.update_commit(rid, state="withdrawn", note=reason)
+    elif kind == "approval":
+        item = db.resolve_approval(rid, "withdrawn", reason)
+    else:
+        item = db.withdraw_question(rid, reason)
+    label, frame = WITHDRAW_KINDS[kind]
+    conv = (item.get("conversation_id") if kind == "card" else None) or (
+        feat["conversation_id"] if feat else f"dm-{item['role']}")
+    text = f"{label} #{rid} withdrawn by {role}: {reason}" + ("" if reason[-1] in ".!?" else ".")
+    # the sender is mentioned only when someone else (the Lead) withdrew its request, so it knows
+    await _post(st, proj, conv, "system", text, "System", [item["role"]] if role != item["role"] else [], None,
+                f"{COMMIT_EVENT}{rid}" if kind == "commit" else None)
+    await _activity(proj, frame, f"{label} #{rid} withdrawn by {role}", item["role"], item.get("feature_id"), conv,
+                    f"{frame}:{rid}")
+    await proj.hub.broadcast(frame, item)
+    if kind == "approval":
+        await _broadcast_design(proj, item)  # a withdrawn redesign request changes the feature's design chip
     await broadcast_inbox(proj)
-    return q
+    return item
 
 
 def _answer_line(q: dict, answer: str) -> str:
@@ -803,9 +841,10 @@ async def request_commit(st, proj: Project, role: str, turn_id: int | None, feat
     reqs: list[int] = []
     for n in requires or []:
         r = proj.db.commit(int(n)) if str(n).lstrip("#").isdigit() else None
-        if r is None or _superseded(r):
+        if r is None or _superseded(r) or r["state"] == "withdrawn":
             raise HTTPException(400, f"requires #{n}: no such open commit request"
-                                     + (f" (it was {r['note']})" if r is not None else ""))
+                                     + (" (it was withdrawn)" if r is not None and r["state"] == "withdrawn"
+                                        else f" (it was {r['note']})" if r is not None else ""))
         if r["id"] not in reqs:
             reqs.append(r["id"])
     rels, hashes = [], {}
@@ -838,7 +877,7 @@ async def request_commit(st, proj: Project, role: str, turn_id: int | None, feat
     for o in olds:  # inherit what the predecessor needed, except requests that were rejected (re-file them instead)
         for n in o["requires"]:
             r = db.commit(n)
-            if n not in reqs and n not in old_ids and r and r["state"] != "rejected":
+            if n not in reqs and n not in old_ids and r and r["state"] not in ("rejected", "withdrawn"):
                 reqs.append(n)
     reqs = [n for n in reqs if n not in old_ids]
     c = db.create_commit(feat["id"] if feat else None, role, turn_id, rels, message, hashes, state, reqs)
@@ -1097,7 +1136,11 @@ async def decide_commit(st, proj: Project, cid: int, decision: str, message: str
         if stale and not force:
             raise HTTPException(409, {"stale": stale})
         msg_text = (message or "").strip() or c["message"]
-        ok, out = await asyncio.to_thread(_commit_sync, proj.path, c["files"], msg_text)
+        proj.committing.add(cid)  # F-34: no withdrawing while it is being written
+        try:
+            ok, out = await asyncio.to_thread(_commit_sync, proj.path, c["files"], msg_text)
+        finally:
+            proj.committing.discard(cid)
         if ok:
             c = proj.db.update_commit(cid, state="committed", sha=out, message=msg_text, note=note or None)
             subject = msg_text.splitlines()[0]
@@ -1138,7 +1181,11 @@ async def _commit_group(st, proj: Project, members: list[dict], note: str | None
     stale = {str(m["id"]): s for m in members if (s := [f for f in m["files"] if _sha(proj.path, f) != m["hashes"].get(f)])}
     if stale and not force:
         raise HTTPException(409, {"stale": stale})
-    shas, failed, out = await asyncio.to_thread(_group_commit_sync, proj.path, members)
+    proj.committing.update(m["id"] for m in members)  # F-34: no withdrawing while they are being written
+    try:
+        shas, failed, out = await asyncio.to_thread(_group_commit_sync, proj.path, members)
+    finally:
+        proj.committing.difference_update(m["id"] for m in members)
     label = " + ".join(f"#{m['id']}" for m in members)
     first = members[0]
     feat = db.feature(first["feature_id"]) if first["feature_id"] else None

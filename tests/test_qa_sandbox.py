@@ -99,6 +99,40 @@ def test_fire_card(sandbox):
         assert w["state"] == "withdrawn"
 
 
+def test_fire_withdraw(sandbox):
+    """F-34: `withdraw {item, id, role, reason}` goes through workflow.withdraw_request for each kind of item."""
+    mod, work, _ = sandbox
+    app = mod.build_app(8790, work, "demo")
+    auth = {"Authorization": "Bearer sb-token"}
+    with TestClient(app) as c:
+        def fire(body):
+            return c.post("/qa/fire", json=body, headers=auth)
+
+        def count():
+            return c.get("/api/p/demo/inbox", headers=auth).json()["count"]
+        before = count()
+        a = fire({"kind": "approval", "role": "frontend"}).json()["approval"]
+        r = fire({"kind": "commit_request"}).json()["commit"]
+        q = fire({"kind": "card", "role": "product"}).json()["question"]
+        assert count() == before + 3
+        for item, rid in (("approval", a), ("commit", r), ("card", q)):
+            w = fire({"kind": "withdraw", "item": item, "id": rid, "reason": "superseded by #97"})
+            assert w.status_code == 200, w.text
+            w = w.json()
+            assert (w["ok"], w["item"], w["id"], w["state"], w["note"]) == (True, item, rid, "withdrawn", "superseded by #97")
+            assert w["conversation"] == "feature-1"
+        assert count() == before
+        # a Lead withdraws someone else's request: F-1's Lead is `lead`; a role that is neither is refused
+        a2 = fire({"kind": "approval", "role": "frontend"}).json()["approval"]
+        assert fire({"kind": "withdraw", "item": "approval", "id": a2, "role": "backend", "reason": "x"}).status_code == 403
+        w = fire({"kind": "withdraw", "item": "approval", "id": a2, "role": "lead"}).json()  # the default reason
+        assert w["state"] == "withdrawn" and w["note"] == "superseded"
+        # the old fire kind still works, now through the same function
+        q2 = fire({"kind": "card", "role": "product"}).json()["question"]
+        w = fire({"kind": "card_withdraw", "question": q2}).json()
+        assert (w["state"], c.get("/api/p/demo/questions", params={"state": "withdrawn"}, headers=auth).json()[0]["id"]) == ("withdrawn", q2)
+
+
 def test_fire_commit_group(sandbox):
     mod, work, _ = sandbox
     app = mod.build_app(8790, work, "demo")

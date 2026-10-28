@@ -47,6 +47,11 @@ class Mock(BaseHTTPRequestHandler):
                 self._send(200, {"behavior": "allow", "updatedInput": {**body["input"], "answers": {"Which DB?": "Postgres"}}})
             else:
                 self._send(200, {"behavior": "deny", "message": "The Master did not answer within 10 minutes. Post the question"})
+        elif self.path == "/internal/withdraw":
+            if not body.get("reason"):
+                self._send(400, {"detail": "give a one-line reason (no line breaks); it is shown in chat"})
+            else:
+                self._send(200, {"kind": body["kind"], "id": body["id"], "state": "withdrawn", "note": body["reason"]})
         else:
             self._send(404, {"detail": "nope"})
 
@@ -86,7 +91,7 @@ def test_handshake_tools_list_and_errors():
         "post_message", "get_messages", "list_conversations", "permission", "list_features", "get_feature",
         "create_feature", "set_feature", "request_approval", "request_commit", "review_commit", "lock_file",
         "unlock_file", "list_locks", "write_handoff", "get_team_status", "run_standup", "save_standup",
-        "interrupt", "checkpoint", "react", "ask_master", "withdraw_question", "start_brainstorm"}
+        "interrupt", "checkpoint", "react", "ask_master", "withdraw_request", "start_brainstorm"}
     assert by_id[4]["error"]["code"] == -32601
     assert by_id[5]["error"]["code"] == -32602
     assert by_id[6]["result"]["isError"] is True and "unreachable" in by_id[6]["result"]["content"][0]["text"]
@@ -153,3 +158,25 @@ def test_react_round_trip_and_emoji_enum():
     assert posts[0][2]["x-aiteams-token"] == "turn-secret"
     react = next(t for t in by_id[3]["result"]["tools"] if t["name"] == "react")
     assert tuple(react["inputSchema"]["properties"]["emoji"]["enum"]) == EMOJI  # the server is stdlib-only: keep in sync
+
+
+def test_withdraw_request_tool_posts_kind_id_and_reason_and_withdraw_question_is_gone():
+    Mock.calls.clear()
+    call = {"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "withdraw_request", "arguments": {
+        "kind": "commit", "id": 95, "reason": "superseded by #97"}}}
+    old = {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "withdraw_question", "arguments": {"id": 3}}}
+    blank = {**call, "id": 3, "params": {"name": "withdraw_request", "arguments": {"kind": "card", "id": 2}}}
+    res = with_server(lambda url: run_rpc(url, [{**call, "id": 1}, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+                                                blank, old]))
+    by_id = {r["id"]: r for r in res}
+    assert by_id[1]["result"]["content"][0]["text"] == "commit #95 withdrawn: superseded by #97"
+    post = [c for c in Mock.calls if c[1] == "/internal/withdraw"][0]
+    assert post[3] == {"kind": "commit", "id": 95, "reason": "superseded by #97"}
+    assert post[2]["x-aiteams-token"] == "turn-secret"
+    tools = {t["name"]: t for t in by_id[2]["result"]["tools"]}
+    assert "withdraw_question" not in tools
+    schema = tools["withdraw_request"]["inputSchema"]
+    assert schema["required"] == ["kind", "id", "reason"] and schema["properties"]["kind"]["enum"] == ["approval", "commit", "card"]
+    assert "withdraw_request" in tools["ask_master"]["description"]  # the card tool points at the new one
+    assert by_id[3]["result"]["isError"] is True and "one-line reason" in by_id[3]["result"]["content"][0]["text"]
+    assert by_id[4]["error"]["code"] == -32602  # unknown tool

@@ -101,7 +101,7 @@ def mock_file(request: Request, pid: str, fid: int, name: str):
 
 @feat_api.get("/p/{pid}/approvals")
 def approvals(request: Request, pid: str, state: str = "pending", feature: int | None = None):
-    if state not in ("pending", "approved", "changes_requested", "rejected", "all"):
+    if state not in ("pending", "approved", "changes_requested", "rejected", "withdrawn", "all"):
         raise HTTPException(400, "bad state")
     return _project(request, pid).db.approvals(state, feature)
 

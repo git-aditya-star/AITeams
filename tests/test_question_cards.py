@@ -90,15 +90,21 @@ def test_card_without_feature_goes_to_dm(client, pid):
     assert r["conversation_id"] == "dm-backend"
 
 
+def withdraw(client, pid, role, cid, reason="not needed any more"):
+    return client.post("/internal/withdraw", json={"kind": "card", "id": cid, "reason": reason}, headers=turn(client, pid, role))
+
+
 def test_withdraw_rules(client, pid):
+    """F-34 replaced the card-only route with /internal/withdraw (tests/test_withdraw.py has the full matrix)."""
     proj = proj_of(client, pid)
     cid = client.post("/internal/questions", json={"questions": CARD, "feature": "F-1"},
                       headers=turn(client, pid, "product")).json()["id"]
-    assert client.post(f"/internal/questions/{cid}/withdraw", headers=turn(client, pid, "lead")).status_code == 403
-    r = client.post(f"/internal/questions/{cid}/withdraw", headers=turn(client, pid, "product"))
+    assert withdraw(client, pid, "backend", cid).status_code == 403  # not the sender, and F-1 has no Lead set
+    r = withdraw(client, pid, "product", cid)
     assert r.status_code == 200 and r.json()["state"] == "withdrawn"
-    assert proj.db.messages("feature-1")[-1]["text"] == f"Card #{cid} withdrawn by product."
-    assert client.post(f"/internal/questions/{cid}/withdraw", headers=turn(client, pid, "product")).status_code == 409
+    assert proj.db.messages("feature-1")[-1]["text"] == f"Card #{cid} withdrawn by product: not needed any more."
+    assert proj.db.question(cid)["note"] == "not needed any more"
+    assert withdraw(client, pid, "product", cid).status_code == 409
     assert client.post(f"/api/p/{pid}/questions/{cid}/answer", json={"answers": {}}).status_code == 409
     assert [x["id"] for x in client.get(f"/api/p/{pid}/questions", params={"state": "withdrawn"}).json()] == [cid]
     # answered cards can't be withdrawn
@@ -106,7 +112,7 @@ def test_withdraw_rules(client, pid):
                      headers=turn(client, pid, "product")).json()["id"]
     client.post(f"/api/p/{pid}/questions/{c2}/answer", json={"answers": {"Which format first?": "XLSX",
                                                                          "Which columns?": "Date"}})
-    assert client.post(f"/internal/questions/{c2}/withdraw", headers=turn(client, pid, "product")).status_code == 409
+    assert withdraw(client, pid, "product", c2).status_code == 409
 
 
 def test_partial_answer_is_refused(client, pid):

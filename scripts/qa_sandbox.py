@@ -27,7 +27,8 @@ DEMO_ID = "demo"
 DEFAULT_TOKEN = "qa-sandbox-token"
 FIRE_KINDS = ("message", "question", "question_message", "blocker", "approval", "commit_request", "committed",
               "commit_failed", "standup", "stopped", "interrupted", "fresh_session", "rate_limit", "rate_clear",
-              "reaction", "card", "card_withdraw", "brainstorm", "commit_group", "plugin_missing", "turn_event")
+              "reaction", "card", "card_withdraw", "withdraw", "brainstorm", "commit_group", "plugin_missing",
+              "turn_event")
 
 
 def isolate_env(home: Path, token: str) -> None:
@@ -453,8 +454,20 @@ async def fire(st, proj, body: dict) -> dict:
         q = db.question(int(body["question"]))
         if q is None:
             raise ValueError(f"unknown card {body['question']}")
-        q = await workflow.withdraw_question(st, proj, q["role"], q["id"])
+        q = await workflow.withdraw_request(st, proj, q["role"], "card", q["id"], body.get("reason") or "not needed any more")
         out.update(conversation=q["conversation_id"], question=q["id"], state=q["state"])
+    elif kind == "withdraw":
+        # F-34: withdraws {item: approval|commit|card, id} as {role} (default: the role that sent it) with {reason}.
+        # The item's kind is `item`, since `kind` is already the name of this fire kind.
+        what = body.get("item", "approval")
+        row = {"approval": db.approval, "commit": db.commit, "card": db.question}.get(what, lambda _: None)(int(body["id"]))
+        if row is None:
+            raise ValueError(f"unknown {what} {body['id']}")
+        item = await workflow.withdraw_request(st, proj, body.get("role") or row["role"], what, row["id"],
+                                               body.get("reason", "superseded"))
+        feat = db.feature(item["feature_id"]) if item.get("feature_id") else None
+        out.update(conversation=item.get("conversation_id") or (feat["conversation_id"] if feat else f"dm-{item['role']}"),
+                   item=what, id=item["id"], state=item["state"], note=item["note"])
     elif kind == "commit_group":
         # F-11: a backend request + a frontend request that requires it, both Lead-approved (one Inbox item) unless
         # {lead_review: true} leaves the frontend half in Lead review (the group isn't ready)

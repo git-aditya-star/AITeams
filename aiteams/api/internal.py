@@ -11,7 +11,8 @@ from ..config import LEADS, ROLES, role_name
 from ..db import EMOJI
 from ..models import (AskMasterBody, CheckpointBody, HandoffBody, InternalApprovalBody, InternalBrainstormBody,
                       InternalCommitBody, InternalFeatureBody, InternalFeaturePatchBody, InternalMessageBody,
-                      InternalReviewBody, InterruptBody, LockBody, PermissionBody, ReactionBody, StandupSaveBody)
+                      InternalReviewBody, InternalWithdrawBody, InterruptBody, LockBody, PermissionBody, ReactionBody,
+                      StandupSaveBody)
 from ..orchestrator.lifecycle import request_rotation
 from ..orchestrator import receipts
 from ..orchestrator import router as routing
@@ -184,11 +185,12 @@ async def ask_master(request: Request, body: AskMasterBody):
     return {"id": q["id"], "conversation_id": q["conversation_id"], "message_id": q["message_id"]}
 
 
-@internal.post("/questions/{qid}/withdraw")
-async def withdraw_question(request: Request, qid: int):
+@internal.post("/withdraw")
+async def withdraw_request(request: Request, body: InternalWithdrawBody):
+    """F-34: pull back an approval, a commit request or a question card (the sender, or the feature's Lead)."""
     st, proj, turn = _auth(request)
-    q = await workflow.withdraw_question(st, proj, turn["role"], qid)
-    return {"id": q["id"], "state": q["state"]}
+    item = await workflow.withdraw_request(st, proj, turn["role"], body.kind, body.id, body.reason)
+    return {"kind": body.kind, "id": item["id"], "state": item["state"], "note": item["note"]}
 
 
 @internal.post("/brainstorm")

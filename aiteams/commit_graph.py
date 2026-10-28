@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Callable
 
 PENDING = ("lead_review", "master_review")
+LEFT_OUT = ("rejected", "withdrawn")  # F-34: a withdrawn request leaves its group like a rejected one
 
 
 def superseded(c: dict) -> bool:
@@ -13,10 +14,11 @@ def superseded(c: dict) -> bool:
 
 def component(start: dict, linked: list[dict], get: Callable[[int], dict | None]) -> list[dict]:
     """The requests linked to `start` through `requires` (either direction), in dependency order (a request after
-    everything it requires; ties by id). Rejected requests are left out (a rejected dependent releases its base; a
-    rejected requirement blocks through `rejected_requirements`); a rejected `start` is a group of one.
+    everything it requires; ties by id). Rejected and withdrawn requests are left out (a rejected or withdrawn dependent
+    releases its base; a rejected requirement blocks through `rejected_requirements`, and a withdrawn one can't exist
+    while an open request requires it); a rejected or withdrawn `start` is a group of one.
     `linked` = every request with a non-empty `requires`; `get(id)` loads any other request."""
-    if start["state"] == "rejected":
+    if start["state"] in LEFT_OUT:
         return [start]
     nbrs: dict[int, set[int]] = {}
     for d in linked:
@@ -28,7 +30,7 @@ def component(start: dict, linked: list[dict], get: Callable[[int], dict | None]
         for n in nbrs.get(todo.pop(), ()):
             if n not in members:
                 r = get(n)
-                if r is not None and r["state"] != "rejected":
+                if r is not None and r["state"] not in LEFT_OUT:
                     members[n] = r
                     todo.append(n)
     out, done = [], set()

@@ -520,8 +520,10 @@ class ProjectDB:
                      json.dumps(payload), "pending", time.time(), "card", purpose, intro, feature_id, conversation_id)
         return self.question(qid)
 
-    def withdraw_question(self, qid: int) -> dict | None:
-        self.x("UPDATE questions SET state='withdrawn', answered_at=? WHERE id=? AND state='pending'", time.time(), qid)
+    def withdraw_question(self, qid: int, note: str | None = None) -> dict | None:
+        """F-34: `note` is the withdraw reason (migration 11), shown on the withdrawn card."""
+        self.x("UPDATE questions SET state='withdrawn', answered_at=?, note=? WHERE id=? AND state='pending'",
+               time.time(), note, qid)
         return self.question(qid)
 
     def question(self, qid: int) -> dict | None:
@@ -564,12 +566,14 @@ class ProjectDB:
         (migration 8), or has any Design approval (a redesign gates an older feature too). `gate_since` lets a loop
         fetch it once."""
         a = self.one("SELECT id, state FROM approvals WHERE feature_id=? AND trim(title) LIKE 'design:%'"
-                     " ORDER BY id DESC LIMIT 1", fid)
+                     " AND state != 'withdrawn' ORDER BY id DESC LIMIT 1", fid)  # F-34: a withdrawn request never counted
         if gate_since is False:
             gate_since = self.get_kv("design_gate_since")
         state = {"approved": "approved", "pending": "pending", "changes_requested": "changes",
                  "rejected": "rejected"}.get(a["state"], "none") if a else "none"
         gated = a is not None or (gate_since is not None and (created_at or 0) >= gate_since)
+        if not gated:  # F-34: a redesign that was withdrawn still gated the feature
+            gated = self.one("SELECT 1 FROM approvals WHERE feature_id=? AND trim(title) LIKE 'design:%' LIMIT 1", fid) is not None
         return {"state": state, "approval_id": a["id"] if a else None, "gated": gated}
 
     def feature(self, ident) -> dict | None:
@@ -936,4 +940,6 @@ MIGRATIONS: list = [
     _migration_8,
     _migration_9,
     _migration_10,
+    # F-34: the reason a role gave when it withdrew a question card (approvals and commits already have `note`)
+    "ALTER TABLE questions ADD COLUMN note TEXT NULL",
 ]
