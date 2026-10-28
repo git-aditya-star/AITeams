@@ -29,6 +29,8 @@ async function asWithdrawn(page: Page, ids: { approval?: number; commit?: number
 }
 
 const chip = (card: ReturnType<Page['locator']>) => card.locator('[data-slot="badge"]').first()
+// F-40: an approval card's first badge is its type (Design, Scope lock, ...); its state is `[data-state-chip]`.
+const stateChip = (card: ReturnType<Page['locator']>) => card.locator('[data-state-chip]')
 
 test('a withdrawn approval is a grey chip and "Withdrawn: <reason>", with no buttons', async ({ page, qa }) => {
   const approval = (await qa.fire('approval', { text: 'Design: pull this back' })).approval as number
@@ -36,9 +38,9 @@ test('a withdrawn approval is a grey chip and "Withdrawn: <reason>", with no but
   await qa.open('/p/demo?c=feature-1')
   const card = page.locator(`[data-card="approval-${approval}"]`)
   await expect(card).toBeVisible()
-  await expect(chip(card)).toHaveText('withdrawn')
-  await expect(chip(card)).toHaveClass(/bg-gray-100/)
-  await expect(chip(card)).not.toHaveClass(/red/)
+  await expect(stateChip(card)).toHaveText('withdrawn')
+  await expect(stateChip(card)).toHaveClass(/bg-gray-100/)
+  await expect(stateChip(card)).not.toHaveClass(/red/)
   await expect(card.locator('[data-withdrawn]')).toHaveText(`Withdrawn: ${WHY}`)
   await expect(card.locator('[data-action]')).toHaveCount(0)
   await expect(card.getByPlaceholder('Note (optional)')).toHaveCount(0)
@@ -121,7 +123,7 @@ test('History > Approvals has a Withdrawn filter that lists only withdrawn appro
   await expect(list).toHaveCount(1)
   await expect(list).toContainText('Scope lock: export all')
   await expect(list.locator('[data-withdrawn]')).toHaveText(`Withdrawn: ${WHY}`)
-  await expect(chip(list)).toHaveText('withdrawn')
+  await expect(stateChip(list)).toHaveText('withdrawn')
 
   await page.getByRole('combobox', { name: 'Outcome' }).click()
   await page.getByRole('option', { name: 'Rejected' }).click()
@@ -151,7 +153,7 @@ test('a withdrawn approval leaves the Inbox at once and its card in the conversa
 
   await qa.open('/p/demo?c=feature-1')
   const card = page.locator(`[data-card="approval-${approval}"]`)
-  await expect(chip(card)).toHaveText('withdrawn')
+  await expect(stateChip(card)).toHaveText('withdrawn')
   await expect(card.locator('[data-withdrawn]')).toHaveText(`Withdrawn: ${WHY}`)
   await expect(card.locator('[data-action]')).toHaveCount(0)
   await expect(page.locator('[id^="m-"]', { hasText: `Approval #${approval} withdrawn by lead: ${WHY}` })).toBeVisible() // the chat line
@@ -229,12 +231,12 @@ test('History > Approvals lists a withdrawn approval under the Withdrawn filter,
   await page.getByRole('option', { name: 'Withdrawn', exact: true }).click()
   const list = page.locator('[data-approvals-list] [data-card^="approval-"]')
   await expect(list).toHaveCount(1)
-  await expect(list).toContainText('Use skill: team-skills:local-preview')
+  await expect(list).toContainText('team-skills:local-preview')
   await expect(list.locator('[data-withdrawn]')).toHaveText('Withdrawn: filed by mistake')
-  await expect(chip(list)).toHaveText('withdrawn')
+  await expect(stateChip(list)).toHaveText('withdrawn')
   await page.getByRole('combobox', { name: 'Outcome' }).click()
   await page.getByRole('option', { name: 'Approved', exact: true }).click()
-  await expect(list.filter({ hasText: 'Use skill: team-skills:local-preview' })).toHaveCount(0) // not under another outcome
+  await expect(list.filter({ hasText: 'team-skills:local-preview' })).toHaveCount(0) // not under another outcome
 })
 
 test('withdrawing the half of a commit group that depends on the other leaves the other as an ordinary request', async ({ page, qa, request }) => {

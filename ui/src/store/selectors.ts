@@ -6,6 +6,7 @@ export const selectPid = (s: RootState) => s.session.pid
 export const selectFeatures = (s: RootState) => s.features
 export const selectTeam = (s: RootState) => s.team
 export const selectQuestions = (s: RootState) => s.questions
+export const selectDocPanel = (s: RootState) => s.docPanel
 
 export const selectTeamByRole = createSelector([selectTeam], (team) => Object.fromEntries(team.map((t) => [t.role, t])) as Record<string, TeamRole>)
 export const selectRole = (s: RootState, role: string) => s.team.find((t) => t.role === role)

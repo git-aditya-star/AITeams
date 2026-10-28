@@ -1,6 +1,6 @@
 import { configureStore, type ThunkAction, type UnknownAction } from '@reduxjs/toolkit'
 import { useDispatch, useSelector } from 'react-redux'
-import { conversations, dashboard, features, inbox, locks, messages, questions, session, team } from './slices'
+import { conversations, dashboard, docPanel, features, inbox, locks, messages, questions, session, team } from './slices'
 
 // Shared, server-fed state of the open project (REST loads + WS frames). URL state (conversation, tab, review)
 // stays in the router; form drafts and busy flags stay in their components.
@@ -15,6 +15,7 @@ export const store = configureStore({
     dashboard: dashboard.reducer,
     questions: questions.reducer,
     locks: locks.reducer,
+    docPanel: docPanel.reducer,
   },
 })
 

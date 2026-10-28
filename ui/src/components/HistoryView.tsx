@@ -127,7 +127,7 @@ export default function HistoryView({ onOpen }: { onOpen: (conversationId: strin
         ) : (
           <div data-approvals-list className="max-w-3xl">
             {shown.map((a) => (
-              <ApprovalCard key={a.id} a={a} showFeature />
+              <ApprovalCard key={a.id} a={a} />
             ))}
           </div>
         )}

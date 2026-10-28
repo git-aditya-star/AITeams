@@ -41,7 +41,7 @@ export default function InboxView({ onOpen }: { onOpen: (conversationId: string)
       <Group title="Approvals" count={inbox.approvals.length}>
         {inbox.approvals.map((a) => (
           <div key={a.id} className="mx-4 my-2">
-            <ApprovalCard a={a} showFeature />
+            <ApprovalCard a={a} />
           </div>
         ))}
       </Group>

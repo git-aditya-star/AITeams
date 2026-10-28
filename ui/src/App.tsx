@@ -15,6 +15,7 @@ import FeatureHeader from './components/FeatureHeader'
 import FeatureDocs from './components/FeatureDocs'
 import InboxView from './components/InboxView'
 import DashboardView from './components/DashboardView'
+import DocPanel from './components/DocPanel'
 import DashboardActions from './components/dashboard/DashboardActions'
 import HistoryView from './components/HistoryView'
 import RoleActions from './components/RoleActions'
@@ -222,6 +223,7 @@ export default function App() {
             </div>
           )}
         </main>
+        <DocPanel pid={pid} refreshKey={messages.length} />
       </div>
       <Toasts />
     </CardContext.Provider>

@@ -31,7 +31,7 @@ test('a pending card offers Approve, Request changes and Reject; Reject with a n
   expect((await req).postDataJSON()).toMatchObject({ decision: 'reject', note: 'No, not for this feature' })
 
   // The card closes with a red "rejected" badge and keeps the note; the buttons are gone.
-  const badge = card.locator('[data-slot="badge"]').first()
+  const badge = card.locator('[data-state-chip]')
   await expect(badge).toHaveText('rejected')
   await expect(badge).toHaveClass(/red/)
   await expect(card.locator('[data-action]')).toHaveCount(0)
@@ -51,7 +51,7 @@ test('Reject needs no reason: one click, no note in the request', async ({ page,
   const body = (await req).postDataJSON()
   expect(body.decision).toBe('reject')
   expect(body.note).toBeUndefined()
-  await expect(card.locator('[data-slot="badge"]').first()).toHaveText('rejected')
+  await expect(card.locator('[data-state-chip]')).toHaveText('rejected')
   await expect(card).not.toContainText('Note:')
 })
 
@@ -60,11 +60,11 @@ test('Request changes now reads amber, Approve green and Reject red', async ({ p
   const b = await pending(qa, page, 'Design: second')
   await qa.open('/p/demo?c=feature-1')
   await a.card.locator('[data-action="changes"]').click()
-  await expect(a.card.locator('[data-slot="badge"]').first()).toHaveText('changes requested')
-  await expect(a.card.locator('[data-slot="badge"]').first()).toHaveClass(/amber/)
+  await expect(a.card.locator('[data-state-chip]')).toHaveText('changes requested')
+  await expect(a.card.locator('[data-state-chip]')).toHaveClass(/amber/)
   await b.card.locator('[data-action="approve"]').click()
-  await expect(b.card.locator('[data-slot="badge"]').first()).toHaveText('approved')
-  await expect(b.card.locator('[data-slot="badge"]').first()).toHaveClass(/emerald/)
+  await expect(b.card.locator('[data-state-chip]')).toHaveText('approved')
+  await expect(b.card.locator('[data-state-chip]')).toHaveClass(/emerald/)
 })
 
 test('History has Features and Approvals tabs; Features is unchanged and opens first', async ({ page, qa }) => {

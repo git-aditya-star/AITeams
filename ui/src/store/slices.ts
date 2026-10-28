@@ -304,6 +304,18 @@ export const questions = createSlice({
     }),
 })
 
+// F-40: the doc an approval card opened in the side panel (App.tsx), or null. Opening another doc replaces it; changing view keeps it.
+export type DocPanelState = { featureId: number; name: string } | null
+export const docPanel = createSlice({
+  name: 'docPanel',
+  initialState: null as DocPanelState,
+  reducers: {
+    opened: (_s, a: PayloadAction<{ featureId: number; name: string }>) => a.payload,
+    closed: () => null,
+  },
+  extraReducers: (b) => b.addCase(ev.projectOpened, () => null),
+})
+
 export const locks = createSlice({
   name: 'locks',
   initialState: [] as Lock[],

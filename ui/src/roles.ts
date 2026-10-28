@@ -122,3 +122,21 @@ export const STATE_CHIP: Record<string, string> = {
 }
 export const stateChip = (s: string) => STATE_CHIP[s] || 'bg-gray-100 text-gray-600'
 export const stateLabel = (s: string) => s.replace(/_/g, ' ')
+
+// F-40: an approval's type, from its title's prefix ("Design: Export orders" -> Design). `rest` is the title without the prefix.
+// Anything else is a plain "Approval".
+export const APPROVAL_TYPES: Record<string, string> = {
+  Design: 'bg-violet-100 text-violet-800',
+  'Scope lock': 'bg-blue-100 text-blue-800',
+  'Use skill': 'bg-teal-100 text-teal-800',
+  Artifact: 'bg-orange-100 text-orange-800',
+  Done: 'bg-emerald-100 text-emerald-800',
+  Branch: 'bg-indigo-100 text-indigo-800',
+  PR: 'bg-sky-100 text-sky-800',
+}
+const APPROVAL_PREFIX = new RegExp(`^(${Object.keys(APPROVAL_TYPES).join('|')})\\s*:\\s*(.*)$`, 'i')
+export function approvalType(title: string): { label: string; chip: string; rest: string } {
+  const m = APPROVAL_PREFIX.exec(title.trim())
+  const label = m ? Object.keys(APPROVAL_TYPES).find((k) => k.toLowerCase() === m[1].toLowerCase())! : 'Approval'
+  return { label, chip: APPROVAL_TYPES[label] ?? 'bg-gray-100 text-gray-700', rest: m ? m[2] : title.trim() }
+}

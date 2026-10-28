@@ -67,27 +67,8 @@ test('feature phase and owner selects apply by mouse and keyboard', async ({ pag
   await expect(owner).toHaveText('Manager')
 })
 
-test('approval set-phase select and History reopen select', async ({ page, qa }) => {
+test('History reopen select', async ({ page, qa }) => {
   await qa.open('/p/demo?c=inbox')
-  const card = page.locator('[data-card="approval-1"]')
-  const setPhase = card.getByRole('combobox', { name: 'Set phase' })
-  await expect(setPhase).toHaveText('unchanged')
-  await setPhase.click()
-  await page.keyboard.press('Escape')
-  await expect(page.getByRole('listbox')).toBeHidden()
-  await expect(setPhase).toHaveText('unchanged')
-  await setPhase.focus()
-  await page.keyboard.press('Enter')
-  await expect(page.getByRole('option', { name: 'unchanged' })).toBeFocused()
-  await page.keyboard.press('ArrowDown')
-  await expect(page.getByRole('option', { name: 'intake' })).toBeFocused()
-  await page.keyboard.press('ArrowDown')
-  await expect(page.getByRole('option', { name: 'spec', exact: true })).toBeFocused()
-  await page.keyboard.press('Enter')
-  await expect(setPhase).toHaveText('spec')
-  await card.getByRole('button', { name: 'Approve' }).click()
-  await expect.poll(async () => (await feature(qa, 'F-1')).phase).toBe('spec')
-
   await page.locator('aside').getByRole('button', { name: /^History/ }).click()
   const reopen = page.getByRole('combobox', { name: 'Reopen F-2' })
   await expect(reopen).toHaveText('reopen…')

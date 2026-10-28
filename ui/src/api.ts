@@ -200,6 +200,15 @@ export interface Artifact {
 // F-25: what the Master can answer an approval card with.
 export type ApprovalDecision = 'approve' | 'changes' | 'reject'
 
+// F-40: an approval says what it is in three parts (the daemon refuses one without them) and may name a doc in the feature's
+// docs folder, which the card opens in a side panel. `tradeoffs` has 1-3 items ("none" is a valid one).
+export interface ApprovalBrief {
+  what: string
+  if_approved: string
+  tradeoffs: string[]
+  doc: string | null
+}
+
 export interface Approval {
   id: number
   feature_id: number | null
@@ -212,6 +221,7 @@ export interface Approval {
   message_id: number | null
   created_at: number
   resolved_at: number | null
+  brief?: ApprovalBrief | null // F-40: what the Master is asked, in three parts; null on an approval filed before F-40
   payload?: BranchPayload | string | null // F-39: JSON for `Branch:` approvals (a string from a daemon that does not decode it)
 }
 
