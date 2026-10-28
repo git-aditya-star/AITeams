@@ -3,7 +3,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from aiteams.daemon import create_app
-from tests.conftest import AUTH, running_turn
+from tests.conftest import AUTH, BRIEF, BRIEF_SUMMARY, running_turn
 
 
 @pytest.fixture
@@ -28,11 +28,11 @@ def test_request_and_approve_with_phase(client, pid):
     f = client.post(f"/api/p/{pid}/features", json={"text": "Export", "starter": "product"}).json()
     proj.db.set_wake_state(proj.db.queued_wakes()[0]["id"], "started")
     product = turn(client, pid, "product")
-    r = client.post("/internal/approvals", json={"feature": "feature-1", "title": "Scope lock: Export", "summary": "- csv only"}, headers=product).json()
+    r = client.post("/internal/approvals", json={"feature": "feature-1", "title": "Scope lock: Export", **BRIEF}, headers=product).json()
     assert r == {"id": 1, "state": "pending"}
     m = client.get(f"/api/p/{pid}/messages", params={"conversation": "feature-1"}).json()[-1]
     assert m["type"] == "Approval" and m["ref"] == "approval:1" and m["mentions"] == ["master"] and m["author"] == "product"
-    assert m["text"] == "**Approval requested: Scope lock: Export**\n\n- csv only"
+    assert m["text"] == "**Approval requested: Scope lock: Export**\n\n" + BRIEF_SUMMARY
     assert proj.db.queued_wakes() == []  # @master wakes nobody
     inbox = client.get(f"/api/p/{pid}/inbox").json()
     assert inbox["count"] == 1 and inbox["approvals"][0]["feature"] == "F-1" and inbox["approvals"][0]["message_id"] == m["id"]
@@ -54,7 +54,7 @@ def test_request_and_approve_with_phase(client, pid):
 
 def test_changes_requested_and_no_feature(client, pid):
     qa = turn(client, pid, "qa")
-    r = client.post("/internal/approvals", json={"title": "Skip flaky test?", "summary": "s"}, headers=qa).json()
+    r = client.post("/internal/approvals", json={"title": "Skip flaky test?", **BRIEF}, headers=qa).json()
     m = client.get(f"/api/p/{pid}/messages", params={"conversation": "dm-qa"}).json()[-1]
     assert m["ref"] == f"approval:{r['id']}"
     r = client.post(f"/api/p/{pid}/approvals/{r['id']}/decide", json={"decision": "changes", "note": "fix it instead"}).json()
@@ -70,9 +70,9 @@ def test_reject_with_and_without_a_note(client, pid):
     proj = client.app.state.app.projects[pid]
     client.post(f"/api/p/{pid}/features", json={"text": "Export", "starter": "product"})
     product, qa = turn(client, pid, "product"), turn(client, pid, "qa")
-    a1 = client.post("/internal/approvals", json={"feature": "F-1", "title": "Use skill: acme:deploy", "summary": "s"},
+    a1 = client.post("/internal/approvals", json={"feature": "F-1", "title": "Use skill: acme:deploy", **BRIEF},
                      headers=product).json()["id"]
-    a2 = client.post("/internal/approvals", json={"title": "Skip flaky test?", "summary": "s"}, headers=qa).json()["id"]
+    a2 = client.post("/internal/approvals", json={"title": "Skip flaky test?", **BRIEF}, headers=qa).json()["id"]
     assert client.get(f"/api/p/{pid}/inbox").json()["count"] == 2
     proj.db.set_wake_state(proj.db.queued_wakes()[0]["id"], "started")
     r = client.post(f"/api/p/{pid}/approvals/{a1}/decide", json={"decision": "reject", "note": "not now"}).json()
@@ -103,7 +103,7 @@ def test_reject_with_and_without_a_note(client, pid):
 
 def test_a_bad_decision_is_a_400_that_names_all_three(client, pid):
     qa = turn(client, pid, "qa")
-    aid = client.post("/internal/approvals", json={"title": "Skip flaky test?", "summary": "s"}, headers=qa).json()["id"]
+    aid = client.post("/internal/approvals", json={"title": "Skip flaky test?", **BRIEF}, headers=qa).json()["id"]
     for bad in ("rejected", "Reject", "no", ""):
         r = client.post(f"/api/p/{pid}/approvals/{aid}/decide", json={"decision": bad})
         assert r.status_code == 400 and r.json()["detail"] == "decision must be approve|changes|reject", bad
@@ -114,11 +114,11 @@ def test_reject_never_sets_the_phase_and_changes_requested_keeps_its_words(clien
     proj = client.app.state.app.projects[pid]
     client.post(f"/api/p/{pid}/features", json={"text": "Export", "starter": "product"})
     product = turn(client, pid, "product")
-    a1 = client.post("/internal/approvals", json={"feature": "F-1", "title": "Scope lock: Export", "summary": "s"},
+    a1 = client.post("/internal/approvals", json={"feature": "F-1", "title": "Scope lock: Export", **BRIEF},
                      headers=product).json()["id"]
     r = client.post(f"/api/p/{pid}/approvals/{a1}/decide", json={"decision": "reject", "set_phase": "build"})
     assert r.json()["state"] == "rejected" and proj.db.feature(1)["phase"] == "intake"
-    a2 = client.post("/internal/approvals", json={"feature": "F-1", "title": "Scope lock: Export v2", "summary": "s"},
+    a2 = client.post("/internal/approvals", json={"feature": "F-1", "title": "Scope lock: Export v2", **BRIEF},
                      headers=product).json()["id"]
     client.post(f"/api/p/{pid}/approvals/{a2}/decide", json={"decision": "changes", "note": "narrower"})
     last = client.get(f"/api/p/{pid}/messages", params={"conversation": "feature-1"}).json()[-1]

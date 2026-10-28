@@ -17,6 +17,9 @@ for _k in TURN_ENV:
 
 TOKEN = "test-master-token"
 AUTH = {"Authorization": "Bearer " + TOKEN}  # every TestClient sends it; /api needs the Master token since M2a
+# F-40: /internal/approvals refuses a request without the three-part brief; most tests only need a valid one
+BRIEF = {"what": "Approve the plan.", "if_approved": "The team builds it.", "tradeoffs": ["none"]}
+BRIEF_SUMMARY = "**What:** Approve the plan.\n**If you approve:** The team builds it.\n**Trade-offs:**\n- none"
 
 
 @pytest.fixture(autouse=True)

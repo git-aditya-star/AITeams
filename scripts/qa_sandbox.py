@@ -422,7 +422,16 @@ async def fire(st, proj, body: dict) -> dict:
         await workflow.broadcast_inbox(proj)
         out.update(conversation=f"dm-{role}", question=q["id"])
     elif kind == "approval":
-        a = await workflow.request_approval(st, proj, role, None, "F-1", text or f"Design sign-off {n}", "Summary for QA.")
+        # F-40: a brief by default (body.brief overrides parts of it; doc defaults to F-1's design.md); `brief: null` gives
+        # an old-style row (title + summary, brief null), like the seeded PRD approval
+        title, feature = text or f"Design sign-off {n}", body.get("feature", "F-1")
+        if "brief" in body and body["brief"] is None:
+            a = await workflow.request_approval(st, proj, role, None, feature, title, body.get("summary", "Summary for QA."))
+        else:
+            brief = {"what": "Sign off the CSV export design.", "if_approved": "Backend and Frontend build it as written.",
+                     "tradeoffs": ["Excel export waits for a later feature", "One more migration"], "doc": "design.md",
+                     **(body.get("brief") or {})}
+            a = await workflow.request_approval(st, proj, role, None, feature, title, brief=brief)
         out["approval"] = a["id"]
     elif kind in ("commit_request", "committed", "commit_failed"):
         rel = f"qa/fire_{n}.txt"

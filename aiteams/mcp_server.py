@@ -104,11 +104,20 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {"feature": {"type": "string"}, "topic": {"type": "string"}},
                      "required": ["feature", "topic"]}},
     {"name": "request_approval",
-     "description": "Ask the Master for a decision that is theirs (scope lock, scope change, Done, risky change). "
-                    "It lands in their Inbox; end your turn afterwards. `feature` may be null.",
+     "description": "Ask the Master for a decision that is theirs (scope lock, scope change, Design, Done, a skill, an "
+                    "artifact, a risky change). It lands in their Inbox as a card with three parts, and the daemon "
+                    "refuses the request if one is missing: `what` is one line (at most 200 characters) saying what you "
+                    "ask them to decide; `if_approved` (at most 300) says what happens next if they say yes; `tradeoffs` "
+                    "lists 1 to 3 short items (each at most 200; [\"none\"] is fine) with the costs and risks. `doc` is "
+                    "optional: a file in the feature's docs folder (`design.md`, or `.aiteams/features/F-n/design.md`) "
+                    "that opens beside the card, so don't repeat it in the brief. End your turn afterwards. `feature` "
+                    "may be null (then there is no `doc`).",
      "inputSchema": {"type": "object", "properties": {
-         "feature": {"type": ["string", "null"]}, "title": {"type": "string"}, "summary": {"type": "string"}},
-         "required": ["title", "summary"]}},
+         "feature": {"type": ["string", "null"]}, "title": {"type": "string"}, "what": {"type": "string"},
+         "if_approved": {"type": "string"},
+         "tradeoffs": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 3},
+         "doc": {"type": ["string", "null"]}},
+         "required": ["title", "what", "if_approved", "tradeoffs"]}},
     {"name": "propose_branch",
      "description": "Lead only, for your own feature: propose how it works on git, as a Branch card in the Master's "
                     "Inbox (end your turn afterwards). mode 'new' (a new branch in its own worktree next to the project; "
@@ -298,8 +307,12 @@ def tool_start_brainstorm(a):
 
 
 def tool_request_approval(a):
+    tradeoffs = a.get("tradeoffs")
+    if isinstance(tradeoffs, str):  # a lone string is one trade-off, not a refusal
+        tradeoffs = [tradeoffs]
     res = http("POST", "/internal/approvals", {"feature": _feat(a), "title": str(a.get("title") or ""),
-                                               "summary": str(a.get("summary") or "")})
+                                               "what": a.get("what"), "if_approved": a.get("if_approved"),
+                                               "tradeoffs": tradeoffs, "doc": a.get("doc")})
     return "approval #%s pending; end your turn, the Master will answer in the Inbox" % res["id"]
 
 

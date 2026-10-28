@@ -231,8 +231,8 @@ def artifact_gate(proj: Project, turn: dict, inp: dict) -> dict:
                                            "it. A second new artifact needs a new page and a new approval."}
         norm = lambda t: " ".join((t or "").lower().split())  # noqa: E731  (case and spacing don't matter, like F-21's titles)
         approved = [a for a in db.approvals("approved", feat["id"]) if norm(a["title"]) == norm(f"artifact: {name}")]
-        step = (f"request_approval(feature, 'Artifact: {name}', '{rel}'), end your turn, and publish after the approving "
-                "Decision.")
+        step = (f"request_approval(feature, 'Artifact: {name}', what, if_approved, tradeoffs, doc='{name}'), end your turn, "
+                "and publish after the approving Decision.")
         if not approved:
             return {"ok": False, "reason": f"the Master hasn't approved publishing {name}: {step}"}
         now_sha = _sha(proj.path, rel)
@@ -739,13 +739,101 @@ async def _broadcast_design(proj: Project, a: dict) -> None:
         await proj.hub.broadcast("feature", proj.db.feature(a["feature_id"]))
 
 
-async def request_approval(st, proj: Project, role: str, turn_id: int | None, feature, title: str, summary: str,
-                           payload: dict | None = None) -> dict:
+# F-40: every approval a role requests carries a three-part brief the Master reads on the card
+BRIEF_WHAT_MAX, BRIEF_IF_MAX, BRIEF_TRADEOFF_MAX, BRIEF_TRADEOFFS = 200, 300, 200, 3
+BRIEF_DOC_KINDS = "a .md file, an .html page or an image"
+
+
+def is_done_title(title: str | None) -> bool:
+    """F-40: approving a `Done:` request moves its feature to `done` (the card's phase dropdown is gone)."""
+    return (title or "").strip().lower().startswith("done:")
+
+
+def _brief_doc(proj: Project, feat: dict | None, doc) -> str | None:
+    """The brief's optional `doc`: a file in the feature's docs folder, as a bare name or `.aiteams/features/F-n/<name>`
+    (also with the project path in front), stored as the bare name. It must exist; anything else is a 400."""
+    doc = (doc or "").strip() if isinstance(doc, str) else doc
+    if doc is None or doc == "":
+        return None
+    if not isinstance(doc, str):
+        raise HTTPException(400, "doc must be a file name in the feature's docs folder")
+    if feat is None:
+        raise HTTPException(400, "doc needs a feature: it is a file in the feature's docs folder")
+    rel = f".aiteams/features/{feat['key']}/"
+    name = doc[2:] if doc.startswith("./") else doc
+    for prefix in (rel, os.path.join(proj.path, rel), os.path.join(os.path.realpath(proj.path), rel)):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+            break
+    if "/" in name or "\\" in name:
+        raise HTTPException(400, f"doc must be a file in {feat['key']}'s docs folder ({rel}<name>), got {doc!r}")
+    try:
+        docs_file(proj.path, feat, name, lambda n: n.lower().endswith(".md") or mock_kind(n) is not None,
+                  f"doc must be {BRIEF_DOC_KINDS}")
+    except HTTPException as e:
+        if e.status_code == 404:
+            raise HTTPException(400, f"doc {name!r} doesn't exist in {feat['key']}'s docs folder ({rel})")
+        raise HTTPException(400, f"doc {name!r}: {e.detail}")
+    return name
+
+
+def check_brief(proj: Project, feat: dict | None, parts: dict) -> dict:
+    """Validate a raw brief `{what, if_approved, tradeoffs, doc}` and return it clean:
+    what (one line, <= 200), if_approved (<= 300), tradeoffs (1 to 3 items, each non-empty, <= 200), doc (optional, see
+    _brief_doc). A 400 names the missing or invalid part."""
+    def text(v) -> str:
+        return v.strip() if isinstance(v, str) else ""
+    what, if_approved = text(parts.get("what")), text(parts.get("if_approved"))
+    tradeoffs = parts.get("tradeoffs")
+    if isinstance(tradeoffs, str):
+        tradeoffs = [tradeoffs]
+    if not isinstance(tradeoffs, list):
+        tradeoffs = []
+    missing = [n for n, v in (("what", what), ("if_approved", if_approved), ("tradeoffs", tradeoffs)) if not v]
+    if missing:
+        raise HTTPException(400, "brief needs What / If you approve / Trade-offs (1-3): missing " + ", ".join(missing)
+                                 + " (pass what, if_approved and tradeoffs; summary is no longer used)")
+    if "\n" in what or "\r" in what:
+        raise HTTPException(400, "brief what must be one line")
+    if len(what) > BRIEF_WHAT_MAX:
+        raise HTTPException(400, f"brief what is too long: {len(what)} characters, at most {BRIEF_WHAT_MAX}")
+    if len(if_approved) > BRIEF_IF_MAX:
+        raise HTTPException(400, f"brief if_approved is too long: {len(if_approved)} characters, at most {BRIEF_IF_MAX}")
+    if len(tradeoffs) > BRIEF_TRADEOFFS:
+        raise HTTPException(400, f"brief tradeoffs has {len(tradeoffs)} items, at most {BRIEF_TRADEOFFS}")
+    items = []
+    for i, t in enumerate(tradeoffs, 1):
+        t = text(t)
+        if not t:
+            raise HTTPException(400, f"brief tradeoffs item {i} is empty (use 'none' if there are none)")
+        if len(t) > BRIEF_TRADEOFF_MAX:
+            raise HTTPException(400, f"brief tradeoffs item {i} is too long: {len(t)} characters, at most {BRIEF_TRADEOFF_MAX}")
+        items.append(t)
+    return {"what": what, "if_approved": if_approved, "tradeoffs": items, "doc": _brief_doc(proj, feat, parts.get("doc"))}
+
+
+def render_brief(brief: dict, feat: dict | None = None) -> str:
+    """The brief as Markdown: it fills `summary` (what roles read in chat and History searches) and the chat message."""
+    lines = [f"**What:** {brief['what']}", f"**If you approve:** {brief['if_approved']}", "**Trade-offs:**"]
+    lines += [f"- {t}" for t in brief["tradeoffs"]]
+    if brief.get("doc"):
+        lines.append(f"**Doc:** `.aiteams/features/{feat['key']}/{brief['doc']}`" if feat else f"**Doc:** `{brief['doc']}`")
+    return "\n".join(lines)
+
+
+async def request_approval(st, proj: Project, role: str, turn_id: int | None, feature, title: str, summary: str = "",
+                           payload: dict | None = None, brief: dict | None = None) -> dict:
+    """F-40: `brief` is the raw `{what, if_approved, tradeoffs, doc}` a role passed; it is validated here (a missing or bad
+    part is a 400 that names it) and `summary` is rendered from it. `brief=None` is the legacy path for daemon-internal
+    callers (the Branch card): `summary` is stored as given. The /internal route always passes a brief."""
     title = (title or "").strip()
     if not title:
         raise HTTPException(400, "title required")
     feat = resolve_feature(proj.db, feature)
-    a = proj.db.create_approval(feat["id"] if feat else None, role, turn_id, title[:200], summary or "", payload)
+    if brief is not None:
+        brief = check_brief(proj, feat, brief)
+        summary = render_brief(brief, feat)
+    a = proj.db.create_approval(feat["id"] if feat else None, role, turn_id, title[:200], summary or "", payload, brief)
     if feat and title.lower().startswith("artifact:"):  # F-29 B: the Master approves THIS page; pin its content
         name = " ".join(title[len("artifact:"):].split())
         if name and "/" not in name and "\\" not in name:
@@ -809,6 +897,8 @@ async def decide_approval(st, proj: Project, aid: int, decision: str, note: str 
     if payload is not None and not (is_branch_title(a["title"]) or is_pr_title(a["title"])):
         raise HTTPException(400, "a payload is only accepted on Branch: and PR: approvals")
     feat = proj.db.feature(a["feature_id"]) if a["feature_id"] else None
+    if decision == "approve" and not set_phase and is_done_title(a["title"]):
+        set_phase = "done"  # F-40: the card has no phase dropdown; an explicit set_phase (API, old clients) still wins
     applied = merged = None
     if decision == "approve" and is_branch_title(a["title"]) and feat:
         # F-39: create the worktree BEFORE resolving, so a failure (an existing path, a bad base) is a 409 to the Master

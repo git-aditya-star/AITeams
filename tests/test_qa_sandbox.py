@@ -467,3 +467,35 @@ def test_reset_removes_the_worktrees_so_the_same_card_can_be_approved_again(sand
         assert not trees.exists()  # gone with the repo it belonged to
         approve_new_card()  # the same feature and the same default branch name, again
         assert (trees / "demo" / "f1").is_dir()
+
+
+def test_fire_approval_sends_a_brief_by_default_and_brief_null_an_old_style_row(sandbox):
+    """F-40: the `approval` fire files a three-part brief (doc: F-1's design.md) through the real request_approval; `brief`
+    overrides parts of it; `brief: null` is an old-style row (summary only, brief null) like the seeded PRD approval."""
+    mod, work, _ = sandbox
+    app = mod.build_app(8790, work, "demo")
+    auth = {"Authorization": "Bearer sb-token"}
+    with TestClient(app) as c:
+        def fire(body):
+            r = c.post("/qa/fire", json=body, headers=auth)
+            assert r.status_code == 200, r.text
+            return c.get("/api/p/demo/approvals", headers=auth).json()[0]  # newest first
+        rows = c.get("/api/p/demo/approvals", params={"state": "all"}, headers=auth).json()
+        assert all(r["brief"] is None for r in rows)  # the seeded approvals stay old-style rows, ids unchanged
+        a = fire({"kind": "approval", "text": "Design: Export"})
+        assert a["id"] == max(r["id"] for r in rows) + 1 and a["brief"] == {
+            "what": "Sign off the CSV export design.", "if_approved": "Backend and Frontend build it as written.",
+            "tradeoffs": ["Excel export waits for a later feature", "One more migration"], "doc": "design.md"}
+        assert a["summary"].startswith("**What:** Sign off the CSV export design.\n**If you approve:**")
+        b = fire({"kind": "approval", "text": "Done: Export", "brief": {"what": "All checks pass.", "tradeoffs": ["none"],
+                                                                         "doc": "prd.md"}})
+        assert b["brief"]["what"] == "All checks pass." and b["brief"]["tradeoffs"] == ["none"] and b["brief"]["doc"] == "prd.md"
+        assert b["brief"]["if_approved"] == "Backend and Frontend build it as written."  # the rest keeps the default
+        old = fire({"kind": "approval", "text": "Old style", "brief": None})
+        assert old["brief"] is None and old["summary"] == "Summary for QA."
+        old = fire({"kind": "approval", "text": "Path summary", "brief": None, "summary": ".aiteams/features/F-1/design.md"})
+        assert old["brief"] is None and old["summary"] == ".aiteams/features/F-1/design.md"
+        # the message join and the frame carry it too: the chat message is the rendered brief
+        msgs = c.get("/api/p/demo/messages", params={"conversation": "feature-1"}, headers=auth).json()
+        done = next(m for m in msgs if m["approval"] and m["approval"]["id"] == b["id"])
+        assert done["approval"]["brief"] == b["brief"] and done["text"].endswith(b["summary"])

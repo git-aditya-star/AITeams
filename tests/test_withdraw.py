@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from aiteams import commit_graph, workflow
 from aiteams.daemon import create_app
-from tests.conftest import AUTH, running_turn
+from tests.conftest import AUTH, BRIEF, running_turn
 
 LEAD = "lead-2"  # F-1's Lead in every test; "lead" is the other one
 KINDS = ("approval", "commit", "card")
@@ -52,7 +52,7 @@ def make(client, pid, repo, kind, role="frontend", feature="F-1", name=None, req
     """Create an approval, a commit request or a card as `role`; a commit is Lead-approved into master_review."""
     h = hdr(client, pid, role)
     if kind == "approval":
-        r = client.post("/internal/approvals", json={"feature": feature, "title": "Scope lock: Export", "summary": "s"}, headers=h)
+        r = client.post("/internal/approvals", json={"feature": feature, "title": "Scope lock: Export", **BRIEF}, headers=h)
     elif kind == "card":
         r = client.post("/internal/questions", json={"questions": CARD, "feature": feature}, headers=h)
     else:
@@ -147,7 +147,7 @@ def test_a_lead_sends_its_own_request_and_a_feature_without_a_lead_lets_only_the
 
 def test_a_request_with_no_feature_goes_to_the_senders_dm_and_only_it_can_withdraw(client, pid, repo):
     proj = proj_of(client, pid)
-    aid = client.post("/internal/approvals", json={"title": "Use skill: x:y", "summary": "s"},
+    aid = client.post("/internal/approvals", json={"title": "Use skill: x:y", **BRIEF},
                       headers=hdr(client, pid, "frontend")).json()["id"]
     assert withdraw(client, pid, LEAD, "approval", aid).status_code == 403
     assert withdraw(client, pid, "frontend", "approval", aid, "not needed").status_code == 200
@@ -340,7 +340,7 @@ def test_a_new_request_cannot_require_a_withdrawn_one_and_a_refile_leaves_it_wit
 
 # ---- approvals: the design gate ----------------------------------------------------------------------------------
 def design(client, pid, title):
-    r = client.post("/internal/approvals", json={"feature": "F-1", "title": title, "summary": "s"}, headers=hdr(client, pid, LEAD))
+    r = client.post("/internal/approvals", json={"feature": "F-1", "title": title, **BRIEF}, headers=hdr(client, pid, LEAD))
     assert r.status_code == 200, r.text
     return r.json()["id"]
 

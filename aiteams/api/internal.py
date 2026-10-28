@@ -211,7 +211,8 @@ async def request_approval(request: Request, body: InternalApprovalBody):
     st, proj, turn = _auth(request)
     if workflow.is_design_title(body.title):  # F-22: only the feature's Lead requests its design approval
         await workflow.guard_lead(st, proj, turn["role"], workflow.resolve_feature(proj.db, body.feature))
-    a = await workflow.request_approval(st, proj, turn["role"], turn["id"], body.feature, body.title, body.summary)
+    brief = {"what": body.what, "if_approved": body.if_approved, "tradeoffs": body.tradeoffs, "doc": body.doc}  # F-40: required
+    a = await workflow.request_approval(st, proj, turn["role"], turn["id"], body.feature, body.title, brief=brief)
     return {"id": a["id"], "state": a["state"]}
 
 

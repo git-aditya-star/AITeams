@@ -96,7 +96,11 @@ class AskMasterBody(BaseModel):
 class InternalApprovalBody(BaseModel):
     feature: str | None = None
     title: str = Field(min_length=1)
-    summary: str = ""
+    summary: str = ""  # F-40: ignored (the daemon renders it from the brief); only old callers still send it
+    what: str | None = None
+    if_approved: str | None = None
+    tradeoffs: list[str] | None = None
+    doc: str | None = None
 
 
 class InternalBranchBody(BaseModel):

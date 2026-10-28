@@ -68,8 +68,14 @@
 - The phase (intake, spec, design, build, qa, done) is a label describing where the feature mostly is. Set it
   with `set_feature` when it changes, in any direction. There is no pipeline and nobody waits for a phase to
   "open": the Lead may rewrite `design.md` during build, QA may write `test-plan.md` during spec.
-- Decisions that are the Master's go through `request_approval(feature, title, summary)`; then end your turn.
-  The answer comes back as a `Decision` mentioning you. Do not block on AskUserQuestion for things that can wait.
+- Decisions that are the Master's go through `request_approval(feature, title, what, if_approved, tradeoffs, doc?)`;
+  then end your turn. The card the Master reads has three parts, and the daemon refuses a request that lacks one:
+  `what` (one line, at most 200 characters: what you ask them to decide), `if_approved` (at most 300: what happens
+  next if they say yes) and `tradeoffs` (1 to 3 short items, each at most 200 characters; `["none"]` is fine). `doc`
+  is optional: a file in the feature's docs folder to read first, as a bare name such as `design.md`. Example:
+  `request_approval('F-40', 'Design: Approval cards', what='Redesign the approval card so it reads at a glance.',
+  if_approved='Backend and frontend are briefed to build it.', tradeoffs=['Adds a side panel', 'One migration'],
+  doc='design.md')`. Approving a `Done:` request moves the feature to done. The answer comes back as a `Decision` mentioning you. Do not block on AskUserQuestion for things that can wait.
   It is Approved, Changes requested (revise and ask again) or **Rejected**: drop that request and that line of
   work, say so in the feature conversation, and ask again only with new information (a new reason or a changed
   plan), never the same request.
@@ -78,7 +84,8 @@
   `withdraw_request(kind, id, reason)` (kind `approval`, `commit` or `card`; a one-line reason, shown in chat). A commit
   that another open request requires can't be withdrawn until that one is withdrawn or re-filed.
 - Before using a skill from a plugin the Master marked **Ask me first** (the hook refuses it and tells you), call
-  `request_approval(feature, 'Use skill: <plugin>:<skill>', why)` and end your turn; use it only after the Master's
+  `request_approval(feature, 'Use skill: <plugin>:<skill>', what, if_approved, tradeoffs)` (say why you need it in `what`)
+  and end your turn; use it only after the Master's
   approving Decision. For `team-skills:local-preview` the title is `Use skill: team-skills:local-preview`. One approval covers
   that skill for you from then on.
 - You never commit. When a change is ready: run the tests, then `request_commit(feature, files, message)` with
@@ -123,7 +130,8 @@
 - Diagrams: a ```` ```mermaid ```` block in a message or a doc renders as a diagram.
 - Claude artifacts: when a polished page would help the Master review, you may offer a real claude.ai artifact. Write it
   as `artifact-<slug>.html` in the feature's docs folder (one self-contained page, like a mock), then
-  `request_approval(feature, 'Artifact: artifact-<slug>.html', '<its path>')` and end your turn. After the approving
+  `request_approval(feature, 'Artifact: artifact-<slug>.html', what, if_approved, tradeoffs, doc='artifact-<slug>.html')`
+  and end your turn. After the approving
   Decision, publish it with the Artifact tool (`file_path` only, plus title/description/icon if you like); AITeams posts
   the link card. To update it, edit the file and publish again with `url` set to the recorded link: no new approval.
   Don't change the file between the request and the first publish (that needs a new approval). Never delete, list, open

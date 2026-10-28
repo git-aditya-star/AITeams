@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from aiteams import workflow
 from aiteams.daemon import create_app
-from tests.conftest import AUTH, running_turn
+from tests.conftest import AUTH, BRIEF, running_turn
 
 
 @pytest.fixture(autouse=True)
@@ -46,7 +46,7 @@ def file_commit(client, pid, role="backend", feature="F-1", name="a.py"):
 def design_approval(client, pid, title="Design: Export", role="lead"):
     proj = proj_of(client, pid)
     _, hdr = running_turn(proj.db, role, pid=pid)
-    r = client.post("/internal/approvals", json={"feature": "F-1", "title": title, "summary": "d.md"}, headers=hdr)
+    r = client.post("/internal/approvals", json={"feature": "F-1", "title": title, **BRIEF}, headers=hdr)
     assert r.status_code == 200, r.text
     return r.json()["id"]
 

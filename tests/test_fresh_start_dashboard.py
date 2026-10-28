@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from aiteams.daemon import create_app
-from tests.conftest import AUTH, running_turn
+from tests.conftest import AUTH, BRIEF, running_turn
 from aiteams.orchestrator.prompt import build_wake_prompt, live_message_ids
 
 
@@ -68,7 +68,7 @@ def test_start_over(client, pid, repo):
     (docs / "prd.md").write_text("# PRD\n")
     client.patch(f"/api/p/{pid}/features/1", json={"phase": "build", "owner": "lead"})
     _, h = turn(client, pid, "product", "feature-1")
-    client.post("/internal/approvals", json={"feature": "F-1", "title": "Scope", "summary": "x"}, headers=h)
+    client.post("/internal/approvals", json={"feature": "F-1", "title": "Scope", **BRIEF}, headers=h)
     (repo / "a.py").write_text("x\n")
     client.post("/internal/commits", json={"feature": "F-1", "files": ["a.py"], "message": "F-1: a"}, headers=h)
     assert client.get(f"/api/p/{pid}/inbox").json()["count"] == 1
@@ -98,7 +98,7 @@ def test_dashboard_waits_on_and_stale(client, pid, repo):
         db.set_wake_state(w["id"], "started")
     # f1: pending approval -> master
     _, h = turn(client, pid, "product", f1["conversation_id"])
-    client.post("/internal/approvals", json={"feature": "F-1", "title": "Scope", "summary": "x"}, headers=h)
+    client.post("/internal/approvals", json={"feature": "F-1", "title": "Scope", **BRIEF}, headers=h)
     # f2: lead_review commit -> lead; f3: master_review commit -> master
     (repo / "b.py").write_text("x\n"); (repo / "c.py").write_text("x\n")
     _, hb = turn(client, pid, "backend", f2["conversation_id"])

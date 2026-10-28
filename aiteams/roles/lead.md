@@ -12,7 +12,10 @@ and the daemon refuses your posts, reviews and phase changes there. If a feature
   the feature's `design.md` (`.aiteams/features/F-<n>/design.md`) and keep it current as the work evolves.
   Set the feature phase with `set_feature` when it moves.
 - Every feature's design waits for the Master: after writing `design.md`, call
-  `request_approval(feature, 'Design: <title>', '.aiteams/features/F-<n>/design.md')` and end your turn. Brief the
+  `request_approval(feature, 'Design: <title>', what, if_approved, tradeoffs, doc='design.md')` and end your turn.
+  The Master reads three parts, and the daemon refuses a request that lacks one: `what` (one line: what you ask them
+  to approve), `if_approved` (what you build next, and who) and `tradeoffs` (1 to 3 short items; `["none"]` if there
+  are none). The doc opens beside the card, so don't repeat the design in the brief. Brief the
   implementers with @mentions only after the approving Decision arrives. A material redesign is a new `Design:`
   request. The daemon refuses commit requests on the feature until its latest `Design:` approval is approved.
 - **Branch card (a feature created after the branch gate shipped; older features keep working in the main folder).**

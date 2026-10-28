@@ -49,6 +49,8 @@ class Mock(BaseHTTPRequestHandler):
                 self._send(200, {"behavior": "deny", "message": "The Master did not answer within 10 minutes. Post the question"})
         elif self.path == "/internal/branches":
             self._send(200, {"id": 9, "state": "pending", "payload": body})
+        elif self.path == "/internal/approvals":
+            self._send(200, {"id": 5, "state": "pending"})
         elif self.path == "/internal/withdraw":
             if not body.get("reason"):
                 self._send(400, {"detail": "give a one-line reason (no line breaks); it is shown in chat"})
@@ -199,3 +201,31 @@ def test_propose_branch_tool_posts_the_proposal_and_the_schema_lists_the_modes()
     assert posts[0][2]["x-aiteams-token"] == "turn-secret"
     tool = next(t for t in by_id[2]["result"]["tools"] if t["name"] == "propose_branch")
     assert tool["inputSchema"]["required"] == ["feature"] and tool["inputSchema"]["properties"]["mode"]["enum"] == ["new", "current", "shared"]
+
+
+def test_request_approval_tool_sends_the_brief_and_the_schema_names_its_parts():
+    """F-40: the tool takes what / if_approved / tradeoffs (1-3) / doc and no longer takes `summary`."""
+    Mock.calls.clear()
+    full = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "request_approval", "arguments": {
+        "feature": "F-40", "title": "Design: x", "what": "Approve the design.", "if_approved": "Backend builds it.",
+        "tradeoffs": ["one migration", "a side panel"], "doc": "design.md"}}}
+    lone = {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "request_approval", "arguments": {
+        "title": "Skip it?", "what": "w", "if_approved": "i", "tradeoffs": "none"}}}  # a lone string is one trade-off
+    old = {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "request_approval", "arguments": {
+        "title": "Scope", "summary": "an old caller"}}}  # still sent as is: the daemon refuses it, naming what's missing
+    res = with_server(lambda url: run_rpc(url, [full, lone, old, {"jsonrpc": "2.0", "id": 4, "method": "tools/list"}]))
+    by_id = {r["id"]: r for r in res}
+    assert by_id[1]["result"]["content"][0]["text"] == "approval #5 pending; end your turn, the Master will answer in the Inbox"
+    posts = [c[3] for c in Mock.calls if c[1] == "/internal/approvals"]
+    assert posts[0] == {"feature": "F-40", "title": "Design: x", "what": "Approve the design.",
+                        "if_approved": "Backend builds it.", "tradeoffs": ["one migration", "a side panel"], "doc": "design.md"}
+    assert posts[1]["tradeoffs"] == ["none"] and posts[1]["feature"] is None and posts[1]["doc"] is None
+    assert posts[2] == {"feature": None, "title": "Scope", "what": None, "if_approved": None, "tradeoffs": None, "doc": None}
+    assert all("summary" not in p for p in posts)
+    tool = next(t for t in by_id[4]["result"]["tools"] if t["name"] == "request_approval")
+    schema = tool["inputSchema"]
+    assert schema["required"] == ["title", "what", "if_approved", "tradeoffs"] and "summary" not in schema["properties"]
+    assert schema["properties"]["tradeoffs"] == {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 3}
+    assert set(schema["properties"]) == {"feature", "title", "what", "if_approved", "tradeoffs", "doc"}
+    for part in ("what", "if_approved", "tradeoffs", "doc", "refuses", "200", "300"):
+        assert part in tool["description"], part

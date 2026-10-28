@@ -12,7 +12,7 @@ from aiteams.daemon import create_app
 from aiteams.orchestrator import turn as turn_mod
 from aiteams.orchestrator.claude_proc import HOOK_TOOLS, aiteams_env, build_cmd, child_env
 from aiteams.runtime import AppState, Project
-from tests.conftest import AUTH, FakeHub, running_turn
+from tests.conftest import AUTH, BRIEF, FakeHub, running_turn
 from tests.test_claude_proc import INIT, RESULT, fake_cmd, fake_env
 
 URL = "https://claude.ai/artifact/AbC123"
@@ -65,7 +65,7 @@ def check(client, hdr, path=None, url=None, action="publish"):
 
 
 def approve(client, pid, hdr, name=NAME, decision="approve", feature="F-1"):
-    aid = client.post("/internal/approvals", json={"feature": feature, "title": f"Artifact: {name}", "summary": REL},
+    aid = client.post("/internal/approvals", json={"feature": feature, "title": f"Artifact: {name}", **BRIEF},
                       headers=hdr).json()["id"]
     r = client.post(f"/api/p/{pid}/approvals/{aid}/decide", json={"decision": decision})
     assert r.status_code == 200, r.text
@@ -81,10 +81,10 @@ def publish(proj, role="frontend", inp=None, path=REL, url=URL, version=1, turn_
 def test_a_new_page_needs_an_approved_artifact_request_and_gets_a_pending_row(client, pid, proj, docs):
     t1, h1 = turn(proj, pid)
     r = check(client, h1, abs_path(docs))
-    assert r["ok"] is False and f"request_approval(feature, 'Artifact: {NAME}', '{REL}')" in r["reason"]
+    assert r["ok"] is False and f"request_approval(feature, 'Artifact: {NAME}', what, if_approved, tradeoffs, doc='{NAME}')" in r["reason"]
     assert proj.db.q("SELECT * FROM artifacts") == []
     # pending, changes requested and rejected requests don't open it
-    pending = client.post("/internal/approvals", json={"feature": "F-1", "title": f"Artifact: {NAME}", "summary": REL},
+    pending = client.post("/internal/approvals", json={"feature": "F-1", "title": f"Artifact: {NAME}", **BRIEF},
                           headers=h1).json()["id"]
     assert check(client, h1, abs_path(docs))["ok"] is False
     client.post(f"/api/p/{pid}/approvals/{pending}/decide", json={"decision": "changes", "note": "darker"})
@@ -111,7 +111,7 @@ def test_a_new_page_needs_an_approved_artifact_request_and_gets_a_pending_row(cl
 
 def test_the_path_may_be_relative_to_the_project_and_the_title_match_ignores_case_and_spacing(client, pid, proj, docs):
     _, h = turn(proj, pid)
-    client.post("/internal/approvals", json={"feature": "F-1", "title": f"  ARTIFACT:    {NAME} ", "summary": "s"}, headers=h)
+    client.post("/internal/approvals", json={"feature": "F-1", "title": f"  ARTIFACT:    {NAME} ", **BRIEF}, headers=h)
     aid = proj.db.approvals("pending")[0]["id"]
     client.post(f"/api/p/{pid}/approvals/{aid}/decide", json={"decision": "approve"})
     assert proj.db.get_kv(f"artifact_sha:{aid}") == hashlib.sha256(HTML.encode()).hexdigest()  # pinned despite the spacing
@@ -138,7 +138,7 @@ def test_an_approval_for_another_page_feature_or_without_a_pinned_file_does_not_
     proj.db.x("UPDATE features SET lead='lead' WHERE id=2")
     approve(client, pid, h, NAME, feature="F-2")  # the same title in another feature
     assert check(client, h, abs_path(docs))["ok"] is False
-    aid = client.post("/internal/approvals", json={"feature": "F-1", "title": f"Artifact: {NAME}", "summary": "s"},
+    aid = client.post("/internal/approvals", json={"feature": "F-1", "title": f"Artifact: {NAME}", **BRIEF},
                       headers=h).json()["id"]
     client.post(f"/api/p/{pid}/approvals/{aid}/decide", json={"decision": "approve"})
     proj.db.x("DELETE FROM kv WHERE key=?", f"artifact_sha:{aid}")  # an approval made without a pin can't be matched
@@ -150,14 +150,14 @@ def test_requesting_an_artifact_approval_pins_the_page_and_other_titles_pin_noth
     _, h = turn(proj, pid)
 
     def req(title):
-        return client.post("/internal/approvals", json={"feature": "F-1", "title": title, "summary": "s"}, headers=h).json()["id"]
+        return client.post("/internal/approvals", json={"feature": "F-1", "title": title, **BRIEF}, headers=h).json()["id"]
     a = req(f"Artifact: {NAME}")
     assert proj.db.get_kv(f"artifact_sha:{a}") == hashlib.sha256(HTML.encode()).hexdigest()
     b = req("Artifact: nope.html")  # no such file: pinned as nothing
     assert proj.db.one("SELECT value FROM kv WHERE key=?", f"artifact_sha:{b}")["value"] == "null"
     for title in ("Artifact: ../x.html", "Artifact: sub/x.html", "Artifact:", "Design: Export", "Use skill: a:b"):
         assert proj.db.one("SELECT value FROM kv WHERE key=?", f"artifact_sha:{req(title)}") is None, title
-    c = client.post("/internal/approvals", json={"title": f"Artifact: {NAME}", "summary": "s"}, headers=h).json()["id"]
+    c = client.post("/internal/approvals", json={"title": f"Artifact: {NAME}", **BRIEF}, headers=h).json()["id"]
     assert proj.db.one("SELECT value FROM kv WHERE key=?", f"artifact_sha:{c}") is None  # no feature, no page
 
 

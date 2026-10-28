@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from aiteams import branches, workflow
 from aiteams.daemon import create_app
-from tests.conftest import AUTH, running_turn
+from tests.conftest import AUTH, BRIEF, running_turn
 
 
 @pytest.fixture
@@ -338,12 +338,12 @@ def test_changes_and_reject_create_nothing_and_a_payload_is_only_for_branch_and_
     b = propose(client, pid).json()["id"]
     assert decide(client, pid, b, "reject").status_code == 200
     assert feature(client, pid)["branch"]["state"] == "rejected" and proj_of(client, pid).db.feature_branch(1) is None
-    plain = client.post("/internal/approvals", json={"feature": "F-1", "title": "Scope lock: Export", "summary": "s"},
+    plain = client.post("/internal/approvals", json={"feature": "F-1", "title": "Scope lock: Export", **BRIEF},
                         headers=hdr(client, pid, "lead")).json()["id"]
     r = decide(client, pid, plain, payload={"branch": "x"})
     assert r.status_code == 400 and "only accepted on Branch: and PR: approvals" in r.json()["detail"]
     assert proj_of(client, pid).db.approval(plain)["state"] == "pending"
-    pr = client.post("/internal/approvals", json={"feature": "F-1", "title": "PR: Export", "summary": "s"},
+    pr = client.post("/internal/approvals", json={"feature": "F-1", "title": "PR: Export", **BRIEF},
                      headers=hdr(client, pid, "lead")).json()["id"]
     assert decide(client, pid, pr, payload={"destination": "main"}).status_code == 200  # accepted (B3 gives it meaning)
 
@@ -431,7 +431,7 @@ def test_a_branch_card_carries_its_payload_through_the_message_join_and_the_list
     a = propose(client, pid).json()["id"]
     listed = client.get(f"/api/p/{pid}/approvals").json()
     assert listed[0]["id"] == a and listed[0]["payload"]["branch"] == "feat/f1-export-orders"
-    plain = client.post("/internal/approvals", json={"feature": "F-1", "title": "Scope lock: x", "summary": "s"},
+    plain = client.post("/internal/approvals", json={"feature": "F-1", "title": "Scope lock: x", **BRIEF},
                         headers=hdr(client, pid, "lead")).json()["id"]
     assert next(x for x in client.get(f"/api/p/{pid}/approvals").json() if x["id"] == plain)["payload"] is None
 

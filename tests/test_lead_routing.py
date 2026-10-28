@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from aiteams import workflow
 from aiteams.daemon import create_app
-from tests.conftest import AUTH, running_turn
+from tests.conftest import AUTH, BRIEF, running_turn
 
 SENTENCE = "{key} belongs to {name}; you can read it but not act in it. Ask @manager to reassign it if needed."
 
@@ -230,9 +230,9 @@ def test_the_other_lead_is_refused_everywhere_in_a_feature_and_nothing_changes(c
               say(client, pid, who, f"feature-{n}", "decided", "Decision"),
               client.post(f"/internal/commits/{c['id']}/review", json={"decision": "approve"}, headers=hdr(client, pid, who)),
               client.patch(f"/internal/features/F-{n}", json={"phase": "build"}, headers=hdr(client, pid, who)),
-              client.post("/internal/approvals", json={"feature": f"F-{n}", "title": "Design: x", "summary": "d.md"},
+              client.post("/internal/approvals", json={"feature": f"F-{n}", "title": "Design: x", **BRIEF},
                           headers=hdr(client, pid, who)),
-              client.post("/internal/approvals", json={"feature": f"F-{n}", "title": "  design: y", "summary": "d.md"},
+              client.post("/internal/approvals", json={"feature": f"F-{n}", "title": "  design: y", **BRIEF},
                           headers=hdr(client, pid, who)),
               client.post("/internal/questions", json=card, headers=hdr(client, pid, who)),
               client.post("/internal/questions", json=card | {"purpose": "a_vs_b"}, headers=hdr(client, pid, who))):
@@ -249,7 +249,7 @@ def test_reading_is_never_guarded_and_other_approvals_and_places_are_open(client
     assert client.get("/internal/messages", params={"conversation": f"feature-{n}"}, headers=who).status_code == 200
     assert client.get("/internal/features", headers=who).status_code == 200
     # a non-Design approval and a Design request in a different place are not the guarded case
-    assert client.post("/internal/approvals", json={"feature": f"F-{n}", "title": "Scope lock: x", "summary": "p"},
+    assert client.post("/internal/approvals", json={"feature": f"F-{n}", "title": "Scope lock: x", **BRIEF},
                        headers=who).status_code == 200
     assert say(client, pid, "lead-2", "general", "hi").status_code == 200
     assert say(client, pid, "lead-2", "dm-lead", "hi Lead 1").status_code == 200
@@ -263,7 +263,7 @@ def test_reading_is_never_guarded_and_other_approvals_and_places_are_open(client
 def test_the_owning_lead_may_request_a_design_approval_and_ask(client, pid):
     n = feature(client, pid, "lead-2")
     who = hdr(client, pid, "lead-2")
-    r = client.post("/internal/approvals", json={"feature": f"F-{n}", "title": "Design: x", "summary": "d.md"}, headers=who)
+    r = client.post("/internal/approvals", json={"feature": f"F-{n}", "title": "Design: x", **BRIEF}, headers=who)
     assert r.status_code == 200, r.text
     card = {"questions": [{"question": "Where?", "header": "Where", "options": [{"label": "A"}, {"label": "B"}]}],
             "feature": f"F-{n}", "purpose": "a_vs_b"}
@@ -291,7 +291,7 @@ def test_a_feature_without_a_lead_is_claimed_by_the_first_lead_that_acts(client,
         elif route == "set_feature":
             r = client.patch(f"/internal/features/F-{k}", json={"phase": "spec"}, headers=hdr(client, pid, role))
         elif route == "design":
-            r = client.post("/internal/approvals", json={"feature": f"F-{k}", "title": "Design: x", "summary": "d"},
+            r = client.post("/internal/approvals", json={"feature": f"F-{k}", "title": "Design: x", **BRIEF},
                             headers=hdr(client, pid, role))
         else:
             card = {"questions": [{"question": "Where?", "header": "Where", "options": [{"label": "A"}, {"label": "B"}]}],

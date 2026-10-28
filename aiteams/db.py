@@ -748,16 +748,18 @@ class ProjectDB:
 
     # ---- approvals -------------------------------------------------------
     def create_approval(self, feature_id: int | None, role: str, turn_id: int | None, title: str, summary: str,
-                        payload: dict | None = None) -> dict:
-        aid = self.x("INSERT INTO approvals(feature_id, role, turn_id, title, summary, state, created_at, payload)"
-                     " VALUES(?,?,?,?,?,?,?,?)", feature_id, role, turn_id, title, summary, "pending", time.time(),
-                     json.dumps(payload) if payload is not None else None)
+                        payload: dict | None = None, brief: dict | None = None) -> dict:
+        aid = self.x("INSERT INTO approvals(feature_id, role, turn_id, title, summary, state, created_at, payload, brief)"
+                     " VALUES(?,?,?,?,?,?,?,?,?)", feature_id, role, turn_id, title, summary, "pending", time.time(),
+                     json.dumps(payload) if payload is not None else None,
+                     json.dumps(brief) if brief is not None else None)
         return self.approval(aid)
 
     @staticmethod
     def _approval_dict(r: sqlite3.Row) -> dict:
         d = dict(r)
         d["payload"] = json.loads(d["payload"]) if d.get("payload") else None  # F-39: Branch:/PR: approvals carry JSON
+        d["brief"] = json.loads(d["brief"]) if d.get("brief") else None  # F-40: {what, if_approved, tradeoffs, doc}; old rows null
         return d
 
     def approval(self, aid: int) -> dict | None:
@@ -1057,4 +1059,6 @@ MIGRATIONS: list = [
     "CREATE TABLE stalls(feature_id INTEGER PRIMARY KEY, who TEXT NOT NULL, kind TEXT NOT NULL, ref TEXT NOT NULL,"
     " step INTEGER NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL)",
     _migration_13,
+    # F-40: the three-part brief of an approval (JSON {what, if_approved, tradeoffs, doc}); rows filed before it stay NULL
+    "ALTER TABLE approvals ADD COLUMN brief TEXT NULL",
 ]

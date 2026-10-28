@@ -165,8 +165,8 @@ def check_skill(inp):
     if not (url and project and turn):
         return  # not a role turn (tests, the Master's own session)
     full = "%s:%s" % (plugin, name)
-    reason = ("%s skills need the Master's approval first: request_approval(feature, 'Use skill: %s', why), "
-              "end your turn, and use it after the approving Decision." % (plugin, full))
+    reason = ("%s skills need the Master's approval first: request_approval(feature, 'Use skill: %s', what, "
+              "if_approved, tradeoffs), end your turn, and use it after the approving Decision." % (plugin, full))
     req = urllib.request.Request(url.rstrip("/") + "/internal/skill-approval?skill=" + urllib.parse.quote(full, safe=""),
                                  headers={"X-AITeams-Project": project, "X-AITeams-Turn": turn,
                                           "X-AITeams-Token": os.environ.get("AITEAMS_TURN_TOKEN", "")})
