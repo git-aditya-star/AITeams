@@ -16,6 +16,7 @@ const OUTCOMES = [
   { value: 'approved', label: 'Approved' },
   { value: 'changes_requested', label: 'Changes requested' },
   { value: 'rejected', label: 'Rejected' },
+  { value: 'withdrawn', label: 'Withdrawn' }, // F-34
 ] as const
 
 export default function HistoryView({ onOpen }: { onOpen: (conversationId: string) => void }) {

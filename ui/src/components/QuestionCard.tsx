@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { Question, QuestionItem } from '../api'
-import { roleName } from '../roles'
+import { roleName, stateChip, stateLabel } from '../roles'
 import { useAppDispatch } from '../store'
 import { answerQuestion } from '../store/thunks'
 import Markdown from './Markdown'
@@ -83,7 +83,10 @@ export default function QuestionCard({ q, embedded = false }: { q: Question; emb
         <div className={`${box} rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-meta text-gray-600`} data-question-card={q.id} data-state={q.state}>
           <CardHead q={q} />
           {q.state === 'withdrawn' ? (
-            <div className="text-gray-500">Withdrawn by {roleName(q.role)}</div>
+            <div data-withdrawn className="flex items-center gap-2 text-gray-600">
+              <Badge className={stateChip('withdrawn')}>{stateLabel('withdrawn')}</Badge>
+              {q.note ? `Withdrawn: ${q.note}` : `Withdrawn by ${roleName(q.role)}`}
+            </div>
           ) : (
             items.map((it) => (
               <div key={it.question} className="mb-1 last:mb-0">

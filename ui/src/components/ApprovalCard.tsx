@@ -91,6 +91,10 @@ export default function ApprovalCard({ a, showFeature = false }: { a: Approval; 
             {err && <span className="text-caption text-red-600">{err}</span>}
           </div>
         </div>
+      ) : a.state === 'withdrawn' ? (
+        <div data-withdrawn className="mt-1.5 text-gray-600">
+          Withdrawn{a.note ? `: ${a.note}` : ''}
+        </div>
       ) : (
         a.note && (
           <div className="mt-1.5 text-gray-600">

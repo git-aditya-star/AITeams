@@ -118,6 +118,7 @@ export const STATE_CHIP: Record<string, string> = {
   committed: 'bg-emerald-50 text-emerald-700',
   rejected: 'bg-red-50 text-red-700',
   failed: 'bg-red-50 text-red-700',
+  withdrawn: 'bg-gray-100 text-gray-600', // F-34: pulled back by its sender or the feature's Lead; not a no, so not red
 }
 export const stateChip = (s: string) => STATE_CHIP[s] || 'bg-gray-100 text-gray-600'
 export const stateLabel = (s: string) => s.replace(/_/g, ' ')

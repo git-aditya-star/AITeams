@@ -20,8 +20,8 @@ export type MessageType =
 export type WakeKind = 'normal' | 'handoff' | 'standup' | 'standup_compile' | 'brainstorm' | 'brainstorm_compile'
 
 export type Phase = 'intake' | 'spec' | 'design' | 'build' | 'qa' | 'done'
-export type ApprovalState = 'pending' | 'approved' | 'changes_requested' | 'rejected' // F-25: `rejected` = the Master said no, drop it
-export type CommitState = 'lead_review' | 'master_review' | 'rejected' | 'committed' | 'failed'
+export type ApprovalState = 'pending' | 'approved' | 'changes_requested' | 'rejected' | 'withdrawn' // F-25: `rejected` = the Master said no, drop it; F-34: `withdrawn` = the sender (or the feature's Lead) pulled it back, with a reason in `note`
+export type CommitState = 'lead_review' | 'master_review' | 'rejected' | 'committed' | 'failed' | 'withdrawn'
 
 export interface ProjectSummary {
   id: string
@@ -417,6 +417,7 @@ export interface Question {
   feature_id?: number | null
   conversation_id?: string | null
   message_id?: number | null
+  note?: string | null // F-34: why a card was withdrawn (absent from an older daemon)
 }
 
 // Thrown for non-2xx responses; `detail` is the parsed JSON `detail` when the body was JSON

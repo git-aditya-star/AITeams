@@ -44,6 +44,11 @@ export function CommitActions({ c, d, showStale = true, groupWith = [] }: { c: C
       {(c.state === 'rejected' || c.state === 'failed') && c.note && (
         <pre className="mt-2 whitespace-pre-wrap font-mono text-code text-red-700 bg-red-50 rounded-md border border-red-100 px-2 py-1">{c.note}</pre>
       )}
+      {c.state === 'withdrawn' && (
+        <div data-withdrawn className="mt-2 text-gray-600">
+          Withdrawn{c.note ? `: ${c.note}` : ''}
+        </div>
+      )}
       {c.state === 'committed' && c.sha && (
         <div className="mt-2 text-caption text-gray-600">
           Committed as <code className="font-mono text-code bg-gray-100 rounded-sm px-1">{c.sha}</code>
@@ -86,7 +91,7 @@ export function useGroupPartners(c: Commit): number[] {
   return useAppSelector((s) => {
     const known = new Map(s.messages.items.flatMap((m) => (m.commit ? [[m.commit.id, m.commit] as const] : [])))
     const ids = new Set([...(c.requires ?? []), ...[...known.values()].filter((x) => x.requires?.includes(c.id)).map((x) => x.id)])
-    return [...ids].filter((id) => !['committed', 'rejected', 'superseded'].includes(String(known.get(id)?.state ?? ''))).sort((a, b) => a - b)
+    return [...ids].filter((id) => !['committed', 'rejected', 'superseded', 'withdrawn'].includes(String(known.get(id)?.state ?? ''))).sort((a, b) => a - b)
   }, (a, b) => a.length === b.length && a.every((x, i) => x === b[i]))
 }
 

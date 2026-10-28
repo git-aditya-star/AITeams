@@ -76,7 +76,9 @@ test('a withdrawn card shows closed', async ({ page, qa }) => {
   await expect(card(page, id)).toHaveAttribute('data-state', 'pending')
   await qa.fire('card_withdraw', { question: id })
   await expect(card(page, id)).toHaveAttribute('data-state', 'withdrawn')
-  await expect(card(page, id)).toContainText('Withdrawn by Product')
+  // F-34: a withdrawal carries its reason (the sandbox's card_withdraw default), shown with a grey chip
+  await expect(card(page, id)).toContainText('Withdrawn: not needed any more')
+  await expect(card(page, id).locator('[data-withdrawn] [data-slot="badge"]')).toHaveText('withdrawn')
 })
 
 test('an answer from elsewhere closes the card live in the open conversation and in the open Inbox', async ({ page, qa, request }) => {
