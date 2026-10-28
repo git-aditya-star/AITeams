@@ -16,7 +16,7 @@ import time
 from fastapi import HTTPException
 
 from .config import LEADS, ROLES, canonical_role, effort_for, model_for, model_label, role_name
-from . import commit_graph
+from . import branches, commit_graph
 from .db import PHASES, WAKE_KINDS, ProjectDB
 from .runtime import Project
 
@@ -306,12 +306,28 @@ def design_line(db: ProjectDB, feat: dict) -> str:
     return "- design: " + text + (" · not gated" if not d["gated"] and d["state"] == "none" else "")
 
 
+def branch_line(db: ProjectDB, feat: dict) -> str | None:
+    """F-39: the header's `- branch:` line, or None for a feature that isn't gated and has no branch (older features)."""
+    b = db.branch_info(feat["id"], feat["created_at"])
+    if b["state"] == "approved":
+        if b["tree"]:
+            frm = f" from {b['base']}" if b["base"] else (f" (shared with F-{b['shared_from']})" if b["shared_from"] else "")
+            return (f"- branch: {b['branch']}{frm} · tree {branches.tilde(b['tree'])} "
+                    f"(edit and test there; docs stay in .aiteams/features/{feat['key']}/)")
+        return f"- branch: current folder ({b['branch']})"
+    if b["gated"]:
+        return "- branch: not confirmed (no code until the Master approves a Branch card)"
+    return None
+
+
 def feature_header(db: ProjectDB, project_path: str, feat: dict, with_sizes: bool = False) -> str:
     lines = [f"# Feature {feat['key']}: {feat['title']}",
              f"- phase: {feat['phase']} · owner: {feat['owner'] or 'none'} · conversation id: {feat['conversation_id']}"
              f" · lead: {role_name(feat['lead']) if feat.get('lead') else 'not assigned'}"
              + (" · ARCHIVED" if feat["archived"] else "")]
     lines.append(design_line(db, feat))
+    if (bl := branch_line(db, feat)):
+        lines.append(bl)
     docs = docs_list(db, project_path, feat)
     rel = os.path.join(".aiteams", "features", feat["key"]) + "/"
     if docs:
@@ -494,6 +510,15 @@ async def guard_lead(st, proj: Project, role: str, feat: dict | None, claim: boo
     elif fresh["lead"] != role:
         raise HTTPException(409, f"{fresh['key']} belongs to {role_name(fresh['lead'])}; you can read it but not act "
                                  "in it. Ask @manager to reassign it if needed.")
+
+
+def is_branch_title(title: str | None) -> bool:
+    """F-39: a Branch card's approval title starts with `Branch:` (trimmed, case-insensitive), like db.branch_info."""
+    return (title or "").strip().lower().startswith("branch:")
+
+
+def is_pr_title(title: str | None) -> bool:
+    return (title or "").strip().lower().startswith("pr:")
 
 
 def is_design_title(title: str | None) -> bool:
@@ -714,12 +739,13 @@ async def _broadcast_design(proj: Project, a: dict) -> None:
         await proj.hub.broadcast("feature", proj.db.feature(a["feature_id"]))
 
 
-async def request_approval(st, proj: Project, role: str, turn_id: int | None, feature, title: str, summary: str) -> dict:
+async def request_approval(st, proj: Project, role: str, turn_id: int | None, feature, title: str, summary: str,
+                           payload: dict | None = None) -> dict:
     title = (title or "").strip()
     if not title:
         raise HTTPException(400, "title required")
     feat = resolve_feature(proj.db, feature)
-    a = proj.db.create_approval(feat["id"] if feat else None, role, turn_id, title[:200], summary or "")
+    a = proj.db.create_approval(feat["id"] if feat else None, role, turn_id, title[:200], summary or "", payload)
     if feat and title.lower().startswith("artifact:"):  # F-29 B: the Master approves THIS page; pin its content
         name = " ".join(title[len("artifact:"):].split())
         if name and "/" not in name and "\\" not in name:
@@ -735,7 +761,42 @@ async def request_approval(st, proj: Project, role: str, turn_id: int | None, fe
     return a
 
 
-async def decide_approval(st, proj: Project, aid: int, decision: str, note: str | None, set_phase: str | None) -> dict:
+async def propose_branch(st, proj: Project, role: str, turn_id: int | None, feature, mode: str, branch: str | None = None,
+                         base: str | None = None, shared_from: str | None = None, why: str = "") -> dict:
+    """F-39: the feature's Lead proposes how the feature works on git (a new branch in its own worktree, the current branch,
+    or another feature's worktree). It lands in the Master's Inbox as the approval `Branch: F-n`; commit requests wait for
+    it. The daemon fills in the current branch, the other live worktrees and the warnings, and validates the choice
+    (a bad name, an existing branch, an unknown base are a 400 with a plain reason)."""
+    db = proj.db
+    feat = resolve_feature(db, feature)
+    if feat is None:
+        raise HTTPException(404, "unknown feature")
+    mode = (mode or "new").strip()
+    row = db.feature_branch(feat["id"])
+    if row:
+        raise HTTPException(409, f"{feat['key']} already works on {row['branch']}")
+    if any(a["state"] == "pending" and is_branch_title(a["title"]) for a in db.approvals("pending", feat["id"])):
+        raise HTTPException(409, f"a Branch card for {feat['key']} is already waiting for the Master; withdraw it to change it")
+    repo = proj.path
+    if mode == "new":
+        branch = (branch or "").strip() or branches.default_branch_name(feat)
+        base = (base or "").strip() or branches.default_base(repo)
+    res = await asyncio.to_thread(branches.check, repo, db, mode, branch, base, shared_from, True)  # fetches origin first
+    if res["errors"]:
+        raise HTTPException(400, "; ".join(res["errors"]))
+    cur = await asyncio.to_thread(branches.current_branch, repo)
+    payload = {"mode": mode, "branch": branch if mode == "new" else None, "base": base if mode == "new" else None,
+               "shared_from": shared_from if mode == "shared" else None, "why": (why or "").strip(), "current": cur,
+               "worktrees": branches.live_trees(db, feat["id"]), "warnings": res["warnings"],
+               "tree": branches.planned_tree(repo, db, feat, mode, shared_from)}
+    what = {"new": f"a new branch {branch} from {base}", "current": f"the current branch ({cur})",
+            "shared": f"{shared_from}'s worktree"}[mode]
+    summary = f"Proposed: work on {feat['key']} in {what}." + (f"\n\n{payload['why']}" if payload["why"] else "")
+    return await request_approval(st, proj, role, turn_id, feat["key"], f"Branch: {feat['key']}", summary, payload)
+
+
+async def decide_approval(st, proj: Project, aid: int, decision: str, note: str | None, set_phase: str | None,
+                          payload: dict | None = None) -> dict:
     a = proj.db.approval(aid)
     if a is None:
         raise HTTPException(404, "unknown approval")
@@ -745,9 +806,20 @@ async def decide_approval(st, proj: Project, aid: int, decision: str, note: str 
         raise HTTPException(400, "decision must be approve|changes|reject")
     if set_phase and set_phase not in PHASES:
         raise HTTPException(400, "bad set_phase")
+    if payload is not None and not (is_branch_title(a["title"]) or is_pr_title(a["title"])):
+        raise HTTPException(400, "a payload is only accepted on Branch: and PR: approvals")
+    feat = proj.db.feature(a["feature_id"]) if a["feature_id"] else None
+    applied = merged = None
+    if decision == "approve" and is_branch_title(a["title"]) and feat:
+        # F-39: create the worktree BEFORE resolving, so a failure (an existing path, a bad base) is a 409 to the Master
+        # with git's message and the card stays pending
+        merged = {**(a["payload"] or {}), **{k: v for k, v in (payload or {}).items() if k in branches.EDITABLE}}
+        try:
+            applied = await asyncio.to_thread(branches.apply_branch, proj, feat, merged)
+        except branches.BranchError as e:
+            raise HTTPException(409, str(e))
     state = {"approve": "approved", "changes": "changes_requested", "reject": "rejected"}[decision]
     a = proj.db.resolve_approval(aid, state, note)
-    feat = proj.db.feature(a["feature_id"]) if a["feature_id"] else None
     extra = ""
     if decision == "approve" and set_phase and feat and set_phase != feat["phase"]:
         feat = proj.db.update_feature(feat["id"], phase=set_phase)
@@ -755,8 +827,13 @@ async def decide_approval(st, proj: Project, aid: int, decision: str, note: str 
         extra = f" (phase → {set_phase})"
     else:
         await _broadcast_design(proj, a)
+    if applied:
+        proj.db.set_approval_payload(aid, await asyncio.to_thread(branches.approved_payload, proj, feat, merged, applied))
+        proj.db.set_feature_branch(feat["id"], **{k: v for k, v in applied.items() if k != "warnings"})
+        await proj.hub.broadcast("feature", proj.db.feature(feat["id"]))
     if decision == "approve":
-        text = f"Approved: {a['title']}{extra}" + (f"\n\n{note}" if note else "")
+        text = (f"Approved: {a['title']}{extra}" + (f"\n\n{note}" if note else "")
+                + (f"\n\n{branches.lands_on(feat['key'], applied)}" if applied else ""))
     elif decision == "reject":  # F-25: "no, stop"; Changes requested means revise and ask again
         text = f"Rejected: {a['title']}" + (f"\n\n{note}" if note else "")
     else:
@@ -902,6 +979,11 @@ async def request_commit(st, proj: Project, role: str, turn_id: int | None, feat
             raise HTTPException(409, f"{feat['key']}'s design isn't approved yet ({DESIGN_WORDS[d['state']]}). The Lead "
                                      f"requests 'Design: {feat['title']}' with the design.md link; commit requests wait "
                                      "until the Master approves it.")
+    if feat:  # F-39: nor before the Master has confirmed the feature's branch
+        b = proj.db.branch_info(feat["id"], feat["created_at"])
+        if b["gated"] and b["state"] != "approved":
+            raise HTTPException(409, f"{feat['key']} has no confirmed branch yet; the Lead sends a Branch card "
+                                     "(propose_branch) first")
     reqs: list[int] = []
     for n in requires or []:
         r = proj.db.commit(int(n)) if str(n).lstrip("#").isdigit() else None

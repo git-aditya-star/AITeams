@@ -9,8 +9,8 @@ from fastapi import APIRouter, HTTPException, Request
 from .. import workflow
 from ..config import LEADS, ROLES, role_name
 from ..db import EMOJI
-from ..models import (AskMasterBody, CheckpointBody, HandoffBody, InternalApprovalBody, InternalBrainstormBody,
-                      InternalCommitBody, InternalFeatureBody, InternalFeaturePatchBody, InternalMessageBody,
+from ..models import (AskMasterBody, CheckpointBody, HandoffBody, InternalApprovalBody, InternalBranchBody,
+                      InternalBrainstormBody, InternalCommitBody, InternalFeatureBody, InternalFeaturePatchBody, InternalMessageBody,
                       InternalReviewBody, InternalWithdrawBody, InterruptBody, LockBody, PermissionBody, ReactionBody,
                       StandupSaveBody)
 from ..orchestrator.lifecycle import request_rotation
@@ -213,6 +213,21 @@ async def request_approval(request: Request, body: InternalApprovalBody):
         await workflow.guard_lead(st, proj, turn["role"], workflow.resolve_feature(proj.db, body.feature))
     a = await workflow.request_approval(st, proj, turn["role"], turn["id"], body.feature, body.title, body.summary)
     return {"id": a["id"], "state": a["state"]}
+
+
+@internal.post("/branches")
+async def propose_branch(request: Request, body: InternalBranchBody):
+    """F-39: the feature's Lead proposes its branch/worktree; the Master confirms it on a Branch: card."""
+    st, proj, turn = _auth(request)
+    if turn["role"] not in LEADS:
+        raise HTTPException(403, "only the feature's Lead proposes its branch")
+    feat = workflow.resolve_feature(proj.db, body.feature)
+    if feat is None:
+        raise HTTPException(404, "unknown feature")
+    await workflow.guard_lead(st, proj, turn["role"], feat)  # F-22: not the other Lead's feature; an unled one is claimed
+    a = await workflow.propose_branch(st, proj, turn["role"], turn["id"], body.feature, body.mode, body.branch, body.base,
+                                      body.shared_from, body.why)
+    return {"id": a["id"], "state": a["state"], "payload": a["payload"]}
 
 
 @internal.post("/commits")

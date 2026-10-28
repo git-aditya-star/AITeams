@@ -58,6 +58,7 @@ class ApprovalDecideBody(BaseModel):
     decision: str
     note: str | None = None
     set_phase: str | None = None
+    payload: dict | None = None  # F-39: the Master's edits on a Branch:/PR: card (refused on any other approval)
 
 
 class CommitDecideBody(BaseModel):
@@ -96,6 +97,15 @@ class InternalApprovalBody(BaseModel):
     feature: str | None = None
     title: str = Field(min_length=1)
     summary: str = ""
+
+
+class InternalBranchBody(BaseModel):
+    feature: str
+    mode: str = "new"
+    branch: str | None = None
+    base: str | None = None
+    shared_from: str | None = None
+    why: str = ""
 
 
 class InternalCommitBody(BaseModel):

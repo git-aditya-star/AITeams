@@ -26,6 +26,13 @@ def design_gate_off(monkeypatch):
     monkeypatch.setattr("aiteams.db.design_gate_start", lambda: 4e9)
 
 
+@pytest.fixture(autouse=True)
+def branch_gate_off(monkeypatch):
+    """F-39: migration 13 gates every feature created afterwards behind an approved `Branch:` card. A separate fixture, so a
+    module that overrides design_gate_off keeps this one; tests/test_branches.py overrides this to test the gate."""
+    monkeypatch.setattr("aiteams.db.branch_gate_start", lambda: 4e9)
+
+
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     """Isolated ~/.aiteams with the scheduler disabled (max_concurrent=0) and a fixed Master token."""

@@ -47,6 +47,8 @@ class Mock(BaseHTTPRequestHandler):
                 self._send(200, {"behavior": "allow", "updatedInput": {**body["input"], "answers": {"Which DB?": "Postgres"}}})
             else:
                 self._send(200, {"behavior": "deny", "message": "The Master did not answer within 10 minutes. Post the question"})
+        elif self.path == "/internal/branches":
+            self._send(200, {"id": 9, "state": "pending", "payload": body})
         elif self.path == "/internal/withdraw":
             if not body.get("reason"):
                 self._send(400, {"detail": "give a one-line reason (no line breaks); it is shown in chat"})
@@ -91,7 +93,7 @@ def test_handshake_tools_list_and_errors():
         "post_message", "get_messages", "list_conversations", "permission", "list_features", "get_feature",
         "create_feature", "set_feature", "request_approval", "request_commit", "review_commit", "lock_file",
         "unlock_file", "list_locks", "write_handoff", "get_team_status", "run_standup", "save_standup",
-        "interrupt", "checkpoint", "react", "ask_master", "withdraw_request", "start_brainstorm"}
+        "interrupt", "checkpoint", "react", "ask_master", "withdraw_request", "start_brainstorm", "propose_branch"}
     assert by_id[4]["error"]["code"] == -32601
     assert by_id[5]["error"]["code"] == -32602
     assert by_id[6]["result"]["isError"] is True and "unreachable" in by_id[6]["result"]["content"][0]["text"]
@@ -180,3 +182,20 @@ def test_withdraw_request_tool_posts_kind_id_and_reason_and_withdraw_question_is
     assert "withdraw_request" in tools["ask_master"]["description"]  # the card tool points at the new one
     assert by_id[3]["result"]["isError"] is True and "one-line reason" in by_id[3]["result"]["content"][0]["text"]
     assert by_id[4]["error"]["code"] == -32602  # unknown tool
+
+
+def test_propose_branch_tool_posts_the_proposal_and_the_schema_lists_the_modes():
+    Mock.calls.clear()
+    call = {"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "propose_branch", "arguments": {
+        "feature": "F-39", "mode": "new", "branch": "feat/f39-x", "base": "origin/main", "why": "keeps it apart"}}}
+    bare = {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "propose_branch", "arguments": {"feature": "F-2"}}}
+    res = with_server(lambda url: run_rpc(url, [{**call, "id": 1}, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, bare]))
+    by_id = {r["id"]: r for r in res}
+    assert by_id[1]["result"]["content"][0]["text"] == "Branch card #9 pending; end your turn, the Master will answer in the Inbox"
+    posts = [c for c in Mock.calls if c[1] == "/internal/branches"]
+    assert posts[0][3] == {"feature": "F-39", "mode": "new", "branch": "feat/f39-x", "base": "origin/main", "shared_from": None,
+                           "why": "keeps it apart"}
+    assert posts[1][3]["mode"] == "new" and posts[1][3]["branch"] is None and posts[1][3]["why"] == ""  # the defaults
+    assert posts[0][2]["x-aiteams-token"] == "turn-secret"
+    tool = next(t for t in by_id[2]["result"]["tools"] if t["name"] == "propose_branch")
+    assert tool["inputSchema"]["required"] == ["feature"] and tool["inputSchema"]["properties"]["mode"]["enum"] == ["new", "current", "shared"]

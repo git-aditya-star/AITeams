@@ -564,13 +564,56 @@ class ProjectDB:
         self.x("INSERT INTO rate_limits(ts, json) VALUES(?,?)", time.time(), json.dumps(info))
 
     # ---- features --------------------------------------------------------
-    def _feat_dict(self, r: sqlite3.Row, gate_since=False) -> dict:
+    def _feat_dict(self, r: sqlite3.Row, gate_since=False, branch_since=False) -> dict:
         d = dict(r)
         d["key"] = f"F-{d['id']}"
         d["archived"] = bool(d["archived"])
         d["design"] = self.design_info(d["id"], d["created_at"], gate_since)
         d["stall"] = self.stall_info(d["id"])
+        d["branch"] = self.branch_info(d["id"], d["created_at"], branch_since)
         return d
+
+    # ---- F-39: a feature's branch and worktree --------------------------------
+    def feature_branch(self, fid: int) -> dict | None:
+        r = self.one("SELECT * FROM feature_branches WHERE feature_id=?", fid)
+        return dict(r) if r else None
+
+    def feature_branches(self) -> list[dict]:
+        return [dict(r) for r in self.q("SELECT * FROM feature_branches ORDER BY feature_id")]
+
+    def set_feature_branch(self, fid: int, **fields) -> dict:
+        """Insert or update the feature's row (mode, branch, base, tree, shared_from, pr_*, tree_state)."""
+        cols = ("mode", "branch", "base", "tree", "shared_from", "pr_url", "pr_state", "pr_destination", "tree_state")
+        fields = {k: v for k, v in fields.items() if k in cols}
+        now = time.time()
+        if self.feature_branch(fid) is None:
+            row = {"mode": "current", "branch": "", **fields}
+            self.x("INSERT INTO feature_branches(feature_id, mode, branch, base, tree, shared_from, pr_url, pr_state,"
+                   " pr_destination, tree_state, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", fid, row["mode"],
+                   row["branch"], row.get("base"), row.get("tree"), row.get("shared_from"), row.get("pr_url"),
+                   row.get("pr_state"), row.get("pr_destination"), row.get("tree_state", "live"), now, now)
+        elif fields:
+            self.x(f"UPDATE feature_branches SET {', '.join(f'{k}=?' for k in fields)}, updated_at=? WHERE feature_id=?",
+                   *fields.values(), now, fid)
+        return self.feature_branch(fid)
+
+    def branch_info(self, fid: int, created_at: float | None, since=False) -> dict:
+        """F-39: {state, approval_id, gated, mode, branch, base, tree, shared_from, pr_url, pr_state, pr_destination,
+        tree_state}. State is approved (the feature has its row) | pending | changes | rejected | none, from the latest
+        non-withdrawn `Branch:` approval (like design_info). A feature is gated when it was created at/after kv
+        branch_gate_since (migration 13), or has any Branch approval or row. `since` lets a loop fetch it once."""
+        row = self.feature_branch(fid)
+        a = self.one("SELECT id, state FROM approvals WHERE feature_id=? AND trim(title) LIKE 'branch:%'"
+                     " AND state != 'withdrawn' ORDER BY id DESC LIMIT 1", fid)
+        if since is False:
+            since = self.get_kv("branch_gate_since")
+        state = "approved" if row else ({"approved": "approved", "pending": "pending", "changes_requested": "changes",
+                                         "rejected": "rejected"}.get(a["state"], "none") if a else "none")
+        gated = (row is not None or a is not None or (since is not None and (created_at or 0) >= since)
+                 or self.one("SELECT 1 FROM approvals WHERE feature_id=? AND trim(title) LIKE 'branch:%' LIMIT 1", fid) is not None)
+        keys = ("mode", "branch", "base", "tree", "shared_from", "pr_url", "pr_state", "pr_destination", "tree_state")
+        return {"state": state, "approval_id": a["id"] if a else None, "gated": gated,
+                **{k: (row[k] if row else None) for k in keys}}
 
     # ---- F-38: the stall ladder (one row per feature) ----------------------
     def stall_row(self, fid: int) -> dict | None:
@@ -640,9 +683,9 @@ class ProjectDB:
                          (SELECT COUNT(*) FROM commits c WHERE c.feature_id=f.id AND c.state IN ('lead_review','master_review')) AS open_commits
                          FROM features f ORDER BY f.id DESC""")
         out = []
-        gate_since = self.get_kv("design_gate_since")
+        gate_since, branch_since = self.get_kv("design_gate_since"), self.get_kv("branch_gate_since")
         for r in rows:
-            d = self._feat_dict(r, gate_since)
+            d = self._feat_dict(r, gate_since, branch_since)
             d["last_activity"] = d["last_activity"] or d["created_at"]
             if include_history or (d["phase"] != "done" and not d["archived"]):
                 out.append(d)
@@ -704,14 +747,25 @@ class ProjectDB:
         return self.feature(fid)
 
     # ---- approvals -------------------------------------------------------
-    def create_approval(self, feature_id: int | None, role: str, turn_id: int | None, title: str, summary: str) -> dict:
-        aid = self.x("INSERT INTO approvals(feature_id, role, turn_id, title, summary, state, created_at)"
-                     " VALUES(?,?,?,?,?,?,?)", feature_id, role, turn_id, title, summary, "pending", time.time())
+    def create_approval(self, feature_id: int | None, role: str, turn_id: int | None, title: str, summary: str,
+                        payload: dict | None = None) -> dict:
+        aid = self.x("INSERT INTO approvals(feature_id, role, turn_id, title, summary, state, created_at, payload)"
+                     " VALUES(?,?,?,?,?,?,?,?)", feature_id, role, turn_id, title, summary, "pending", time.time(),
+                     json.dumps(payload) if payload is not None else None)
         return self.approval(aid)
+
+    @staticmethod
+    def _approval_dict(r: sqlite3.Row) -> dict:
+        d = dict(r)
+        d["payload"] = json.loads(d["payload"]) if d.get("payload") else None  # F-39: Branch:/PR: approvals carry JSON
+        return d
 
     def approval(self, aid: int) -> dict | None:
         r = self.one("SELECT * FROM approvals WHERE id=?", aid)
-        return dict(r) if r else None
+        return self._approval_dict(r) if r else None
+
+    def set_approval_payload(self, aid: int, payload: dict) -> None:
+        self.x("UPDATE approvals SET payload=? WHERE id=?", json.dumps(payload), aid)
 
     def approvals(self, state: str = "pending", feature_id: int | None = None) -> list[dict]:
         sql, args = "SELECT * FROM approvals WHERE 1=1", []
@@ -719,7 +773,7 @@ class ProjectDB:
             sql += " AND state=?"; args.append(state)
         if feature_id is not None:
             sql += " AND feature_id=?"; args.append(feature_id)
-        return [dict(r) for r in self.q(sql + " ORDER BY id DESC", *args)]
+        return [self._approval_dict(r) for r in self.q(sql + " ORDER BY id DESC", *args)]
 
     def resolve_approval(self, aid: int, state: str, note: str | None) -> dict | None:
         self.x("UPDATE approvals SET state=?, note=?, resolved_at=? WHERE id=? AND state='pending'",
@@ -950,6 +1004,22 @@ def _migration_8(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT OR REPLACE INTO kv(key, value) VALUES('design_gate_since', ?)", (json.dumps(design_gate_start()),))
 
 
+def branch_gate_start() -> float:
+    """When migration 13 starts the branch gate (a function so tests can push it into the future)."""
+    return time.time()
+
+
+def _migration_13(conn: sqlite3.Connection) -> None:
+    """F-39: a feature's branch/worktree, confirmed by the Master on a `Branch:` card. Commit requests wait for it on
+    features created from now on (like the design gate), so features already in flight keep working in the main folder."""
+    conn.execute("CREATE TABLE feature_branches(feature_id INTEGER PRIMARY KEY, mode TEXT NOT NULL, branch TEXT NOT NULL,"
+                 " base TEXT NULL, tree TEXT NULL, shared_from INTEGER NULL, pr_url TEXT NULL, pr_state TEXT NULL,"
+                 " pr_destination TEXT NULL, tree_state TEXT NOT NULL DEFAULT 'live', created_at REAL NOT NULL,"
+                 " updated_at REAL NOT NULL)")
+    conn.execute("ALTER TABLE approvals ADD COLUMN payload TEXT NULL")
+    conn.execute("INSERT OR REPLACE INTO kv(key, value) VALUES('branch_gate_since', ?)", (json.dumps(branch_gate_start()),))
+
+
 def _migration_9(conn: sqlite3.Connection) -> None:
     """F-22: every feature has one Lead (`lead` = Lead 1, `lead-2` = Lead 2; NULL = not assigned yet). Features that
     exist when this ships all belong to Lead 1."""
@@ -986,4 +1056,5 @@ MIGRATIONS: list = [
     # F-38: one row per feature whose conversation is waiting on a role while the team is idle (the nudge ladder)
     "CREATE TABLE stalls(feature_id INTEGER PRIMARY KEY, who TEXT NOT NULL, kind TEXT NOT NULL, ref TEXT NOT NULL,"
     " step INTEGER NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL)",
+    _migration_13,
 ]

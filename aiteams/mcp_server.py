@@ -109,6 +109,18 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {
          "feature": {"type": ["string", "null"]}, "title": {"type": "string"}, "summary": {"type": "string"}},
          "required": ["title", "summary"]}},
+    {"name": "propose_branch",
+     "description": "Lead only, for your own feature: propose how it works on git, as a Branch card in the Master's "
+                    "Inbox (end your turn afterwards). mode 'new' (a new branch in its own worktree next to the project; "
+                    "`branch` defaults to feat/f<n>-<slug>, `base` to origin/main, else main), 'current' (the branch the "
+                    "main folder has checked out) or 'shared' (another feature's live worktree: `shared_from` = F-n). "
+                    "`why` is one sentence for the Master. The Master may edit the name and base; commit requests are "
+                    "refused until the card is approved. A branch that looks shared (main, dev, release...) is only "
+                    "warned about, never refused.",
+     "inputSchema": {"type": "object", "properties": {
+         "feature": {"type": "string"}, "mode": {"type": "string", "enum": ["new", "current", "shared"], "default": "new"},
+         "branch": {"type": "string"}, "base": {"type": "string"}, "shared_from": {"type": "string"},
+         "why": {"type": "string"}}, "required": ["feature"]}},
     {"name": "request_commit",
      "description": "Request a commit of exactly these files (paths relative to the project root) with a message "
                     "'<type>(<area>): <subject>' (Conventional Commits: feat|fix|docs|test|refactor|chore, no feature id) "
@@ -291,6 +303,13 @@ def tool_request_approval(a):
     return "approval #%s pending; end your turn, the Master will answer in the Inbox" % res["id"]
 
 
+def tool_propose_branch(a):
+    res = http("POST", "/internal/branches", {"feature": _feat(a), "mode": str(a.get("mode") or "new"),
+                                              "branch": a.get("branch"), "base": a.get("base"),
+                                              "shared_from": a.get("shared_from"), "why": str(a.get("why") or "")})
+    return "Branch card #%s pending; end your turn, the Master will answer in the Inbox" % res["id"]
+
+
 def tool_request_commit(a):
     res = http("POST", "/internal/commits", {"feature": _feat(a), "files": [str(f) for f in (a.get("files") or [])],
                                              "message": str(a.get("message") or ""),
@@ -362,7 +381,8 @@ HANDLERS = {"post_message": tool_post_message, "get_messages": tool_get_messages
             "list_conversations": tool_list_conversations, "permission": tool_permission,
             "list_features": tool_list_features, "get_feature": tool_get_feature,
             "create_feature": tool_create_feature, "set_feature": tool_set_feature,
-            "request_approval": tool_request_approval, "ask_master": tool_ask_master,
+            "request_approval": tool_request_approval, "propose_branch": tool_propose_branch,
+            "ask_master": tool_ask_master,
             "withdraw_request": tool_withdraw_request, "start_brainstorm": tool_start_brainstorm,
             "request_commit": tool_request_commit,
             "review_commit": tool_review_commit, "lock_file": tool_lock_file,

@@ -156,6 +156,38 @@ def test_fire_stall_check_and_long_turn(sandbox):
         assert team["qa"]["stuck"] is True and team["backend"]["stuck"] is False
 
 
+def test_fire_branch_card_and_the_gate_that_starts_after_the_seed(sandbox, monkeypatch):
+    """F-39: the seeded features stay ungated (like legacy features), a feature created later is gated, and `branch_card`
+    files a real Branch card through propose_branch. Nothing is seeded for it: no approval, no message, no id moves.
+    The REAL gate start is used (conftest keeps it in the far future): a fresh DB's migration 13 gates from its own
+    creation time, which is before the seed's features, and the seed files a commit request on F-1."""
+    import time
+    monkeypatch.setattr("aiteams.db.branch_gate_start", time.time)
+    mod, work, _ = sandbox
+    app = mod.build_app(8790, work, "demo")
+    auth = {"Authorization": "Bearer sb-token"}
+    with TestClient(app) as c:
+        feats = {x["key"]: x for x in c.get("/api/p/demo/features", headers=auth).json()}
+        assert all(feats[k]["branch"]["state"] == "none" and feats[k]["branch"]["gated"] is False for k in ("F-1", "F-4"))
+        ids = [a["id"] for a in c.get("/api/p/demo/approvals", params={"state": "all"}, headers=auth).json()]
+        assert max(ids) <= 6  # the existing approval numbering is untouched
+        new = c.post("/api/p/demo/features", json={"text": "Later feature", "starter": "product"}, headers=auth).json()
+        assert c.get(f"/api/p/demo/features", headers=auth).json()[0]["branch"]["gated"] is True and new["id"] > 4
+        r = c.post("/qa/fire", json={"kind": "branch_card", "branch": "feat/demo-card", "base": "HEAD", "why": "demo"}, headers=auth)
+        assert r.status_code == 200, r.text
+        r = r.json()
+        assert r["feature"] == "F-1" and r["payload"]["branch"] == "feat/demo-card" and r["payload"]["mode"] == "new"
+        assert r["payload"]["tree"].endswith(os.sep + "f1") and os.sep + "AITeams-worktrees" + os.sep in r["payload"]["tree"]
+        card = next(a for a in c.get("/api/p/demo/inbox", headers=auth).json()["approvals"] if a["id"] == r["approval"])
+        assert card["title"] == "Branch: F-1" and card["payload"]["why"] == "demo"
+        f1 = next(x for x in c.get("/api/p/demo/features", headers=auth).json() if x["key"] == "F-1")
+        assert f1["branch"]["state"] == "pending" and f1["branch"]["gated"] is True  # the amber "branch not confirmed" chip
+        again = c.post("/qa/fire", json={"kind": "branch_card"}, headers=auth)
+        assert again.status_code in (400, 409) or "already waiting" in again.text  # a card is already waiting on F-1
+        o = c.get("/api/p/demo/branches", headers=auth).json()
+        assert o["worktrees"] == [] and isinstance(o["branches"], list) and o["current"]
+
+
 def test_fire_commit_group(sandbox):
     mod, work, _ = sandbox
     app = mod.build_app(8790, work, "demo")
@@ -393,3 +425,45 @@ def test_fire_turn_event_appends_to_the_newest_turn_and_broadcasts(sandbox):
         assert r["turn"] == turn["id"] and r["seq"] == before + 1
         assert frame["event"] == "turn_event" and frame["data"]["turn_id"] == turn["id"] and frame["data"]["data"] == ev
         assert len(c.get(f"/api/p/demo/turns/{turn['id']}/events", headers=auth).json()) == before + 1
+
+
+def test_the_real_seed_boots_on_a_fresh_db_with_the_gate_at_the_dbs_creation_time(sandbox, monkeypatch):
+    """F-39 (#1646): migration 13 starts the gate when the DB is created, before the features seed() creates, and seed()
+    files a commit request on F-1. conftest keeps the gate in the far future, so run the REAL seed with the real start:
+    it must boot, the seed's commit request must exist, and the gate must end at 'now', not at the far future."""
+    import time
+    monkeypatch.setattr("aiteams.db.branch_gate_start", time.time)
+    mod, work, _ = sandbox
+    app = mod.build_app(8790, work, "demo")
+    auth = {"Authorization": "Bearer sb-token"}
+    before = time.time()
+    with TestClient(app) as c:
+        db = c.app.state.app.projects["demo"].db
+        since = db.get_kv("branch_gate_since")
+        assert since is not None and since < before + 60  # the end-of-seed write (= now), not the far future the seed starts with
+        assert any(x["feature_id"] == 1 for x in c.get("/api/p/demo/commits", headers=auth).json())  # the seed's own request on F-1
+        assert all(f["branch"]["gated"] is False for f in c.get("/api/p/demo/features", headers=auth).json())
+        r = c.post("/qa/reset", headers=auth)  # the same seed again, on a re-created repo and DB
+        assert r.status_code == 200, r.text
+        assert any(x["feature_id"] == 1 for x in c.get("/api/p/demo/commits", headers=auth).json())
+
+
+def test_reset_removes_the_worktrees_so_the_same_card_can_be_approved_again(sandbox):
+    """F-39 (#1648): a worktree lives beside the sandbox repo and used to outlive /qa/reset, so approving a `new` branch on
+    the same feature in the next test failed with "already exists and isn't empty"."""
+    mod, work, _ = sandbox
+    app = mod.build_app(8790, work, "demo")
+    auth = {"Authorization": "Bearer sb-token"}
+    trees = work / "repo" / "AITeams-worktrees"
+    with TestClient(app) as c:
+        def approve_new_card():
+            card = c.post("/qa/fire", json={"kind": "branch_card", "base": "HEAD"}, headers=auth)
+            assert card.status_code == 200, card.text
+            r = c.post(f"/api/p/demo/approvals/{card.json()['approval']}/decide", json={"decision": "approve"}, headers=auth)
+            assert r.status_code == 200, r.text
+        approve_new_card()
+        assert (trees / "demo" / "f1").is_dir()  # a real worktree, inside the sandbox's temp dir
+        assert c.post("/qa/reset", headers=auth).status_code == 200
+        assert not trees.exists()  # gone with the repo it belonged to
+        approve_new_card()  # the same feature and the same default branch name, again
+        assert (trees / "demo" / "f1").is_dir()

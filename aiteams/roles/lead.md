@@ -15,6 +15,15 @@ and the daemon refuses your posts, reviews and phase changes there. If a feature
   `request_approval(feature, 'Design: <title>', '.aiteams/features/F-<n>/design.md')` and end your turn. Brief the
   implementers with @mentions only after the approving Decision arrives. A material redesign is a new `Design:`
   request. The daemon refuses commit requests on the feature until its latest `Design:` approval is approved.
+- **Branch card (a feature created after the branch gate shipped; older features keep working in the main folder).**
+  Before any code, send the Master a Branch card with `propose_branch(feature, mode, branch, base, why)`, with the
+  design or just after it, and end your turn. Propose `mode: 'new'` (branch `feat/f<n>-<slug>`, base `origin/main`
+  unless the feature builds on another branch) and say why in `why`; use `'current'` for a one-file change that
+  belongs on the branch the main folder already has, or `'shared'` (`shared_from: 'F-<m>'`) when the feature
+  must build on another feature's worktree. The Master may change the name and base on the card, and a branch that
+  looks shared (main, dev, release...) only gets a warning there. The daemon refuses commit requests until the card
+  is approved; brief the implementers after both the design and the branch are approved. The feature header's
+  `- branch:` line then says where the work lands.
 - Review commit requests you are mentioned in: `git diff HEAD -- <files>`, then test them on a clean tree with
   `.venv/bin/python -B scripts/review_tree.py <id>` (HEAD plus only that request's or group's files; pytest, plus
   e2e when `ui/` files are included). The shared working tree holds other roles' WIP, so a pass there proves

@@ -28,7 +28,7 @@ DEFAULT_TOKEN = "qa-sandbox-token"
 FIRE_KINDS = ("message", "question", "question_message", "blocker", "approval", "commit_request", "committed",
               "commit_failed", "standup", "stopped", "interrupted", "fresh_session", "rate_limit", "rate_clear",
               "reaction", "card", "card_withdraw", "withdraw", "brainstorm", "commit_group", "plugin_missing",
-              "turn_event", "stall_check", "long_turn")
+              "turn_event", "stall_check", "long_turn", "branch_card")
 
 
 def isolate_env(home: Path, token: str) -> None:
@@ -126,6 +126,9 @@ async def seed(st, proj) -> None:
     from aiteams.api.public import post_message
 
     db, repo = proj.db, Path(proj.path)
+    # F-39: on a fresh DB, migration 13 starts the branch gate at the DB's creation time, i.e. before the features seeded
+    # here, and the seed files a commit request on F-1. Keep the gate shut while seeding; it opens at the very end.
+    db.set_kv("branch_gate_since", 4e9)
     f1 = await workflow.new_feature(st, proj, "Export orders to CSV", "build", "lead",
                                     text="Support wants a CSV export of the orders table. Scope it, please.", starter="product")
     conv = f1["conversation_id"]
@@ -212,6 +215,10 @@ async def seed(st, proj) -> None:
                              "https://claude.ai/artifact/demo", "Export orders mock", 2)
     db.add_message(conv, "frontend", "Message", "Updated Export orders mock (v2)\n\nhttps://claude.ai/artifact/demo", [],
                    None, f"artifact:{art['id']}")
+    # F-39: a fresh DB's migration 13 gated every feature seeded after it. Like an upgraded DB, the gate starts now, AFTER
+    # the seeded features: they stay ungated (the seed's commit request on F-1 works, like real legacy features) and a
+    # feature created later is gated. Nothing is added: no approval, message or id moves.
+    db.set_kv("branch_gate_since", time.time())
 
 
 MOCK_EXPORT_HTML = """<!doctype html>
@@ -468,6 +475,14 @@ async def fire(st, proj, body: dict) -> dict:
         feat = db.feature(item["feature_id"]) if item.get("feature_id") else None
         out.update(conversation=item.get("conversation_id") or (feat["conversation_id"] if feat else f"dm-{item['role']}"),
                    item=what, id=item["id"], state=item["state"], note=item["note"])
+    elif kind == "branch_card":
+        # F-39: a Branch card from the feature's Lead (default F-1's, role `lead`), through the real propose_branch path.
+        # {mode: new|current|shared, branch, base, shared_from, why}. Any Branch approval gates the feature (header chip).
+        a = await workflow.propose_branch(st, proj, body.get("role", "lead"), None, body.get("feature", "F-1"),
+                                          body.get("mode", "new"), body.get("branch"), body.get("base"),
+                                          body.get("shared_from"), body.get("why", "Keeps this feature off the main folder."))
+        feat = db.feature(a["feature_id"])
+        out.update(approval=a["id"], feature=feat["key"], conversation=feat["conversation_id"], payload=a["payload"])
     elif kind == "stall_check":
         # F-38: run the idle check for the demo project (it has no turns): one rung of the ladder per fire
         from aiteams import stalls
@@ -560,6 +575,9 @@ def build_app(port: int, workdir: Path, seed_kind: str):
             old.db.close()
         if repo.exists():
             shutil.rmtree(repo)
+        # F-39: an approved Branch card's worktree lives beside the repo (<workdir>/repo/AITeams-worktrees/demo/f<n>), so it
+        # would outlive the repo and make the next approval of a `new` branch on that feature fail ("already exists")
+        shutil.rmtree(repo.parent / "AITeams-worktrees", ignore_errors=True)
         make_repo(repo)
         config.save_projects([{"id": DEMO_ID, "path": os.path.realpath(repo), "name": "demo", "registered_at": time.time()}])
         target = st or AppState(port)

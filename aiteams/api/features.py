@@ -1,12 +1,13 @@
 """Public routes for features, docs, approvals, commits, locks and the Inbox (prefix /api)."""
 from __future__ import annotations
 
+import asyncio
 import os
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
-from .. import workflow
+from .. import branches, workflow
 from ..models import (ApprovalDecideBody, BrainstormBody, CommitDecideBody, FeatureFreshStartBody, FeaturePatchBody,
                       NewTaskBody, ResolveBody)
 from .public import _project, _state
@@ -109,7 +110,22 @@ def approvals(request: Request, pid: str, state: str = "pending", feature: int |
 @feat_api.post("/p/{pid}/approvals/{aid}/decide")
 async def decide_approval(request: Request, pid: str, aid: int, body: ApprovalDecideBody):
     proj = _project(request, pid)
-    return await workflow.decide_approval(_state(request), proj, aid, body.decision, body.note, body.set_phase)
+    return await workflow.decide_approval(_state(request), proj, aid, body.decision, body.note, body.set_phase, body.payload)
+
+
+@feat_api.get("/p/{pid}/branches")
+async def branch_options(request: Request, pid: str):
+    """F-39: what a Branch card offers: the current branch, local and remote branches (newest first), a default base,
+    and the other features' live worktrees."""
+    return await asyncio.to_thread(branches.overview, _project(request, pid))
+
+
+@feat_api.get("/p/{pid}/branches/check")
+async def branch_check(request: Request, pid: str, mode: str = "new", branch: str | None = None, base: str | None = None,
+                       shared_from: str | None = None):
+    """{warnings, errors} for the choice being edited on the card (no fetch: it is called on every edit)."""
+    proj = _project(request, pid)
+    return await asyncio.to_thread(branches.check, proj.path, proj.db, mode, branch, base, shared_from)
 
 
 @feat_api.get("/p/{pid}/commits")
