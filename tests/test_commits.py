@@ -1,9 +1,12 @@
 """Commit requests: Lead review, Master approve (real git), stale/force, lead-direct, reject, lock conflicts."""
+import os
+import re
 import subprocess
 
 import pytest
 from fastapi.testclient import TestClient
 
+from aiteams import workflow
 from aiteams.daemon import create_app
 from tests.conftest import AUTH, running_turn
 
@@ -328,3 +331,237 @@ def test_gitignored_path_is_rejected(client, pid, repo):
         r = client.post("/internal/commits", json={"files": ["ok.py", path], "message": "m"}, headers=lead)
         assert r.status_code == 400 and r.json()["detail"] == f"{path} is gitignored (build output is not committed)"
     assert client.post("/internal/commits", json={"files": ["ok.py", ".gitignore"], "message": "m"}, headers=lead).status_code == 200
+
+
+# ---- F-36: commit requests may list files in other git repos -------------------------------------------------------
+FAIL_HOOK = "#!/bin/sh\necho hook says no >&2\nexit 1\n"
+
+
+def sibling(tmp_path, name="data-prep", files=None, hook=None, commit=True):
+    """A second git repo next to the project (the real case: ~/Intellij/data-prep beside the AITeams project)."""
+    r = tmp_path / name
+    r.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=r, check=True)
+    subprocess.run(["git", "config", "user.name", "Other Test"], cwd=r, check=True)
+    subprocess.run(["git", "config", "user.email", "o@t"], cwd=r, check=True)
+    for n, t in (files if files is not None else {"etl.py": "v1\n"}).items():
+        (r / n).write_text(t)
+    if commit:
+        subprocess.run(["git", "add", "-A"], cwd=r, check=True)
+        subprocess.run(["git", "commit", "-qm", "init"], cwd=r, check=True)
+    if hook:
+        (r / ".git" / "hooks" / "pre-commit").write_text(hook)
+        (r / ".git" / "hooks" / "pre-commit").chmod(0o755)
+    return r
+
+
+def ask(client, pid, role, files, message="feat: x\n\nbody", requires=()):
+    return client.post("/internal/commits", json={"files": [str(f) for f in files], "message": message,
+                                                  "requires": list(requires)}, headers=turn(client, pid, role))
+
+
+def approve(client, pid, cid, **body):
+    return client.post(f"/api/p/{pid}/commits/{cid}/decide", json={"decision": "approve", **body})
+
+
+def status(repo):
+    return git(repo, "status", "--porcelain")
+
+
+def test_one_request_two_repos_makes_one_commit_per_repo(client, pid, repo, tmp_path):
+    proj = client.app.state.app.projects[pid]
+    sib = sibling(tmp_path)
+    (repo / "api.py").write_text("api\n")
+    (sib / "etl.py").write_text("v2\n")
+    r = ask(client, pid, "backend", ["api.py", sib / "etl.py"])
+    assert r.status_code == 200, r.text
+    cid = r.json()["id"]
+    real = os.path.realpath(sib / "etl.py")
+    assert r.json()["files"] == ["api.py", real]  # project file relative, outside file its absolute realpath
+    card = proj.db.message(proj.db.commit(cid)["message_id"])["text"]
+    assert f"- {real}" in card
+    assert f"`git diff HEAD -- api.py` and `git -C {os.path.realpath(sib)} diff HEAD -- etl.py`" in card  # one hint per repo
+    client.post(f"/internal/commits/{cid}/review", json={"decision": "approve"}, headers=turn(client, pid, "lead"))
+    r = approve(client, pid, cid)
+    assert r.status_code == 200 and r.json()["state"] == "committed", r.text
+    sha = proj.db.commit(cid)["sha"]
+    assert re.fullmatch(r"[0-9a-f]{7,} data-prep@[0-9a-f]{7,}", sha), sha
+    project_sha, other = sha.split(" ")
+    assert project_sha == git(repo, "rev-parse", "--short", "HEAD")
+    assert other == "data-prep@" + git(sib, "rev-parse", "--short", "HEAD")
+    assert git(repo, "log", "-1", "--format=%s") == git(sib, "log", "-1", "--format=%s") == "feat: x"
+    assert git(sib, "log", "-1", "--format=%an") == "Other Test" and git(sib, "show", "--stat", "--format=", "HEAD").count("etl.py") == 1
+    assert git(repo, "show", "--stat", "--format=", "HEAD").count("api.py") == 1
+    assert status(repo) == "" and status(sib) == ""  # both working trees are clean
+    assert (sib / "etl.py").read_text() == "v2\n"
+    msg = proj.db.messages("dm-backend")[-1]
+    assert msg["text"] == f"@lead Committed `{sha}`: feat: x" and msg["mentions"] == ["lead"]
+
+
+def test_a_request_with_only_outside_files_commits_only_those_repos_and_the_sha_starts_with_a_name(client, pid, repo, tmp_path):
+    proj = client.app.state.app.projects[pid]
+    sib = sibling(tmp_path, "zeta", {"a.py": "1\n"})
+    other = sibling(tmp_path, "alpha", {"b.py": "1\n"})
+    (sib / "a.py").write_text("2\n")
+    (other / "b.py").write_text("2\n")
+    head = git(repo, "rev-parse", "HEAD")
+    r = ask(client, pid, "lead", [sib / "a.py", other / "b.py"])  # a Lead's own request: straight to the Master
+    assert r.status_code == 200 and r.json()["state"] == "master_review"
+    assert approve(client, pid, r.json()["id"]).json()["state"] == "committed"
+    sha = proj.db.commit(r.json()["id"])["sha"]
+    assert re.fullmatch(r"alpha@[0-9a-f]{7,} zeta@[0-9a-f]{7,}", sha), sha  # no project file; the others sorted by path
+    assert git(repo, "rev-parse", "HEAD") == head  # nothing committed in the project
+    assert status(sib) == "" and status(other) == ""
+
+
+def test_a_failing_second_repo_rolls_back_the_first_and_changes_no_working_tree(client, pid, repo, tmp_path):
+    proj = client.app.state.app.projects[pid]
+    sib = sibling(tmp_path, hook=FAIL_HOOK)
+    (repo / "api.py").write_text("api\n")
+    (sib / "etl.py").write_text("v2\n")
+    head, sib_head = git(repo, "rev-parse", "HEAD"), git(sib, "rev-parse", "HEAD")
+    cid = ask(client, pid, "lead", ["api.py", sib / "etl.py"]).json()["id"]
+    r = approve(client, pid, cid)
+    assert r.status_code == 200 and r.json()["state"] == "failed" and "hook says no" in r.json()["note"], r.text
+    assert git(repo, "rev-parse", "HEAD") == head and git(sib, "rev-parse", "HEAD") == sib_head
+    assert status(repo) == "?? api.py" and status(sib) == "M etl.py"  # index back where it started in both
+    assert git(repo, "diff", "--cached", "--name-only") == "" and git(sib, "diff", "--cached", "--name-only") == ""
+    assert (repo / "api.py").read_text() == "api\n" and (sib / "etl.py").read_text() == "v2\n"
+    assert "failed" in proj.db.messages("dm-lead")[-1]["text"]
+    assert not (repo / ".git" / "index.lock").exists() and not (sib / ".git" / "index.lock").exists()
+
+
+def test_a_repo_with_no_commits_yet_is_rolled_back_too(client, pid, repo, tmp_path):
+    first = sibling(tmp_path, "a-first", {"one.py": "1\n"}, commit=False)  # unborn: its first commit would be ours
+    bad = sibling(tmp_path, "b-second", {"two.py": "1\n"}, hook=FAIL_HOOK, commit=False)
+    (repo / "api.py").write_text("api\n")
+    head = git(repo, "rev-parse", "HEAD")
+    cid = ask(client, pid, "lead", ["api.py", first / "one.py", bad / "two.py"]).json()["id"]
+    r = approve(client, pid, cid)
+    assert r.json()["state"] == "failed" and "hook says no" in r.json()["note"]
+    assert git(repo, "rev-parse", "HEAD") == head
+    unborn = subprocess.run(["git", "rev-parse", "--verify", "-q", "HEAD"], cwd=first, capture_output=True)
+    assert unborn.returncode != 0  # a-first has no commit again
+    assert status(first) == "?? one.py" and status(bad) == "?? two.py" and status(repo) == "?? api.py"
+    # the same request lands once the hook stops failing: a first commit in an unborn repo works
+    (bad / ".git" / "hooks" / "pre-commit").unlink()
+    cid = ask(client, pid, "lead", ["api.py", first / "one.py", bad / "two.py"]).json()["id"]
+    assert approve(client, pid, cid).json()["state"] == "committed"
+    assert git(first, "log", "--format=%s") == "feat: x" and git(bad, "log", "--format=%s") == "feat: x"
+
+
+def test_a_group_whose_second_member_fails_in_another_repo_rolls_back_the_first_member_everywhere(client, pid, repo, tmp_path):
+    proj = client.app.state.app.projects[pid]
+    hook = "#!/bin/sh\nif git diff --cached --name-only | grep -q '^s2.py$'; then echo second says no >&2; exit 1; fi\n"
+    sib = sibling(tmp_path, hook=hook)
+    for n in ("a.py", "b.py"):
+        (repo / n).write_text(n + "\n")
+    for n in ("s1.py", "s2.py"):
+        (sib / n).write_text(n + "\n")
+    base = ask(client, pid, "lead", ["a.py", sib / "s1.py"], "feat: one").json()
+    dep = ask(client, pid, "lead", ["b.py", sib / "s2.py"], "feat: two", [base["id"]]).json()
+    head, sib_head = git(repo, "rev-parse", "HEAD"), git(sib, "rev-parse", "HEAD")
+    r = approve(client, pid, dep["id"], group=True)
+    assert r.status_code == 200, r.text
+    assert [proj.db.commit(x["id"])["state"] for x in (base, dep)] == ["master_review", "failed"]
+    assert "second says no" in proj.db.commit(dep["id"])["note"]
+    assert git(repo, "rev-parse", "HEAD") == head and git(sib, "rev-parse", "HEAD") == sib_head  # the first member is undone too
+    assert status(repo) == "?? a.py\n?? b.py" and status(sib) == "?? s1.py\n?? s2.py"
+    # with the hook gone the whole group lands: two commits in each repo, the project's sha first
+    (sib / ".git" / "hooks" / "pre-commit").unlink()
+    proj.db.update_commit(dep["id"], state="master_review")
+    r = approve(client, pid, dep["id"], group=True)
+    assert [x["state"] for x in r.json()["group"]] == ["committed", "committed"], r.text
+    assert git(repo, "log", "-2", "--format=%s").splitlines() == ["feat: two", "feat: one"]
+    assert git(sib, "log", "-2", "--format=%s").splitlines() == ["feat: two", "feat: one"]
+    assert all(re.fullmatch(r"[0-9a-f]{7,} data-prep@[0-9a-f]{7,}", proj.db.commit(x["id"])["sha"]) for x in (base, dep))
+
+
+def test_outside_refusals_name_the_reason(client, pid, repo, tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / "x.py").write_text("x\n")
+    sib = sibling(tmp_path, files={"etl.py": "v1\n", ".gitignore": "*.log\n"})
+    (sib / "debug.log").write_text("x\n")
+    (repo / "ok.py").write_text("x\n")
+    cases = [
+        (plain / "x.py", "is not inside a git repo; only files in a git repo can be committed"),
+        (plain, "is not inside a git repo"),
+        (sib / ".git" / "config", "is inside a .git directory and cannot be committed"),
+        (sib, "is a directory; list files one by one"),
+        (sib / "nope.py", "does not exist and is not tracked"),
+        (sib / "debug.log", "is gitignored (build output is not committed)"),
+        (plain / "missing" / "y.py", "is not inside a git repo"),
+    ]
+    for path, why in cases:
+        r = ask(client, pid, "lead", ["ok.py", path])
+        assert r.status_code == 400 and why in r.json()["detail"], (path, r.text)
+    assert ask(client, pid, "lead", ["ok.py", sib / ".gitignore"]).status_code == 200  # a file in a repo is fine
+    assert len(client.app.state.app.projects[pid].db.commits("all")) == 1  # the refusals filed nothing
+
+
+def test_a_file_deleted_in_another_repo_can_be_requested_and_committed(client, pid, repo, tmp_path):
+    sib = sibling(tmp_path, files={"old.py": "x\n", "keep.py": "y\n"})
+    (sib / "old.py").unlink()
+    cid = ask(client, pid, "lead", [sib / "old.py"]).json()["id"]
+    assert approve(client, pid, cid).json()["state"] == "committed"
+    assert git(sib, "ls-files") == "keep.py" and status(sib) == ""
+
+
+def test_diff_and_stale_work_on_an_outside_file_in_its_own_repo(client, pid, repo, tmp_path):
+    sib = sibling(tmp_path)
+    (sib / "etl.py").write_text("v1\nv2\n")
+    (sib / "new.py").write_text("n\n")
+    (repo / "api.py").write_text("api\n")
+    cid = ask(client, pid, "lead", ["api.py", sib / "etl.py", sib / "new.py"]).json()["id"]
+    d = client.get(f"/api/p/{pid}/commits/{cid}/diff").json()
+    files = {f["path"]: f for f in d["files"]}
+    etl, new = files[os.path.realpath(sib / "etl.py")], files[os.path.realpath(sib / "new.py")]
+    assert (etl["status"], etl["additions"], etl["deletions"]) == ("modified", 1, 0) and "+++ b/etl.py" in etl["text"]
+    assert (new["status"], new["additions"]) == ("added", 1) and "+++ b/new.py" in new["text"]  # untracked: against nothing
+    assert files["api.py"]["status"] == "added" and d["stale"] == [] and d["totals"]["files"] == 3
+    (sib / "etl.py").write_text("changed after the request\n")  # stale detection on the outside file
+    assert client.get(f"/api/p/{pid}/commits/{cid}/diff").json()["stale"] == [os.path.realpath(sib / "etl.py")]
+    r = approve(client, pid, cid)
+    assert r.status_code == 409 and r.json()["detail"] == {"stale": [os.path.realpath(sib / "etl.py")]}
+    assert git(sib, "log", "--format=%s") == "init"  # nothing was committed anywhere
+    assert approve(client, pid, cid, force=True).json()["state"] == "committed"
+    assert git(sib, "show", "HEAD:etl.py") == "changed after the request"
+
+
+def test_outside_files_have_no_locks_and_an_absolute_project_path_stays_relative(client, pid, repo, tmp_path):
+    proj = client.app.state.app.projects[pid]
+    sib = sibling(tmp_path)
+    (sib / "etl.py").write_text("v2\n")
+    (repo / "api.py").write_text("api\n")
+    real = os.path.realpath(sib / "etl.py")
+    proj.db.x("INSERT INTO locks(path, role, turn_id, created_at) VALUES(?,?,?,?)", real, "frontend", None, 1.0)
+    r = ask(client, pid, "backend", [repo / "api.py", sib / "etl.py"])  # frontend "holds" the outside path: nobody checks
+    assert r.status_code == 200 and r.json()["files"] == ["api.py", real], r.text
+
+
+def test_a_second_repo_that_is_the_projects_own_repo_merges_into_one_commit(client, pid, repo, tmp_path):
+    """A project that is a subdirectory of a repo: a file elsewhere in that repo is the same repo, so one commit."""
+    sub = repo / "sub"
+    sub.mkdir()
+    (sub / "in.py").write_text("in\n")
+    (repo / "top.py").write_text("top\n")
+    groups = workflow._repo_groups(str(sub), ["in.py", str(repo / "top.py")])
+    assert groups == [(os.path.realpath(repo), ["sub/in.py", "top.py"])]
+    ok, sha = workflow._commit_sync(str(sub), ["in.py", str(repo / "top.py")], "feat: both")
+    assert ok and re.fullmatch(r"[0-9a-f]{7,}", sha), sha  # the project's repo: a bare sha, one commit
+    assert git(repo, "show", "--stat", "--format=%s", "HEAD").count(".py") == 2
+
+
+def test_where_and_repo_groups_put_the_project_first_and_sort_the_rest(client, pid, repo, tmp_path):
+    z, a = sibling(tmp_path, "zzz", {"f.py": "1\n"}), sibling(tmp_path, "aaa", {"g.py": "1\n"})
+    (repo / "p.py").write_text("p\n")
+    root = os.path.realpath(repo)
+    assert workflow._where(str(repo), "p.py") == (str(repo), "p.py")
+    assert workflow._where(str(repo), os.path.realpath(z / "f.py")) == (os.path.realpath(z), "f.py")
+    assert workflow._repo_top(str(tmp_path / "nowhere" / "deep")) is None
+    assert workflow._repo_top(str(a / "not-yet" / "dir")) == os.path.realpath(a)  # a deleted file's directory
+    files = [os.path.realpath(z / "f.py"), "p.py", os.path.realpath(a / "g.py"), "p.py"]
+    assert workflow._repo_groups(str(repo), files) == [(root, ["p.py"]), (os.path.realpath(a), ["g.py"]),
+                                                       (os.path.realpath(z), ["f.py"])]
+    assert workflow._repo_groups(str(repo), [os.path.realpath(z / "f.py")]) == [(os.path.realpath(z), ["f.py"])]

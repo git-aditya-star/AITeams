@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""AITeams PreToolUse hook (stdlib only): deny commits/pushes, writes outside the project, daemon tampering."""
+"""AITeams PreToolUse hook (stdlib only): deny commits/pushes, daemon tampering and other roles' locks.
+
+F-36: roles work like a terminal user outside the project. A write, `rm -rf` or read of any path outside the project root
+is allowed with no lock and no check, and so is every read inside it (no Read/Grep/Glob hook at all). What stays:
+the git guard (it matches the command, so it holds in any repo), the daemon guards, the Skill and Artifact gates, and
+inside the project the .aiteams/ rule, the project-notes rules and the file locks."""
 import json
 import os
 import re
@@ -14,12 +19,10 @@ HOME_AITEAMS = os.environ.get("AITEAMS_HOME") or os.path.join(os.path.expanduser
 LOG_MAX = 200
 
 GIT_RE = re.compile(r"\bgit\b[^|;&\n]*\b(commit|push|reset\s+--hard|clean\s+-f\w*)\b")
-RM_RE = re.compile(r"\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*)\s+(\S+)")
 KILL_RE = re.compile(r"\b(kill|pkill)\b")
 # Command position only, so `grep "aiteams upgrade" README.md` still works.
 ADMIN_RE = re.compile(r"(^|[;&|(]\s*|\$\(\s*)(aiteams\s+(upgrade|stop|serve|token)|uv\s+tool)\b", re.M)
 DAEMON_URL_RE = re.compile(r"\$\{?AITEAMS_DAEMON_URL")
-RUNTIME_RE = re.compile(r"(~|\$\{?HOME\}?|/Users/[^/\s]+|/home/[^/\s]+)/\.aiteams/(token|runtime)\b")
 
 
 def log_input(raw):
@@ -67,17 +70,6 @@ def inside_project(path):
 def check_bash(cmd):
     if GIT_RE.search(cmd):
         deny("git commit/push/reset --hard/clean are not allowed for roles; the Master commits.")
-    for m in RM_RE.finditer(cmd):
-        target = os.path.expanduser(m.group(2).strip("'\""))
-        if not os.path.isabs(target):
-            target = os.path.join(os.getcwd(), target)
-        if not inside_project(target):
-            deny("rm -rf outside the project (%s) is not allowed." % m.group(2))
-    low = cmd.replace("$HOME", "~")
-    if re.search(r"(~|/Users/[^/\s]+|/home/[^/\s]+)/\.claude\b", low):
-        deny("touching ~/.claude is not allowed.")
-    if "state.db" in cmd:
-        deny("the AITeams state database is off limits.")
     pid, port = daemon_info()
     if pid and KILL_RE.search(cmd) and (re.search(r"\b%d\b" % pid, cmd) or "aiteams" in cmd):
         deny("killing the AITeams daemon is not allowed.")
@@ -86,8 +78,6 @@ def check_bash(cmd):
     port = daemon_port(port)
     if re.search(r"(127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1\]):%d\b" % port, cmd) or DAEMON_URL_RE.search(cmd):
         deny("roles talk to AITeams through its MCP tools, not HTTP.")
-    if RUNTIME_RE.search(cmd):
-        deny("the AITeams runtime and token are off limits.")
 
 
 NOTES = ".project-notes"
@@ -120,7 +110,7 @@ def check_write(data, inp):
     full = p if os.path.isabs(p) else os.path.join(data.get("cwd") or os.getcwd(), p)
     rp = os.path.realpath(full)
     if not inside_project(rp):
-        deny("path %s is outside the project %s." % (p, PROJECT))
+        return  # F-36: outside the project there is no rule and no lock (locks cover project files only)
     rel = os.path.relpath(rp, PROJECT)
     if rel == ".aiteams" or rel.startswith(".aiteams" + os.sep):
         if not (rel.startswith(os.path.join(".aiteams", "roles") + os.sep)
@@ -227,18 +217,6 @@ def check_artifact(inp):
         deny(reason if isinstance(reason, str) and reason else ARTIFACT_DENIED)
 
 
-def check_read(inp):
-    """Read/Grep/Glob: the token and runtime files are off limits (Bash has the same rule)."""
-    for key in ("file_path", "path", "pattern"):
-        v = inp.get(key)
-        if not isinstance(v, str) or not v:
-            continue
-        rp = os.path.realpath(os.path.expanduser(v))
-        base = os.path.realpath(HOME_AITEAMS)
-        if rp == os.path.join(base, "token") or rp.startswith(os.path.join(base, "runtime")) or RUNTIME_RE.search(v):
-            deny("the AITeams runtime and token are off limits.")
-
-
 def main():
     raw = sys.stdin.read()
     try:
@@ -254,8 +232,6 @@ def main():
         check_bash(str(inp.get("command") or ""))
     elif tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
         check_write(data, inp)
-    elif tool in ("Read", "Grep", "Glob"):
-        check_read(inp)
     elif tool == "Skill":
         check_skill(inp)
     elif tool == "Artifact":

@@ -34,16 +34,18 @@ def test_bash_git_denied(repo, home, cmd):
     assert denied(run_hook(repo, home, "Bash", {"command": cmd}))
 
 
-def test_bash_rm_rf_outside_denied_inside_allowed(repo, home, tmp_path):
-    assert denied(run_hook(repo, home, "Bash", {"command": "rm -rf %s" % (tmp_path / "elsewhere")}))
-    assert denied(run_hook(repo, home, "Bash", {"command": "rm -fr ~/Documents"}))
+def test_bash_rm_rf_is_allowed_anywhere(repo, home, tmp_path):
+    """F-36: no path rules in Bash: rm -rf works inside and outside the project like in a terminal."""
+    assert run_hook(repo, home, "Bash", {"command": "rm -rf %s" % (tmp_path / "elsewhere")}) is None
+    assert run_hook(repo, home, "Bash", {"command": "rm -fr ~/Documents"}) is None
     assert run_hook(repo, home, "Bash", {"command": "rm -rf build/"}) is None
 
 
-def test_bash_claude_dir_and_state_db_denied(repo, home):
-    assert denied(run_hook(repo, home, "Bash", {"command": "cat ~/.claude/settings.json"}))
-    assert denied(run_hook(repo, home, "Bash", {"command": "ls $HOME/.claude"}))
-    assert denied(run_hook(repo, home, "Bash", {"command": "sqlite3 .aiteams/state.db .tables"}))
+def test_bash_claude_dir_and_state_db_are_allowed(repo, home):
+    """F-36 (the Master's "allow everything"): nothing in Bash names a protected path any more."""
+    for cmd in ("cat ~/.claude/settings.json", "ls $HOME/.claude", "sqlite3 .aiteams/state.db .tables",
+                "echo x >> ~/.claude/CLAUDE.md"):
+        assert run_hook(repo, home, "Bash", {"command": cmd}) is None, cmd
 
 
 def test_bash_kill_daemon_denied(repo, home):
@@ -60,9 +62,11 @@ def test_bash_normal_allowed_and_logged(repo, home):
 
 
 @pytest.mark.parametrize("tool", ["Edit", "Write", "MultiEdit"])
-def test_write_outside_project_denied(repo, home, tmp_path, tool):
-    assert denied(run_hook(repo, home, tool, {"file_path": str(tmp_path / "other.txt")}))
-    assert denied(run_hook(repo, home, tool, {"file_path": "../escape.txt"}))
+def test_write_outside_project_is_allowed(repo, home, tmp_path, tool):
+    """F-36: a write outside the project root has no rule (the lock test below checks it asks nobody for a lock)."""
+    assert run_hook(repo, home, tool, {"file_path": str(tmp_path / "other.txt")}) is None
+    assert run_hook(repo, home, tool, {"file_path": "../escape.txt"}) is None
+    assert run_hook(repo, home, tool, {"file_path": str(home / "settings.json")}) is None
 
 
 def test_write_under_aiteams(repo, home):
@@ -73,7 +77,8 @@ def test_write_under_aiteams(repo, home):
 
 
 def test_notebook_edit_and_allowed_write(repo, home):
-    assert denied(run_hook(repo, home, "NotebookEdit", {"notebook_path": "/tmp/x.ipynb"}))
+    assert run_hook(repo, home, "NotebookEdit", {"notebook_path": "/tmp/x.ipynb"}) is None  # F-36: outside, so open
+    assert denied(run_hook(repo, home, "NotebookEdit", {"notebook_path": ".aiteams/state.ipynb"}))  # inside: .aiteams rule
     assert run_hook(repo, home, "Write", {"file_path": "src/app.py"}) is None
     assert run_hook(repo, home, "Write", {"file_path": str(repo / "DB_CHOICE.md")}) is None
 
@@ -148,10 +153,10 @@ def test_lock_allow_and_deny(repo, home, stub):
     _Stub.response = {"ok": False, "holder": "backend", "since": 1_700_000_000}
     res = run_hook_env(repo, home, "Write", {"file_path": "src/app.py"}, env)
     assert denied(res) and "src/app.py is locked by backend since" in res["permissionDecisionReason"]
-    # Bash is not lock-checked; writes outside the project are denied before any HTTP call
+    # Bash is not lock-checked; F-36: a write outside the project is allowed, with no HTTP call and so no lock
     n = len(_Stub.calls)
     assert run_hook_env(repo, home, "Bash", {"command": "sed -i '' s/a/b/ src/app.py"}, env) is None
-    assert denied(run_hook_env(repo, home, "Write", {"file_path": "/tmp/x"}, env))
+    assert run_hook_env(repo, home, "Write", {"file_path": "/tmp/x"}, env) is None
     assert len(_Stub.calls) == n
 
 
@@ -323,10 +328,6 @@ def test_write_under_features_allowed(repo, home):
     ("curl http://localhost:7700/api/projects", "MCP tools, not HTTP"),
     ('curl "$AITEAMS_DAEMON_URL/api/health"', "MCP tools, not HTTP"),
     ("curl ${AITEAMS_DAEMON_URL}/internal/messages", "MCP tools, not HTTP"),
-    ("cat ~/.aiteams/token", "runtime and token are off limits"),
-    ("cat $HOME/.aiteams/token", "runtime and token are off limits"),
-    ("cat /Users/aditya/.aiteams/runtime.json", "runtime and token are off limits"),
-    ("ls ~/.aiteams/runtime/", "runtime and token are off limits"),
 ])
 def test_bash_m2a_denied(repo, home, cmd, reason):
     (home / "daemon.json").write_text(json.dumps({"pid": 4242, "port": 7700}))
@@ -337,6 +338,8 @@ def test_bash_m2a_denied(repo, home, cmd, reason):
 @pytest.mark.parametrize("cmd", [
     'grep "aiteams upgrade" README.md', "rg 'uv tool' docs/", "curl https://example.com", "cat ~/.aiteams/settings.json",
     "grep -r AITEAMS_DAEMON README.md", "ls .aiteams/features",
+    # F-36 (card #44, "allow, like a terminal"): reading the token and the runtime is open
+    "cat ~/.aiteams/token", "cat $HOME/.aiteams/token", "cat /Users/aditya/.aiteams/runtime.json", "ls ~/.aiteams/runtime/",
 ])
 def test_bash_m2a_allowed(repo, home, cmd):
     (home / "daemon.json").write_text(json.dumps({"pid": 4242, "port": 7700}))
@@ -356,20 +359,83 @@ def test_bash_port_from_daemon_json_or_default(repo, home):
     ("Read", {"file_path": "$HOME/.aiteams/runtime.json"}),
     ("Grep", {"pattern": "sha", "path": "~/.aiteams/runtime"}),
     ("Glob", {"pattern": "~/.aiteams/runtime/**/*.py"}),
+    ("Read", {"file_path": "/etc/hosts"}),
+    ("Read", {"file_path": "README.md"}),
 ])
-def test_read_tools_cannot_see_token_or_runtime(repo, home, tool, inp):
-    # the hook resolves ~ against AITEAMS_HOME's real location too
-    if "~/" in json.dumps(inp) or "$HOME" in json.dumps(inp):
-        inp = {k: v.replace("~/.aiteams", str(home)).replace("$HOME/.aiteams", str(home)) for k, v in inp.items()}
-    res = run_hook(repo, home, tool, inp)
-    assert denied(res) and "runtime and token are off limits" in res["permissionDecisionReason"], (tool, inp)
+def test_read_tools_are_open_even_for_the_token_and_runtime(repo, home, tool, inp):
+    """F-36 (card #44): the hook has no Read/Grep/Glob rule any more, so the token and the runtime read like any file."""
+    inp = {k: v.replace("~/.aiteams", str(home)).replace("$HOME/.aiteams", str(home)) for k, v in inp.items()}
+    assert run_hook(repo, home, tool, inp) is None, (tool, inp)
 
 
-def test_read_tools_normal_paths_allowed(repo, home):
-    assert run_hook(repo, home, "Read", {"file_path": str(repo / "README.md")}) is None
-    assert run_hook(repo, home, "Read", {"file_path": str(home / "settings.json")}) is None
-    assert run_hook(repo, home, "Grep", {"pattern": "aiteams upgrade", "path": str(repo)}) is None
-    assert run_hook(repo, home, "Glob", {"pattern": "**/*.md"}) is None
+def test_the_hook_is_not_even_spawned_for_reads_and_has_no_path_rules_left():
+    import importlib.util
+    from aiteams.orchestrator.claude_proc import HOOK_TOOLS
+    assert set(HOOK_TOOLS.split("|")) == {"Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "Skill", "Artifact"}
+    spec = importlib.util.spec_from_file_location("pretooluse_under_test", HOOK)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert not hasattr(mod, "check_read") and not hasattr(mod, "RUNTIME_RE") and not hasattr(mod, "RM_RE")
+
+
+# ---- F-36: outside the project there are no locks and no rules; every guard that is not a path rule stays -----------------
+def test_a_write_outside_the_project_asks_no_lock_but_inside_still_does(repo, home, stub, tmp_path):
+    env = {"AITEAMS_DAEMON_URL": stub, "AITEAMS_PROJECT": "p1", "AITEAMS_TURN": "7", "AITEAMS_TURN_TOKEN": "tok"}
+    _Stub.calls.clear()
+    outside = tmp_path / "sibling" / "data.py"
+    for tool in ("Edit", "Write", "MultiEdit"):
+        assert run_hook_env(repo, home, tool, {"file_path": str(outside)}, env) is None
+    assert run_hook_env(repo, home, "NotebookEdit", {"notebook_path": str(tmp_path / "n.ipynb")}, env) is None
+    assert run_hook_env(repo, home, "Write", {"file_path": "../relative-escape.txt"}, env) is None
+    assert _Stub.calls == []  # not one call to /internal/locks/acquire
+    assert run_hook_env(repo, home, "Write", {"file_path": "src/app.py"}, env) is None
+    assert [c[0] for c in _Stub.calls] == ["/internal/locks/acquire"] and _Stub.calls[0][2] == {"path": "src/app.py"}
+    _Stub.response = {"ok": False, "holder": "frontend", "since": 1}
+    try:
+        assert denied(run_hook_env(repo, home, "Write", {"file_path": "src/other.py"}, env))  # a held lock still denies
+        assert run_hook_env(repo, home, "Write", {"file_path": str(outside)}, env) is None  # but not outside
+    finally:
+        _Stub.response = {"ok": True}
+
+
+def test_a_symlink_inside_the_project_that_points_outside_is_outside(repo, home, tmp_path):
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    (repo / "link").symlink_to(target)
+    assert run_hook(repo, home, "Write", {"file_path": "link/x.txt"}) is None
+    # and a path that leaves the project and comes back is inside again, with the .aiteams rule
+    assert denied(run_hook(repo, home, "Write", {"file_path": "../%s/.aiteams/state.db" % repo.name}))
+
+
+def test_the_project_rules_still_hold_with_outside_open(repo, home):
+    assert denied(run_hook(repo, home, "Write", {"file_path": ".aiteams/state.db"}))
+    assert denied(run_hook(repo, home, "Write", {"file_path": ".aiteams/prompts/x.md"}))
+    assert denied(run_hook(repo, home, "Write", {"file_path": ".project-notes/INDEX.md"}))
+    assert denied(run_hook(repo, home, "Write", {"file_path": ".project-notes/.metrics/events.jsonl"}))
+    assert run_hook(repo, home, "Write", {"file_path": ".project-notes/topic.md"}) is None
+    assert run_hook(repo, home, "Write", {"file_path": ".aiteams/roles/qa.md"}) is None
+
+
+@pytest.mark.parametrize("cmd", [
+    "git -C /other/repo commit -m x", "git -C ../data-prep push origin main", "cd /tmp/other && git commit -am y",
+    "git --git-dir=/other/.git commit -m x", "git -C /other/repo reset --hard HEAD~1", "git -C /other/repo clean -fd",
+    "git -C /other/repo push", "cd ~/Intellij/data-prep && git push",
+])
+def test_git_guard_holds_in_every_repo(repo, home, cmd):
+    res = run_hook(repo, home, "Bash", {"command": cmd})
+    assert denied(res) and "the Master commits" in res["permissionDecisionReason"], cmd
+
+
+@pytest.mark.parametrize("cmd", ["git -C /other/repo status", "git -C /other/repo diff HEAD -- a.py", "git -C ../x log --oneline"])
+def test_read_only_git_in_another_repo_is_allowed(repo, home, cmd):
+    assert run_hook(repo, home, "Bash", {"command": cmd}) is None
+
+
+def test_the_daemon_guards_stay(repo, home):
+    (home / "daemon.json").write_text(json.dumps({"pid": 4242, "port": 7700}))
+    for cmd in ("kill 4242", "pkill -f aiteams", "aiteams token", "aiteams upgrade", "aiteams stop", "aiteams serve",
+                "uv tool install x", "curl 127.0.0.1:7700/api/health", 'curl "$AITEAMS_DAEMON_URL/internal/x"'):
+        assert denied(run_hook(repo, home, "Bash", {"command": cmd})), cmd
 
 
 # ---- F-29 Part B: the Artifact tool is gated ----------------------------------------------------------------------

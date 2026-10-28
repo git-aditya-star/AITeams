@@ -778,7 +778,12 @@ def normalize_path(project_path: str, p: str) -> str:
     rp = os.path.realpath(full)
     root = os.path.realpath(project_path)
     if not (rp == root or rp.startswith(root + os.sep)):
-        raise HTTPException(400, f"{p} is outside the project")
+        # F-36: a file outside the project is committed in its own repo, so it is stored as its absolute realpath
+        if ".git" in rp.split(os.sep):
+            raise HTTPException(400, f"{p} is inside a .git directory and cannot be committed")
+        if _repo_top(rp if os.path.isdir(rp) else os.path.dirname(rp)) is None:
+            raise HTTPException(400, f"{p} is not inside a git repo; only files in a git repo can be committed")
+        return rp
     rel = os.path.relpath(rp, root)
     if rel == ".aiteams" or rel.startswith(".aiteams" + os.sep):
         raise HTTPException(400, f"{p} is under .aiteams/ and cannot be committed")
@@ -789,6 +794,32 @@ def _git(project_path: str, *args, check: bool = False) -> subprocess.CompletedP
     # errors="replace": a diff of a non-UTF-8 file must not crash the endpoint
     return subprocess.run(["git", *args], cwd=project_path, capture_output=True, text=True, encoding="utf-8",
                           errors="replace", timeout=60, check=check)
+
+
+def _repo_top(directory: str) -> str | None:
+    """F-36: realpath of the top level of the git work tree holding `directory` (or its nearest existing ancestor,
+    for a file that was deleted), or None when it is not inside one."""
+    d = directory
+    while not os.path.isdir(d):
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+    try:
+        r = _git(d, "rev-parse", "--show-toplevel")
+    except (OSError, subprocess.SubprocessError):
+        return None
+    top = r.stdout.strip()
+    return os.path.realpath(top) if r.returncode == 0 and top else None
+
+
+def _where(project_path: str, f: str) -> tuple[str, str]:
+    """F-36: (the directory git runs in, the path as git sees it there) for a request file. A project-relative path
+    runs in the project; an absolute one (outside the project) in the top level of its own repo."""
+    if not os.path.isabs(f):
+        return project_path, f
+    top = _repo_top(os.path.dirname(f))
+    return (top, os.path.relpath(f, top)) if top else (os.path.dirname(f), os.path.basename(f))
 
 
 def _sha(project_path: str, rel: str) -> str | None:
@@ -802,22 +833,54 @@ def _sha(project_path: str, rel: str) -> str | None:
     return h.hexdigest()
 
 
-def _tracked(project_path: str, rel: str) -> bool:
-    return _git(project_path, "ls-files", "--error-unmatch", "--", rel).returncode == 0
+def _tracked(project_path: str, f: str) -> bool:
+    repo, rel = _where(project_path, f)
+    return _git(repo, "ls-files", "--error-unmatch", "--", rel).returncode == 0
 
 
-def _ignored(project_path: str, rel: str) -> bool:
-    return _git(project_path, "check-ignore", "-q", "--", rel).returncode == 0
+def _ignored(project_path: str, f: str) -> bool:
+    repo, rel = _where(project_path, f)
+    return _git(repo, "check-ignore", "-q", "--", rel).returncode == 0
 
 
-def _commit_text(c: dict, feat: dict | None) -> str:
+def _repo_groups(project_path: str, files: list[str]) -> list[tuple[str, list[str]]]:
+    """F-36: [(repo top level, its files as git sees them there)]: the project's repo first (when a file of it is
+    listed), the others sorted by path. A project-relative file belongs to the project's repo; an outside file to the
+    repo that holds it, and when that is the project's own repo the two merge."""
+    root = os.path.realpath(project_path)
+    mine = _repo_top(root) or root
+    groups: dict[str, list[str]] = {}
+    for f in files:
+        if os.path.isabs(f):
+            repo, rel = _where(project_path, f)
+        else:
+            repo, rel = mine, os.path.relpath(os.path.join(root, f), mine)
+        groups.setdefault(repo, [])
+        if rel not in groups[repo]:
+            groups[repo].append(rel)
+    return sorted(groups.items(), key=lambda g: (g[0] != mine, g[0]))
+
+
+def _diff_hint(project_path: str, files: list[str]) -> str:
+    """The Lead's review commands for a request: `git diff HEAD -- <project files>`, and one `git -C <repo> diff HEAD --
+    <files>` for each other repo it touches (F-36: an outside file is listed by its absolute path)."""
+    root = os.path.realpath(project_path)
+    mine = _repo_top(root) or root
+    parts = []
+    for repo, paths in _repo_groups(project_path, files):
+        parts.append(f"`git diff HEAD -- {' '.join(paths)}`" if repo == mine
+                     else f"`git -C {repo} diff HEAD -- {' '.join(paths)}`")
+    return " and ".join(parts)
+
+
+def _commit_text(c: dict, feat: dict | None, hint: str | None = None) -> str:
     lines = [f"**Commit request #{c['id']}** ({len(c['files'])} file{'s' if len(c['files']) != 1 else ''})"]
     lines += [f"- {f}" for f in c["files"]]
     if c.get("requires"):
         lines.append("Requires " + ", ".join(f"#{n}" for n in c["requires"]))
     lines += ["", c["message"]]
     if c["state"] == "lead_review":
-        lines += ["", f"@lead please review: `git diff HEAD -- {' '.join(c['files'])}`, then "
+        lines += ["", f"@lead please review: {hint or '`git diff HEAD -- ' + ' '.join(c['files']) + '`'}, then "
                       f"`review_commit({c['id']}, 'approve'|'reject', note)`."]
     else:
         lines += ["", "Waiting on the Master."]
@@ -849,7 +912,7 @@ async def request_commit(st, proj: Project, role: str, turn_id: int | None, feat
             reqs.append(r["id"])
     rels, hashes = [], {}
     for f in files:
-        rel = normalize_path(proj.path, f)
+        rel = await asyncio.to_thread(normalize_path, proj.path, f)  # F-36: an outside file asks its repo
         if rel in rels:
             continue
         if rel != "." and await asyncio.to_thread(_ignored, proj.path, rel):
@@ -859,7 +922,7 @@ async def request_commit(st, proj: Project, role: str, turn_id: int | None, feat
             raise HTTPException(400, f"{rel} is a directory; list files one by one")
         if not os.path.isfile(full) and not await asyncio.to_thread(_tracked, proj.path, rel):
             raise HTTPException(400, f"{rel} does not exist and is not tracked")
-        holder = proj.db.one("SELECT role FROM locks WHERE path=?", rel)
+        holder = None if os.path.isabs(rel) else proj.db.one("SELECT role FROM locks WHERE path=?", rel)  # F-36: no locks outside
         if holder and holder["role"] != role:
             raise HTTPException(409, f"{rel} is locked by {holder['role']}; ask them or @lead to unlock it first")
         rels.append(rel)
@@ -883,7 +946,8 @@ async def request_commit(st, proj: Project, role: str, turn_id: int | None, feat
     c = db.create_commit(feat["id"] if feat else None, role, turn_id, rels, message, hashes, state, reqs)
     conv = feat["conversation_id"] if feat else f"dm-{role}"
     mentions = ["lead"] if state == "lead_review" else []
-    msg = await _post(st, proj, conv, role, _commit_text(c, feat), "Commit", mentions, turn_id, f"commit:{c['id']}")
+    hint = await asyncio.to_thread(_diff_hint, proj.path, rels) if state == "lead_review" else None
+    msg = await _post(st, proj, conv, role, _commit_text(c, feat, hint), "Commit", mentions, turn_id, f"commit:{c['id']}")
     c = db.update_commit(c["id"], message_id=msg["id"])
     await proj.hub.broadcast("commit", c)
     for o in olds:
@@ -1034,11 +1098,12 @@ def _diff_sync(project_path: str, c: dict) -> dict:
     for f in c["files"]:
         full = os.path.join(project_path, f)
         exists = os.path.isfile(full)
-        tracked = _tracked(project_path, f)
+        repo, rel = _where(project_path, f)  # F-36: an outside file is diffed in its own repo
+        tracked = _git(repo, "ls-files", "--error-unmatch", "--", rel).returncode == 0
         if tracked:
-            text = _git(project_path, "diff", "HEAD", "--", f).stdout
+            text = _git(repo, "diff", "HEAD", "--", rel).stdout
         else:
-            text = _git(project_path, "diff", "--no-index", "--", os.devnull, f).stdout if exists else ""
+            text = _git(repo, "diff", "--no-index", "--", os.devnull, rel).stdout if exists else ""
         parts.append(text)
         status, binary, adds, dels = _file_stats(text)
         if not tracked and not exists:
@@ -1074,21 +1139,55 @@ async def commit_diff(proj: Project, cid: int) -> dict:
     return {**out, "commit": {**c, "feature": feature}, "overlap": _overlap(proj.db, c)}
 
 
-def _commit_sync(project_path: str, files: list[str], message: str) -> tuple[bool, str]:
-    add = _git(project_path, "add", "--", *files)
+def _head(repo: str) -> str:
+    """The repo's HEAD commit, or "" while it has no commits yet."""
+    r = _git(repo, "rev-parse", "--verify", "-q", "HEAD")
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def _rollback(repo: str, orig: str, files: list[str]) -> None:
+    """Put a repo's HEAD and the index of `files` back where they were; the working tree is never touched. A repo that
+    had no commits yet loses its first one (its branch ref is deleted)."""
+    if orig:
+        _git(repo, "reset", "-q", "--soft", orig)
+        _git(repo, "reset", "-q", orig, "--", *files)
+    else:
+        _git(repo, "update-ref", "-d", "HEAD")
+        _git(repo, "reset", "-q", "--", *files)
+
+
+def _commit_repo(repo: str, files: list[str], message: str) -> tuple[bool, str]:
+    add = _git(repo, "add", "--", *files)
     if add.returncode != 0:
         return False, add.stderr.strip() or "git add failed"
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
         f.write(message.rstrip() + "\n")
         path = f.name
     try:
-        com = _git(project_path, "commit", "-F", path, "--only", "--", *files)
+        com = _git(repo, "commit", "-F", path, "--only", "--", *files)
     finally:
         os.unlink(path)
     if com.returncode != 0:
         return False, (com.stderr or com.stdout).strip() or "git commit failed"
-    sha = _git(project_path, "rev-parse", "--short", "HEAD").stdout.strip()
-    return True, sha
+    return True, _git(repo, "rev-parse", "--short", "HEAD").stdout.strip()
+
+
+def _commit_sync(project_path: str, files: list[str], message: str) -> tuple[bool, str]:
+    """F-36: one commit per repo the files live in, the project's repo first, with the same message. If any repo fails,
+    every repo this call touched is rolled back, so nothing is left half-committed. Returns (ok, the shas as text: the
+    project's `a1b2c3d`, then `<repo dir>@<sha>` for each other repo; or the failure output)."""
+    groups = _repo_groups(project_path, files)
+    snaps = {repo: _head(repo) for repo, _ in groups}
+    mine = _repo_top(project_path) or os.path.realpath(project_path)
+    shas = []
+    for repo, paths in groups:
+        ok, out = _commit_repo(repo, paths, message)
+        if not ok:
+            for r, p in groups:  # the repos done before this one, and this one's staged files
+                _rollback(r, snaps[r], p)
+            return False, out
+        shas.append(out if repo == mine else f"{os.path.basename(repo)}@{out}")
+    return True, " ".join(shas)
 
 
 # F-20 (Master's card #16): a successful commit wakes only the Lead (in a feature: that feature's Lead, F-22), who
@@ -1155,17 +1254,23 @@ async def decide_commit(st, proj: Project, cid: int, decision: str, message: str
 
 
 def _group_commit_sync(project_path: str, members: list[dict]) -> tuple[list[str], dict | None, str]:
-    """Commit each member in order; on a failure roll HEAD and the index of the group's files back (the working
-    tree is never touched). Returns (shas of the committed members, the failed member or None, git output)."""
-    orig = _git(project_path, "rev-parse", "HEAD").stdout.strip()
+    """Commit each member in order; on a failure roll HEAD and the index of every repo the group touches back to where
+    it was before the first member (the working tree is never touched). F-36: members may span several repos, so one
+    snapshot per repo is taken up front. Returns (the sha text of each committed member, the failed member or None,
+    git output)."""
+    snaps: dict[str, str] = {}
+    touched: dict[str, list[str]] = {}
+    for m in members:
+        for repo, paths in _repo_groups(project_path, m["files"]):
+            snaps.setdefault(repo, _head(repo))
+            touched.setdefault(repo, [])
+            touched[repo] += [p for p in paths if p not in touched[repo]]
     shas = []
     for m in members:
         ok, out = _commit_sync(project_path, m["files"], m["message"])
         if not ok:
-            if orig:
-                _git(project_path, "reset", "-q", "--soft", orig)
-                files = sorted({f for x in members for f in x["files"]})
-                _git(project_path, "reset", "-q", orig, "--", *files)
+            for repo, paths in touched.items():
+                _rollback(repo, snaps[repo], paths)
             return [], m, out
         shas.append(out)
     return shas, None, ""

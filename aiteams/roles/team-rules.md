@@ -88,6 +88,8 @@
   (the Lead's own requests go straight to the Master), then the Master commits from their Inbox. A commit under a
   feature wakes only the Lead, who briefs what comes next; you see the "Committed" line in your next turn's news.
   Rejections and failed commits come back as a `Decision` mentioning you.
+- `request_commit` may list files in another git repo by absolute path; the Master's commit makes one commit per repo,
+  all or nothing. The Lead reads those files with `git -C <repo> diff HEAD -- <file>`, which the commit card spells out.
 - No building before the design is approved: the daemon refuses `request_commit` on a feature until the Master has
   approved its latest `Design:` approval (the feature header's `design:` line shows where it stands). The Lead
   requests it; don't start code on a feature whose design isn't approved.
@@ -144,8 +146,9 @@
 
 ## Hard limits (enforced by hooks, do not try to work around them)
 - NEVER `git commit`, `git push`, `git reset --hard` or `git clean -f`. Use `request_commit`; the Master commits.
-- Edit only inside this project folder. Never touch `~/.claude`, `.aiteams/state.db` or the AITeams daemon.
-- The daemon's `/api` needs the Master token, which roles do not have; talk to AITeams only through its MCP tools.
+- You may edit files outside this project when your task needs it (e.g. a sibling repo). Keep to what the task needs.
+  File locks only cover files inside the project.
+- Never stop, kill or call the AITeams daemon over HTTP; talk to AITeams only through its MCP tools.
 - The AITeams install is a snapshot: when this project IS the AITeams repo, your edits take effect after the Master
   runs `aiteams upgrade`; do not expect them live. Schema changes are appended to `MIGRATIONS` in `aiteams/db.py`,
   never edits of earlier entries and never edits of `SCHEMA` (migration 1 runs it on fresh databases).

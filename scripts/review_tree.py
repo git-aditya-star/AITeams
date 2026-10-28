@@ -10,7 +10,9 @@ that is missing from the working tree is deleted in the worktree. `.venv` and `u
 the repo, so nothing is installed. The worktree is removed afterwards unless --keep. Exit code 0 only if every run
 passed. Prints `pytest: …` and `e2e: …` summary lines to quote in a review note, one `pytest-failed: <test id>` /
 `e2e-failed: <title>` line per failing test right after its summary line (so a flake names itself), and (commit-id form)
-one `overlap: …` line per other open request that shares a file with the request or group.
+one `overlap: …` line per other open request that shares a file with the request or group, and (F-36) one
+`external: <path> (repo <top>): …` line per file outside the project: those can't be in the clean tree, so the tests run
+on the project part only and the line gives the command that shows the file's diff.
 """
 from __future__ import annotations
 
@@ -63,6 +65,24 @@ def overlap_lines(overlap: list[dict]) -> list[str]:
 
 def git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=check)
+
+
+def external_lines(paths: list[str]) -> list[str]:
+    """F-36: one line per file outside the project (an absolute path in a request). The clean tree is the project's HEAD,
+    so it can't hold another repo: the line names the file, its repo and the command that shows its diff."""
+    out = []
+    for p in paths:
+        d = Path(p).parent
+        while not d.is_dir() and d != d.parent:
+            d = d.parent
+        r = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=d, capture_output=True, text=True) if d.is_dir() else None
+        top = r.stdout.strip() if r is not None and r.returncode == 0 else ""
+        if top:
+            rel = os.path.relpath(os.path.realpath(p), os.path.realpath(top))
+            out.append(f"external: {p} (repo {top}): not in the clean tree; review with git -C {top} diff HEAD -- {rel}")
+        else:
+            out.append(f"external: {p} (no git repo found): not in the clean tree; review it by hand")
+    return out
 
 
 def last_line(text: str, needle: str) -> str:
@@ -164,10 +184,19 @@ def main(argv: list[str] | None = None) -> int:
     if (args.commit is None) == (args.files is None):
         ap.error("give a commit id or --files")
     ids, files, overlap = group_files(args.commit) if args.commit is not None else ([], args.files, [])
+    external = [f for f in files if os.path.isabs(f)]  # F-36: files in other repos; the tests run on the project part only
+    files = [f for f in files if not os.path.isabs(f)]
     repo = Path(args.repo)
+    label = '#' + ' + #'.join(map(str, ids)) if ids else 'files'
+    if external and not files:
+        print(f"review    {label}: no project files, only {len(external)} external file(s)")
+        for line in [*overlap_lines(overlap), *external_lines(external)]:
+            print(line)
+        print("pytest: skipped, the request has no project files")
+        return 0
     tree = Path(tempfile.mkdtemp(prefix="aiteams-review-")) / "tree"
-    print(f"review    {'#' + ' + #'.join(map(str, ids)) if ids else 'files'}: {len(files)} file(s) on HEAD in {tree}")
-    for line in overlap_lines(overlap):
+    print(f"review    {label}: {len(files)} file(s) on HEAD in {tree}")
+    for line in [*overlap_lines(overlap), *external_lines(external)]:
         print(line)
     ok = True
     try:

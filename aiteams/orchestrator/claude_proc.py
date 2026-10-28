@@ -14,7 +14,7 @@ from ..config import plugin_rows
 PKG = Path(__file__).resolve().parent.parent
 HOOK = str(PKG / "hooks" / "pretooluse.py")
 MCP_SERVER = str(PKG / "mcp_server.py")
-HOOK_TOOLS = "Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|Skill|Artifact"
+HOOK_TOOLS = "Bash|Edit|Write|MultiEdit|NotebookEdit|Skill|Artifact"  # F-36: reads are open, so no hook on Read|Grep|Glob
 
 
 def child_env(daemon_url: str, project_id: str, project_path: str, role: str, turn_id: int,

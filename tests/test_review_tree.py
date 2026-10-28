@@ -244,3 +244,65 @@ def test_main_prints_the_failure_lines_after_the_summary_and_exits_1(rt, repo, m
     assert rt.main(["--files", "a.py", "--repo", str(repo)]) == 1
     out = capsys.readouterr().out.splitlines()
     assert out[-2:] == ["pytest: 1 failed, 5 passed in 1s", "pytest-failed: tests/t.py::x"]
+
+
+# ---- F-36: files in another repo --------------------------------------------------------------------------------------
+@pytest.fixture
+def sibling(tmp_path):
+    r = tmp_path / "data-prep"
+    r.mkdir()
+    (r / "etl.py").write_text("v1\n")
+    subprocess.run(["git", "init", "-q"], cwd=r, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=r, check=True)
+    subprocess.run(["git", "-c", "user.name=T", "-c", "user.email=t@t", "commit", "-qm", "init"], cwd=r, check=True)
+    (r / "etl.py").write_text("v2\n")
+    return r
+
+
+def test_an_outside_file_gets_an_external_line_and_the_tests_run_on_the_project_part_only(rt, repo, sibling, monkeypatch, capsys):
+    import os
+    seen = {}
+
+    def fake_pytest(tree):
+        seen["files"] = sorted(str(p.relative_to(tree)) for p in tree.rglob("*") if p.is_file() and ".git" not in p.parts
+                               and ".venv" not in p.parts)
+        return True, "pytest: 3 passed in 0.1s"
+    monkeypatch.setattr(rt, "run_pytest", fake_pytest)
+    monkeypatch.setattr(rt, "run_e2e", lambda tree: pytest.fail("no ui/ file listed: e2e must not run"))
+    outside = str(sibling / "etl.py")
+    assert rt.main(["--files", "a.py", outside, "--repo", str(repo)]) == 0
+    out = capsys.readouterr().out
+    top = os.path.realpath(sibling)
+    assert "review    files: 1 file(s) on HEAD in" in out  # the count is the project part
+    assert f"external: {outside} (repo {top}): not in the clean tree; review with git -C {top} diff HEAD -- etl.py" in out
+    assert "etl.py" not in seen["files"] and "a.py" in seen["files"]  # the outside file was not copied into the tree
+    assert (sibling / "etl.py").read_text() == "v2\n"  # and was not touched
+    assert "pytest: 3 passed in 0.1s" in out and len(worktrees(repo)) == 1
+
+
+def test_only_outside_files_skip_the_tree_and_the_tests(rt, repo, sibling, monkeypatch, capsys):
+    monkeypatch.setattr(rt, "run_pytest", lambda tree: pytest.fail("no project file: no tree, no tests"))
+    assert rt.main(["--files", str(sibling / "etl.py"), "--repo", str(repo)]) == 0
+    out = capsys.readouterr().out
+    assert "no project files, only 1 external file(s)" in out and "external: " in out
+    assert "pytest: skipped, the request has no project files" in out and len(worktrees(repo)) == 1
+
+
+def test_external_lines_cover_a_deleted_file_and_a_path_outside_any_repo(rt, sibling, tmp_path):
+    import os
+    top = os.path.realpath(sibling)
+    gone = str(sibling / "sub" / "gone.py")  # its directory is gone too: the nearest existing ancestor names the repo
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    lines = rt.external_lines([gone, str(plain / "x.py")])
+    assert lines[0] == f"external: {gone} (repo {top}): not in the clean tree; review with git -C {top} diff HEAD -- sub/gone.py"
+    assert lines[1] == f"external: {plain / 'x.py'} (no git repo found): not in the clean tree; review it by hand"
+
+
+def test_the_commit_id_form_also_splits_external_files_from_the_project_part(rt, repo, sibling, monkeypatch, capsys):
+    outside = str(sibling / "etl.py")
+    monkeypatch.setattr(rt, "group_files", lambda cid: ([7], ["a.py", outside], []))
+    monkeypatch.setattr(rt, "run_pytest", lambda tree: (True, "pytest: 1 passed in 0.1s"))
+    assert rt.main(["7", "--repo", str(repo)]) == 0
+    out = capsys.readouterr().out
+    assert "review    #7: 1 file(s) on HEAD in" in out and "external: " in out
