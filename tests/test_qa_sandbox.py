@@ -306,6 +306,9 @@ def test_live_demo_turn_has_the_real_event_shapes(sandbox):
     # a hook-denied call and a failing Bash are errors; the denial carries the daemon's reason
     assert answers["toolu_5"][1]["is_error"] and answers["toolu_5"][1]["content"].startswith("AITEAMS_DENY: ")
     assert answers["toolu_6"][1]["is_error"] and answers["toolu_6"][1]["content"].startswith("Exit code 2")
+    # thinking as a headless run returns it: one block with text, then an EMPTY one (signature only) before each later step
+    thinking = [c for e in events if e["type"] == "assistant" for c in e["message"]["content"] if c["type"] == "thinking"]
+    assert thinking[0]["thinking"] and [t["thinking"] for t in thinking[1:]] == [""] * 7 and all(t["signature"] for t in thinking)
     assert [e["subtype"] for e in events if e["type"] == "system"].count("hook_started") >= 3  # system events, not `hook_event`
     assert not any(e["type"] == "hook_event" for e in events)
     assert next(e for e in events if e["subtype" if e["type"] == "system" else "type"] == "init")["cwd"] == "/work/demo"

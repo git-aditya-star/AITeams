@@ -120,6 +120,24 @@ const STATE_BADGE: Record<string, string> = {
   interrupted: 'bg-amber-100 text-amber-800',
 }
 
+// Thinking, as the terminal shows it (F-33, "Thinking, fixed after the live look"). A headless run returns only the signature,
+// so every model step ends with a finished thinking block whose text is EMPTY: showing each one gave a column of identical,
+// unexpandable `✻ Thinking…` lines. So, over the blocks that are on screen:
+//  - consecutive thinking blocks are one block (their texts joined), so hidden `line`/`cmd` blocks between them don't split it;
+//  - a block with no text is not shown, except as the single spinner at the bottom while the turn runs and thinking is
+//    the newest thing (the role is thinking right now).
+// Done at render time, so `apply()` keeps every event and a later event can still change the answer.
+function foldThinking(blocks: Block[], running: boolean): Block[] {
+  const out: Block[] = []
+  for (const b of blocks) {
+    const prev = out[out.length - 1]
+    if (b.kind === 'thinking' && prev?.kind === 'thinking') {
+      out[out.length - 1] = { ...prev, text: [prev.text, b.text].filter((t) => t.trim()).join('\n\n'), live: prev.live || b.live }
+    } else out.push(b)
+  }
+  return out.filter((b, i) => b.kind !== 'thinking' || b.text.trim() !== '' || (running && i === out.length - 1))
+}
+
 // ---------------------------------------------------------------- the terminal pane (dark)
 
 const CAP = 50_000 // an expanded output longer than this is cut, so a huge Read cannot freeze the page
@@ -375,7 +393,7 @@ export default function LiveSession({
   const running = turns.some((t) => t.state === 'running')
   const live = sel?.state === 'running' // a tool without its result yet is "running" only while its turn is
   const root = useMemo(() => blocks.find((b): b is Extract<Block, { kind: 'line' }> => b.kind === 'line' && !!b.cwd)?.cwd ?? null, [blocks])
-  const shown = showDetails ? blocks : blocks.filter((b) => b.kind !== 'line' && b.kind !== 'cmd')
+  const shown = foldThinking(showDetails ? blocks : blocks.filter((b) => b.kind !== 'line' && b.kind !== 'cmd'), live)
   useEffect(() => {
     if (!running) return
     const id = setInterval(() => setNow(Date.now() / 1000), 1000)

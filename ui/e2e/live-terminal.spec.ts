@@ -295,3 +295,88 @@ test('the other team tools, TodoWrite and a foreign MCP tool each read as one li
   await expect(other).toContainText('other - lookup (MCP)(invoice 42)')
   await expect(sum(other)).toHaveText('⎿ found it')
 })
+
+// ---- thinking, as a headless run really streams it (#1421): every step ends with an EMPTY thinking block, signature only
+
+const think = (text: string) => ({ type: 'assistant', message: { content: [{ type: 'thinking', thinking: text, signature: 'sig' }] } })
+const hook = (name: string) => ({ type: 'system', subtype: 'hook_started', hook_id: name, hook_name: name, hook_event: name })
+const thinkingDelta = (text: string) => ({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: text } } })
+
+// Replace the events the view fetches for the open turn with exactly these (the seeded turn has too much in it to count lines).
+async function onlyEvents(page: Page, evs: unknown[]) {
+  await page.route(/\/api\/p\/demo\/turns\/\d+\/events/, async (route) => {
+    const res = await route.fetch()
+    const real = await res.json()
+    if (!route.request().url().includes('after_seq=0') || !Array.isArray(real) || !real.length) return route.fulfill({ response: res, json: real })
+    const rows = evs.map((data: any, i) => ({ turn_id: real[0].turn_id, seq: i + 1, ts: real[0].ts, type: data.type, data }))
+    await route.fulfill({ response: res, json: rows })
+  })
+}
+const thinkingLines = (page: Page) => page.locator('[data-term-thinking]')
+
+test('steps that think but return only a signature show no ✻ Thinking… lines', async ({ page, qa }) => {
+  // what the sandbox turn does before every later step; here with nothing else, so any line at all would be one too many
+  await onlyEvents(page, [assistant('Starting.'), think(''), hook('PreToolUse'), think(''), think(''), toolUse('toolu_a', 'Bash', { command: 'ls' }), answer('toolu_a', 'a.txt'), think('')])
+  await qa.open(LIVE)
+  await expect(page.locator('[data-term-text]')).toBeVisible()
+  await expect(tool(page, 'Bash')).toBeVisible() // the call between the steps still shows
+  await expect(thinkingLines(page)).toHaveCount(0)
+  await detailsToggle(page).click() // and the plumbing being visible changes nothing about them
+  await expect(page.getByText('hook · PreToolUse')).toBeVisible()
+  await expect(thinkingLines(page)).toHaveCount(0)
+  // the seeded turn has one thinking block with text and seven empty ones: exactly one line
+})
+
+test('on the seeded turn the empty thinking steps leave exactly one line, the one with text', async ({ page, qa }) => {
+  await qa.open(LIVE)
+  await expect(tool(page, 'mcp__aiteams__post_message')).toBeVisible()
+  await expect(thinkingLines(page)).toHaveCount(1)
+  await qa.fire('turn_event', { event: think('') })
+  await qa.fire('turn_event', { event: think('') })
+  await expect(page.locator('[data-term-result]')).toBeVisible()
+  await expect(thinkingLines(page)).toHaveCount(1) // a done turn never shows an empty one
+})
+
+test('thinking blocks with text, separated only by hidden events, are one line that opens to both texts', async ({ page, qa }) => {
+  await onlyEvents(page, [think('First thought: check the design.'), hook('PreToolUse'), think(''), { type: 'system', subtype: 'status' }, think('Second thought: then the header.'), assistant('Done.')])
+  await qa.open(LIVE)
+  await expect(page.locator('[data-term-text]')).toBeVisible()
+  await expect(thinkingLines(page)).toHaveCount(1)
+  await thinkingLines(page).getByRole('button').click()
+  await expect(thinkingLines(page)).toContainText('First thought: check the design.')
+  await expect(thinkingLines(page)).toContainText('Second thought: then the header.')
+  await thinkingLines(page).getByRole('button').click()
+  await expect(page.getByText('First thought')).toHaveCount(0)
+  // a tool call between two thoughts is NOT hidden, so they stay two lines
+})
+
+test('a tool call or text between two thoughts keeps them as two lines', async ({ page, qa }) => {
+  await onlyEvents(page, [think('Before the call.'), toolUse('toolu_b', 'Bash', { command: 'ls' }), answer('toolu_b', 'a.txt'), think('After the call.')])
+  await qa.open(LIVE)
+  await expect(tool(page, 'Bash')).toBeVisible()
+  await expect(thinkingLines(page)).toHaveCount(2)
+})
+
+test('while a turn runs and thinking is the newest thing there is exactly one ✻ Thinking…, until the next block arrives', async ({ page, qa }) => {
+  await running(page)
+  await onlyEvents(page, [assistant('Looking into it.'), think('')]) // the step ended with its empty block; the next step is thinking
+  await qa.open(LIVE)
+  await expect(page.locator('[data-term-text]')).toBeVisible()
+  await expect(thinkingLines(page)).toHaveCount(1)
+  await expect(thinkingLines(page).getByRole('button')).toHaveCount(0) // empty: nothing to open
+
+  await qa.fire('turn_event', { event: thinkingDelta('') }) // the next step starts streaming (a live block)
+  await qa.fire('turn_event', { event: thinkingDelta('') })
+  await expect(thinkingLines(page)).toHaveCount(1) // still one: the empty block and the live one are the same run
+  await qa.fire('turn_event', { event: think('') }) // that step finishes, empty again
+  await expect(thinkingLines(page)).toHaveCount(1)
+
+  await qa.fire('turn_event', { event: toolUse('toolu_c', 'Bash', { command: 'pytest -q' }) }) // something newer than thinking
+  await expect(tool(page, 'Bash')).toBeVisible()
+  await expect(thinkingLines(page)).toHaveCount(0)
+
+  await qa.fire('turn_event', { event: answer('toolu_c', '1 passed') })
+  await qa.fire('turn_event', { event: think('') }) // the model thinks again after the result
+  await expect(thinkingLines(page)).toHaveCount(1)
+  await page.screenshot({ path: `${SHOTS}/live-terminal-thinking-running.png`, animations: 'disabled' })
+})

@@ -285,6 +285,11 @@ def _answer(n: int, content: str, data: dict | None = None, is_error: bool = Fal
     return ev
 
 
+def _think(n: int) -> dict:
+    """The thinking block a headless run really ends each model step with: only the signature, the text is EMPTY."""
+    return {"type": "assistant", "message": {"content": [{"type": "thinking", "thinking": "", "signature": f"sig-step-{n}"}]}}
+
+
 def _hook(name: str, event: str, outcome: str | None = None, output: str = "") -> list[dict]:
     """system hook_started / hook_response events (not a `hook_event` type: that is what an older parser looked for)."""
     out = [{"type": "system", "subtype": "hook_started", "hook_id": f"hook-{name}", "hook_name": name, "hook_event": event}]
@@ -313,7 +318,8 @@ _TERMINAL_TS = "\n".join([
 ]) + "\n"
 
 # One full turn of the frontend role, in the real stream-json shapes (a probe of `claude -p --output-format stream-json
-# --verbose --include-hook-events`): thinking, Read, Grep, an Edit with `structuredPatch`, a Write, a denied Edit, a failing
+# --verbose --include-hook-events`): thinking (one block with text, then an EMPTY one before every later step, which is what a
+# headless run returns: only the signature), Read, Grep, an Edit with `structuredPatch`, a Write, a denied Edit, a failing
 # and a passing Bash, a post_message, system hook events, then the final result. No `$` anywhere: F-8 keeps cost and
 # currency out of this view. Smoke and primitives specs read the first and last sentences and the result line.
 LIVE_EVENTS = [
@@ -329,10 +335,12 @@ LIVE_EVENTS = [
             {"type": "text", "file": {"filePath": "/work/demo/.aiteams/features/F-1/design.md", "numLines": 6, "startLine": 1,
                                        "totalLines": 6}}),
     *_hook("PreToolUse:Grep", "PreToolUse", "success"),
+    _think(2),
     _tool(2, "Grep", {"pattern": "function BlockView", "path": "/work/demo/ui/src", "output_mode": "content"}),
     _answer(2, "ui/src/components/LiveSession.tsx:140:function BlockView({ b }: { b: Block }) {",
             {"mode": "content", "numFiles": 0, "filenames": [], "content": "ui/src/components/LiveSession.tsx:140:function "
              "BlockView({ b }: { b: Block }) {", "numLines": 1}),
+    _think(3),
     _tool(3, "Edit", {"file_path": _LIVE_TSX, "old_string": "  switch (b.kind) {",
                       "new_string": "  // terminal look: one block per tool call\n  switch (b.kind) {", "replace_all": False}),
     _answer(3, f"The file {_LIVE_TSX} has been updated successfully.",
@@ -342,20 +350,25 @@ LIVE_EVENTS = [
                                   "lines": [" function BlockView({ b }: { b: Block }) {", "-  switch (b.kind) {",
                                             "+  // terminal look: one block per tool call", "+  switch (b.kind) {",
                                             "     case 'text':"]}]}),
+    _think(4),
     _tool(4, "Write", {"file_path": "/work/demo/ui/src/lib/terminal.ts", "content": _TERMINAL_TS}),
     _answer(4, "File created successfully at: /work/demo/ui/src/lib/terminal.ts",
             {"type": "create", "filePath": "/work/demo/ui/src/lib/terminal.ts", "content": _TERMINAL_TS, "structuredPatch": []}),
     *_hook("PreToolUse:Edit", "PreToolUse", "error", "AITEAMS_DENY: aiteams/workflow.py is locked by backend. Ask them in chat."),
+    _think(5),
     _tool(5, "Edit", {"file_path": "/work/demo/aiteams/workflow.py", "old_string": "def docs_list(", "new_string": "def docs_list_all(",
                       "replace_all": False}),
     _answer(5, "AITEAMS_DENY: aiteams/workflow.py is locked by backend. Ask them in chat.", is_error=True),
+    _think(6),
     _tool(6, "Bash", {"command": "cd ui && npx tsc --noEmit", "description": "Typecheck the UI"}),
     _answer(6, "Exit code 2\nsrc/components/LiveSession.tsx(212,7): error TS2322: Type 'string' is not assignable to type "
                "'number'.\n  212         toolId: c.id,\n              ~~~~~~\nFound 1 error in src/components/LiveSession.tsx:212",
             "Error: Exit code 2", is_error=True),
+    _think(7),
     _tool(7, "Bash", {"command": "cd ui && npm run build", "description": "Build the UI"}),
     _answer(7, "built in 2.1s"),
     *_hook("Stop", "Stop", "success"),
+    _think(8),
     _tool(8, "mcp__aiteams__post_message",
           {"conversation": "feature-1", "type": "Handoff", "mentions": ["lead"],
            "text": "@lead The terminal view is filed as **#104**. It is 5 files, and the full e2e gave **137 passed**.\n\n"
