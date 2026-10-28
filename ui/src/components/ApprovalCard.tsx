@@ -9,6 +9,7 @@ import { selectDocPanel, selectFeatureLabel, selectPid } from '../store/selector
 import { docPanel } from '../store/slices'
 import BranchCard, { branchPayload, isBranchTitle, type BranchEdit } from './BranchCard'
 import Markdown from './Markdown'
+import PRCard, { isPRTitle, prPayload, type PREdit } from './PRCard'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
@@ -35,20 +36,24 @@ export default function ApprovalCard({ a }: { a: Approval }) {
   // F-39: a `Branch:` card carries the Lead's proposal; Approve sends the Master's edited choice.
   const branch = isBranchTitle(a.title) ? branchPayload(a) : null
   const [branchEdit, setBranchEdit] = useState<BranchEdit | null>(null)
+  // F-39: a `PR:` card carries the Lead's pull request (destination, title, description); Approve sends the Master's edited three.
+  const pr = isPRTitle(a.title) ? prPayload(a) : null
+  const [prEdit, setPrEdit] = useState<PREdit | null>(null)
 
   const decide = async (decision: ApprovalDecision) => {
     if (!pid) return
     setBusy(true)
     setErr(null)
     try {
-      const body: { decision: ApprovalDecision; note?: string; payload?: BranchEdit['choice'] } = { decision }
+      const body: { decision: ApprovalDecision; note?: string; payload?: BranchEdit['choice'] | PREdit['choice'] } = { decision }
       if (note.trim()) body.note = note.trim()
       if (branch && decision === 'approve' && branchEdit) body.payload = branchEdit.choice
+      if (pr && decision === 'approve' && prEdit) body.payload = prEdit.choice
       const updated = await api.decideApproval(pid, a.id, body)
       // The WS `approval` frame also lands; apply the response when it looks like a row.
       if (updated && typeof updated === 'object' && 'id' in updated) dispatch(approvalUpdated({ ...a, ...updated }))
     } catch (e: any) {
-      // A refused approval (a worktree that would not be created) says why in `detail`, not the raw "POST … -> 409 {…}" line.
+      // A refused approval (a worktree that would not be created, a push or `gh` that failed) says why in `detail`, not the raw "POST … -> 409 {…}" line.
       setErr(typeof e?.detail === 'string' ? e.detail : e?.message || 'failed')
     } finally {
       setBusy(false)
@@ -108,7 +113,7 @@ export default function ApprovalCard({ a }: { a: Approval }) {
       ) : (
         <>
           <div className="mt-1 font-medium">{a.title}</div>
-          {a.summary && (
+          {a.summary && !pr && (
             <div className="mt-0.5 text-gray-700">
               <Markdown text={a.summary} />
             </div>
@@ -116,12 +121,13 @@ export default function ApprovalCard({ a }: { a: Approval }) {
         </>
       )}
       {branch && <BranchCard p={branch} pending={pending} onEdit={setBranchEdit} />}
+      {pr && <PRCard a={a} p={pr} pending={pending} onEdit={setPrEdit} />}
       {pending && pid ? (
         <div className="mt-3 flex flex-col gap-1.5">
           <div className="flex items-center gap-2 flex-wrap">
             {docButton}
             <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (optional)" className="h-7 min-w-36 flex-1" />
-            <Button size="sm" data-action="approve" disabled={busy || !!(branch && branchEdit?.blocked)} onClick={() => decide('approve')}>
+            <Button size="sm" data-action="approve" disabled={busy || !!(branch && branchEdit?.blocked) || !!(pr && prEdit?.blocked)} onClick={() => decide('approve')}>
               Approve
             </Button>
             <Button variant="outline" size="sm" data-action="changes" disabled={busy} onClick={() => decide('changes')}>
