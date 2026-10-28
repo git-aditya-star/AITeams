@@ -24,7 +24,8 @@ import Toasts, { showToast } from './components/Toasts'
 import CommitReview from './components/CommitReview'
 import { Tabs, TabsList, TabsTrigger } from './components/ui/tabs'
 import { useAppDispatch, useAppSelector } from './store'
-import { selectDmQuestions, selectFeatureByConversation } from './store/selectors'
+import { selectDmQuestions, selectFeatureByConversation, selectInboxBadge } from './store/selectors'
+import { useTabBadge } from './lib/useTabBadge'
 import { alertReceived, createTask, frameReceived, loadOlderMessages, openConversation, openProject, reconnected, refreshTeam } from './store/thunks'
 
 type Tab = 'chat' | 'live' | 'docs'
@@ -48,6 +49,8 @@ export default function App() {
   const feature = useAppSelector((s) => selectFeatureByConversation(s, current))
   const dmRole = current.startsWith('dm-') ? current.slice(3) : null
   const dmQuestions = useAppSelector((s) => selectDmQuestions(s, dmRole))
+  // F-35: the same count as the sidebar's Inbox badge, in the tab's title and icon.
+  useTabBadge(useAppSelector(selectInboxBadge))
   // Toast keys already shown this page load (rate_limit is cleared when the limit clears).
   const seenToasts = useRef(new Set<string>())
   // F-28: alert keys already handled this page load, whether or not this tab was the one that played them.
