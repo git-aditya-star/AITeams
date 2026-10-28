@@ -111,7 +111,14 @@ export interface FeatureBranch {
   base?: string | null
   tree?: string | null
   shared_from?: number | string | null
+  // The pull request opened for it (F-39 part 3): the link, its state on GitHub, where it goes, and what became of the worktree.
+  pr_url?: string | null
+  pr_state?: PRState | null
+  pr_destination?: string | null
+  tree_state?: TreeState | null
 }
+export type PRState = 'open' | 'merged' | 'closed'
+export type TreeState = 'live' | 'removed' | 'kept'
 
 // The `payload` of a `Branch:` approval: what the Lead proposed, plus what the daemon found (`current` = the branch checked out
 // in the main folder, `worktrees` = other features' live trees, `warnings`, `tree` = where a new worktree would go). The
@@ -144,6 +151,39 @@ export interface BranchList {
 export interface BranchCheck {
   warnings: string[]
   errors: string[]
+}
+
+// F-39 part 3: the `payload` of a `PR:` approval. The Lead's pull request: `source` (the feature's branch), `destination` (a plain
+// branch name, `main`, never `origin/main`), the title and description, and the commits it carries (short sha, newest first). Once
+// the daemon has opened it the decided payload also has `pr_url` and `pr_state`, as the feature does. The Master's decision sends back only the three they can
+// edit (`PRChoice`). `/branches/pr-preview` is the same thing computed now, for a destination: `errors` says why a pull request
+// cannot be opened (the same branch, nothing to propose).
+export interface PRCommit {
+  sha: string
+  subject: string
+}
+export interface PRPayload {
+  source: string
+  destination: string
+  title: string
+  body?: string
+  commits?: PRCommit[]
+  pr_url?: string | null
+  pr_state?: PRState | null
+}
+export interface PRChoice {
+  destination: string
+  title: string
+  body: string
+}
+export interface PRPreview {
+  source: string
+  destination: string
+  branches: { name: string; remote?: boolean }[]
+  commits: PRCommit[]
+  errors: string[]
+  pr_url?: string | null
+  pr_state?: PRState | null
 }
 
 // F-38: an open feature whose newest word waits on a role while the team is idle. The daemon nudges that role (step 1),
@@ -223,7 +263,7 @@ export interface Approval {
   created_at: number
   resolved_at: number | null
   brief?: ApprovalBrief | null // F-40: what the Master is asked, in three parts; null on an approval filed before F-40
-  payload?: BranchPayload | string | null // F-39: JSON for `Branch:` approvals (a string from a daemon that does not decode it)
+  payload?: BranchPayload | PRPayload | string | null // F-39: JSON for `Branch:` and `PR:` approvals (a string from a daemon that does not decode it)
 }
 
 export interface Commit {
@@ -574,7 +614,7 @@ export interface RoleSettings {
   default_effort: string | null
   models: Record<string, string>
   efforts: Record<string, string>
-  max_concurrent?: number // F-41: turns running at once, across all roles (default 6)
+  max_concurrent?: number | null // F-41: an optional cap on turns running at once, across all roles; absent or null = no cap, 0 = paused (the sandbox)
   max_lanes_per_role?: number // F-41: sessions of one role running at once (default 2)
   plugins?: PluginRow[] // F-23
   [k: string]: unknown
@@ -655,7 +695,7 @@ export const api = {
   decideApproval: (
     pid: string,
     id: number,
-    body: { decision: ApprovalDecision; note?: string; set_phase?: string; payload?: BranchChoice },
+    body: { decision: ApprovalDecision; note?: string; set_phase?: string; payload?: BranchChoice | PRChoice },
   ) => post<Approval>(`/api/p/${pid}/approvals/${id}/decide`, body),
   // F-39: the branches the Master can base a new one on, and the live warnings/errors for the card's current choice.
   branches: async (pid: string): Promise<BranchList> => {
@@ -668,6 +708,14 @@ export const api = {
     for (const k of ['branch', 'base', 'shared_from'] as const) if (q[k] !== undefined && q[k] !== '') p.set(k, String(q[k]))
     return req<BranchCheck>(`/api/p/${pid}/branches/check?${p}`)
   },
+  // F-39 part 3: what the PR card shows, now (`feature` is the feature's id), for a destination (omitted = the daemon's default); and
+  // the header chip's refresh: one look at the pull request on GitHub, answered with the feature.
+  prPreview: (pid: string, feature: number, destination?: string) => {
+    const p = new URLSearchParams({ feature: String(feature) })
+    if (destination) p.set('destination', destination)
+    return req<PRPreview>(`/api/p/${pid}/branches/pr-preview?${p}`)
+  },
+  refreshPr: (pid: string, featureId: number) => post<Feature>(`/api/p/${pid}/features/${featureId}/pr/refresh`, {}),
   commits: (pid: string, state: CommitState | 'all' = 'master_review', feature?: number) => {
     const q = new URLSearchParams({ state })
     if (feature != null) q.set('feature', String(feature))

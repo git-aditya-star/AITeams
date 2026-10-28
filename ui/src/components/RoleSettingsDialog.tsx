@@ -22,15 +22,15 @@ type Row = { model: string; effort: string }
 // the endpoint (the tab says so and Save leaves the list alone).
 type PluginDraft = { key: number; id: string; on: boolean; ask: boolean }
 // F-41: `limits` are the two load numbers as typed; `base` is what the daemon had, so only an edited one is sent (a stored 0, the sandbox's
-// "scheduler off", is left alone).
+// "scheduler off", is left alone). `turns` is optional: empty means no cap, and clearing it sends null.
 type Limits = { turns: string; lanes: string }
 type Draft = { def: Row; roles: Record<string, Row>; plugins: PluginDraft[] | null; status: Record<string, PluginStatus>; limits: Limits; base: Limits }
-const TURNS_MAX = 12
+const TURNS_MAX = 99
 const LANES_MAX = 6
 const whole = (v: string, max: number) => /^\d+$/.test(v.trim()) && Number(v) >= 1 && Number(v) <= max
 
-const limits = (s: { max_concurrent?: number; max_lanes_per_role?: number }): Limits => ({
-  turns: String(s.max_concurrent ?? 6),
+const limits = (s: { max_concurrent?: number | null; max_lanes_per_role?: number }): Limits => ({
+  turns: s.max_concurrent == null ? '' : String(s.max_concurrent),
   lanes: String(s.max_lanes_per_role ?? 2),
 })
 
@@ -118,7 +118,7 @@ export default function RoleSettingsDialog({ open, onOpenChange }: { open: boole
   const save = async () => {
     if (!draft) return
     const { limits: l, base } = draft
-    if (l.turns !== base.turns && !whole(l.turns, TURNS_MAX)) return setErr(`Turns at once must be a whole number from 1 to ${TURNS_MAX}`)
+    if (l.turns !== base.turns && l.turns.trim() && !whole(l.turns, TURNS_MAX)) return setErr(`Turns at once must be a whole number from 1 to ${TURNS_MAX}, or empty for no limit`)
     if (l.lanes !== base.lanes && !whole(l.lanes, LANES_MAX)) return setErr(`Sessions per role must be a whole number from 1 to ${LANES_MAX}`)
     setBusy(true)
     setErr(null)
@@ -130,7 +130,7 @@ export default function RoleSettingsDialog({ open, onOpenChange }: { open: boole
         default_effort: draft.def.effort === INHERIT ? null : draft.def.effort,
         models: pick('model'),
         efforts: pick('effort'),
-        ...(l.turns !== base.turns ? { max_concurrent: Number(l.turns) } : {}),
+        ...(l.turns !== base.turns ? { max_concurrent: l.turns.trim() ? Number(l.turns) : null } : {}),
         ...(l.lanes !== base.lanes ? { max_lanes_per_role: Number(l.lanes) } : {}),
         // A blank row is an unfinished one: drop it rather than send an id the server would refuse.
         ...(draft.plugins ? { plugins: draft.plugins.filter((r) => r.id.trim()).map((r) => ({ id: r.id.trim(), on: r.on, ask: r.ask })) } : {}),
@@ -298,7 +298,8 @@ export default function RoleSettingsDialog({ open, onOpenChange }: { open: boole
                 <label htmlFor="turns-at-once" className="min-w-0">
                   <span className="block text-meta font-medium text-gray-800">Turns at once</span>
                   <span className="block text-caption text-gray-500">
-                    How many role turns run together, across all roles. More finish work sooner and use your plan's limit faster. Extra work waits its turn.
+                    An optional cap on role turns running together, across all roles. Empty means no limit: every session starts as soon as it is asked. A cap
+                    makes extra work wait its turn.
                   </span>
                 </label>
                 <Input
@@ -307,6 +308,7 @@ export default function RoleSettingsDialog({ open, onOpenChange }: { open: boole
                   min={1}
                   max={TURNS_MAX}
                   value={draft.limits.turns}
+                  placeholder="No limit"
                   className="text-center"
                   onChange={(e) => setLimit({ turns: e.target.value })}
                 />

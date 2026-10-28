@@ -180,7 +180,7 @@ test('a stall on a feature session names it', async ({ page, qa }) => {
   await expect(page.getByRole('tooltip').first()).toContainText('asks Frontend · F-4 to act')
 })
 
-test('role settings: Turns at once and Sessions per role are numbers, sent only when edited', async ({ page, qa }) => {
+test('role settings: Turns at once is an optional cap (empty = no limit), Sessions per role is a number, and only edited values are sent', async ({ page, qa }) => {
   // The sandbox pins max_concurrent to 0 (scheduler off), so a plain Save must leave it alone.
   await qa.open('/p/demo?c=general')
   await page.getByRole('button', { name: 'Role settings' }).click()
@@ -189,15 +189,22 @@ test('role settings: Turns at once and Sessions per role are numbers, sent only 
   const lanes = dialog.getByLabel('Sessions per role')
   await expect(turns).toHaveValue('0')
   await expect(lanes).toHaveValue('2') // the default while the daemon sends none
-  await expect(dialog.locator('[data-settings-load]')).toContainText('across all roles')
-  await page.screenshot({ path: `${SHOTS}/lanes-settings.png`, animations: 'disabled' })
+  await expect(dialog.locator('[data-settings-load]')).toContainText('Empty means no limit')
 
   const sent = async () => {
     const put = page.waitForRequest((r) => r.method() === 'PUT' && r.url().endsWith('/api/settings'))
     await dialog.getByRole('button', { name: 'Save' }).click()
     return (await put).postDataJSON()
   }
-  await page.route(/\/api\/settings$/, (route) => (route.request().method() === 'PUT' ? route.fulfill({ json: route.request().postDataJSON() }) : route.fallback()))
+  let noCap = false
+  await page.route(/\/api\/settings$/, async (route) => {
+    if (route.request().method() === 'PUT') return route.fulfill({ json: route.request().postDataJSON() })
+    if (!noCap) return route.fallback()
+    const res = await route.fetch() // the daemon's default: no cap, so the key is absent
+    const body = await res.json()
+    delete body.max_concurrent
+    return route.fulfill({ response: res, json: body })
+  })
 
   // Unedited: neither key is sent.
   const plain = await sent()
@@ -206,9 +213,12 @@ test('role settings: Turns at once and Sessions per role are numbers, sent only 
 
   // Edited out of range: the sentence shows, nothing is sent.
   await page.getByRole('button', { name: 'Role settings' }).click()
-  await turns.fill('13')
+  await turns.fill('100')
   await dialog.getByRole('button', { name: 'Save' }).click()
-  await expect(dialog).toContainText('Turns at once must be a whole number from 1 to 12')
+  await expect(dialog).toContainText('Turns at once must be a whole number from 1 to 99, or empty for no limit')
+  await turns.fill('-1')
+  await dialog.getByRole('button', { name: 'Save' }).click()
+  await expect(dialog).toContainText('Turns at once must be a whole number from 1 to 99')
   await turns.fill('6')
   await lanes.fill('0')
   await dialog.getByRole('button', { name: 'Save' }).click()
@@ -218,6 +228,27 @@ test('role settings: Turns at once and Sessions per role are numbers, sent only 
   await lanes.fill('3')
   expect(await sent()).toMatchObject({ max_concurrent: 6, max_lanes_per_role: 3 })
   await expect(dialog).toHaveCount(0)
+
+  // Clearing the cap sends null (the daemon drops the key).
+  await page.getByRole('button', { name: 'Role settings' }).click()
+  await turns.fill('')
+  expect(await sent()).toMatchObject({ max_concurrent: null })
+  await expect(dialog).toHaveCount(0)
+
+  // A daemon with no cap (the default): the field is empty with "No limit", and a plain Save sends neither key.
+  noCap = true
+  await page.getByRole('button', { name: 'Role settings' }).click()
+  await expect(turns).toHaveValue('')
+  await expect(turns).toHaveAttribute('placeholder', 'No limit')
+  await page.screenshot({ path: `${SHOTS}/lanes-settings.png`, animations: 'disabled' })
+  const untouched = await sent()
+  expect(untouched).not.toHaveProperty('max_concurrent')
+  expect(untouched).not.toHaveProperty('max_lanes_per_role')
+
+  // Typing a cap into the empty field sends the number.
+  await page.getByRole('button', { name: 'Role settings' }).click()
+  await turns.fill('8')
+  expect(await sent()).toMatchObject({ max_concurrent: 8 })
 })
 
 // The real daemon, no rewriting: `lane_turn` makes Frontend work on F-4 in its own session (an active session, a running turn on the lane,
