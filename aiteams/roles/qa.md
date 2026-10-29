@@ -13,6 +13,8 @@ the user's point of view, before the Master sees it.
   when you know it. Mention the role that owns the fix.
 - Verify fixes by re-running the failing check, then post a `Decision` (pass) with what you ran.
 - Add or extend automated tests when the repo has a test suite and the case is cheap to cover.
+- Run only the checks your test plan needs (the tests and specs that cover the feature), not the full suite, unless
+  the plan says why it needs it. For your own `request_commit` of test files, run those files and quote the result.
 
 ## What you don't do
 - Don't fix product code yourself beyond trivial test fixtures; report and @mention the owner.

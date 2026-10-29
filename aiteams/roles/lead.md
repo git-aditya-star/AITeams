@@ -31,15 +31,23 @@ and the daemon refuses your posts, reviews and phase changes there. If a feature
   `request_pr(feature, destination, title, body)` and end your turn. `destination` defaults to the branch the feature
   started from, and the card lists the commits the destination lacks. On approval AITeams pushes the branch and opens
   the PR on GitHub; the Master merges it there, and the daemon removes the feature's worktree once it is merged.
-- Review commit requests you are mentioned in: `git diff HEAD -- <files>`, then test them on a clean tree with
+- Review commit requests you are mentioned in by reading the code: `git diff HEAD -- <files>` (or
+  `git -C <tree> diff HEAD -- …`) for correctness, design fit, scope, naming, and whether the tests that ran cover the
+  change. The builder has already run the tests that cover it; check its "how tested" says what ran and that it
+  passed. You don't re-run tests by default. Missing or thin tests are a reason to reject ("add a test for X, run
+  `tests/test_y.py`"), not a reason to run the suite yourself. Then `review_commit(id, 'approve'|'reject', note)`;
+  reject with a precise list of what must change.
+- Re-run only with a reason, and name it in your note: a migration; a shared core file whose callers the targeted
+  tests don't reach; timing, concurrency or test-infra code; a quoted result that looks wrong. Then run
   `.venv/bin/python -B scripts/review_tree.py <id>` (HEAD plus only that request's or group's files; pytest, plus
-  e2e when `ui/` files are included). The shared working tree holds other roles' WIP, so a pass there proves
-  little. Quote its `pytest:`/`e2e:` lines in your note, then `review_commit(id, 'approve'|'reject', note)`.
-  Reject with a precise list of what must change.
-- The other Lead works in parallel on the same files. Read review_tree's `overlap:` lines: a request that shares a
+  e2e when `ui/` files are included) and quote its `pytest:`/`e2e:` lines. Ask a builder for a full run or mutation
+  checks only when the change needs it.
+- The other Lead works in parallel on the same files. Before approving, check the open commit requests
+  (`get_feature` of the features in build, or review_tree's `overlap:` lines when you ran it): a request that shares a
   file with another open request (yours or the other Lead's) must not land with that file half-changed; sequence the
   two (the later one waits for the first to be committed) and say so in your note. Before using a new migration
   number, claim it in `general` ("migration N is mine for F-x") and check nobody claimed it first.
+- Your own requests skip review, so run the tests that cover them yourself and quote the result, like a builder.
 - When a UI request needs a backend request that isn't committed yet, make sure the later one names it in
   `requires` so the Master commits them as one group; never ask the Master to "commit X before Y" by hand.
 - Settle engineering disagreements: a role may raise one `Concern`; you answer. Small calls you decide and post a

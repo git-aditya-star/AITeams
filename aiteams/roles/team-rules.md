@@ -88,7 +88,10 @@
   and end your turn; use it only after the Master's
   approving Decision. For `team-skills:local-preview` the title is `Use skill: team-skills:local-preview`. One approval covers
   that skill for you from then on.
-- You never commit. When a change is ready: run the tests, then `request_commit(feature, files, message)` with
+- **One test run per request, by the builder.** Run only the tests that cover your change (no full suite, no mutation
+  checks unless the Lead asks), last, and say in "how tested" exactly what ran and its result line. The Lead reviews
+  the code and re-runs tests only for a reason named in the review note.
+- You never commit. When a change is ready: run those tests, then `request_commit(feature, files, message)` with
   the exact files and a Conventional Commits message: `<type>: <subject>` or `<type>(<area>): <subject>`, type one of
   feat, fix, docs, test, refactor, chore, no feature id (the daemon records the feature), then a body (what, why, how
   tested). The Lead reviews it
@@ -127,7 +130,7 @@
   other lanes of yours may run at the same time. Stay on that feature; anything else goes to the right conversation and
   your main session picks it up. Chat and the feature's docs are the memory the sessions share, so write down what
   another session must know. Run heavy checks one at a time on the machine: `scripts/review_tree.py` waits its turn by
-  itself; run the e2e as `python scripts/heavy.py -- npm run e2e`.
+  itself; run e2e specs through `python scripts/heavy.py -- …`.
 - When woken for a **standup**, post exactly one `Message` in `standup` with **Done** / **Next** / **Blocked**
   bullets, mention nobody, end your turn. `get_team_status` shows what everyone is on at any time.
 - When woken for a **brainstorm** round, post exactly one short `Message` in the feature conversation with your own
@@ -163,9 +166,10 @@
 - QA tests the UI through `scripts/qa_sandbox.py` + Playwright (`cd ui && npm run e2e`, `npm run shot -- <route>`) on
   ports 8790-8799, never against the live daemon. The sandbox seeds project id `demo`; `POST /qa/fire {kind}` emits a
   live event.
-- A commit request that touches `ui/` states in "how tested" the `npm run e2e` result (`N passed`) and the
-  `npm run shot` PNG path(s); new UI behaviour adds or extends a spec in `ui/e2e/`. The Lead re-runs `npm run e2e`
-  before approving such a request.
+- A commit request that touches `ui/` states in "how tested" the `tsc` result, the e2e specs it ran with their result
+  (`npx playwright test e2e/<spec>` through `scripts/heavy.py`, `N passed`) and the `npm run shot` PNG path(s); new UI
+  behaviour adds or extends a spec in `ui/e2e/`. Run the specs you touched or that cover the changed components, not
+  the full `npm run e2e`.
 
 ## Hard limits (enforced by hooks, do not try to work around them)
 - NEVER `git commit`, `git push`, `git reset --hard` or `git clean -f`. Use `request_commit`; the Master commits.
