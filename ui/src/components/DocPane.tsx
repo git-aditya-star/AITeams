@@ -45,7 +45,7 @@ function ArtifactPane({ pid, featureId, doc, source }: { pid: string; featureId:
       {file && source && (source.kind === 'html' || source.kind === 'image') ? (
         // the key remounts the frame when a role edits the file
         <div className="min-h-0 flex-1 border-t border-gray-200">
-          <MockView key={`${file}:${source.updated_at}`} pid={pid} fid={featureId} name={file} kind={source.kind} mode="full" />
+          <MockView key={`${file}:${source.updated_at}`} src={fileUrl(pid, featureId, file)} name={file} kind={source.kind} mode="full" />
         </div>
       ) : (
         <div data-artifact-no-source className="px-4 py-2 text-caption text-gray-400">
@@ -88,7 +88,7 @@ export default function DocPane({ pid, featureId, doc, docs, refreshKey }: { pid
       </div>
       {/* the key remounts the frame when the file changes, so a mock edited by a role shows its new version */}
       <div className="min-h-0 flex-1">
-        <MockView key={`${doc.name}:${doc.updated_at}`} pid={pid} fid={featureId} name={doc.name} kind={kind as 'html' | 'image'} mode="full" />
+        <MockView key={`${doc.name}:${doc.updated_at}`} src={fileUrl(pid, featureId, doc.name)} name={doc.name} kind={kind as 'html' | 'image'} mode="full" />
       </div>
     </div>
   ) : (

@@ -6,6 +6,7 @@ import { useAppDispatch, useAppSelector } from '../store'
 import { selectPid } from '../store/selectors'
 import { refreshInbox } from '../store/thunks'
 import { useCards } from './CardContext'
+import FilePreviews from './FilePreviews'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Tip } from './ui/tooltip'
@@ -73,6 +74,8 @@ export default function CommitGroupCard({ g }: { g: CommitGroup }) {
           </li>
         ))}
       </ul>
+
+      <FilePreviews texts={g.members.map((m) => m.message)} featureId={first?.feature_id ?? null} />
 
       <div className="mt-2 flex items-center gap-2 flex-wrap">
         <Tip content={notReady || null}>

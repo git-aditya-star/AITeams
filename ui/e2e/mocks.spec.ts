@@ -1,5 +1,4 @@
 import type { Page } from '@playwright/test'
-import { mockRefs } from '../src/mockRefs'
 import { expect, test } from './fixtures'
 
 // F-29: mocks (html pages and images) and Mermaid diagrams in the Docs tab and as chat previews. The sandbox seeds F-1's
@@ -88,7 +87,7 @@ test('a chat message that names mocks shows a thumbnail each; clicking one opens
   await html.click()
   const dialog = page.locator('[data-mock-dialog="mock-export.html"]')
   await expect(dialog).toBeVisible()
-  await expect(dialog.getByRole('link', { name: 'Open in new tab' })).toHaveAttribute('href', '/api/p/demo/features/1/files/mock-export.html')
+  await expect(dialog.getByRole('link', { name: 'Open in new tab' })).toHaveAttribute('href', /^\/api\/p\/demo\/preview\?path=.*mock-export\.html&feature=1$/) // F-50: every file comes from /preview
   await expect(dialog.locator('[data-mock-frame]')).toHaveAttribute('sandbox', SANDBOX)
   await expect(dialog.frameLocator('[data-mock-frame]').getByRole('button', { name: 'Export CSV' })).toBeVisible()
   await page.screenshot({ path: `${SHOTS}/mocks-chat-dialog.png`, animations: 'disabled' })
@@ -120,11 +119,11 @@ test('a diagram with a syntax error shows the code and a red line instead', asyn
   await expect(page.locator('body > [id^="dmermaid"]')).toHaveCount(0) // the failed render left nothing in <body>
 })
 
-test('a path to a missing file shows "mock not found", not a broken frame', async ({ page, qa }) => {
+test('a path to a missing file shows "not found", not a broken frame', async ({ page, qa }) => {
   await qa.open('/p/demo?c=feature-1')
   await qa.fire('message', { conversation: 'feature-1', role: 'frontend', text: 'See `.aiteams/features/F-1/nope.png` and .aiteams/features/F-1/gone.html.' })
-  await expect(page.locator('[data-mock-missing="nope.png"]')).toHaveText('mock not found: nope.png')
-  await expect(page.locator('[data-mock-missing="gone.html"]')).toHaveText('mock not found: gone.html')
+  await expect(page.locator('[data-mock-missing="nope.png"]')).toHaveText('not found: nope.png')
+  await expect(page.locator('[data-mock-missing="gone.html"]')).toHaveText('not found: gone.html')
   await expect(page.locator('[data-mock-card="nope.png"]')).toHaveCount(0)
 })
 
@@ -133,7 +132,7 @@ test('at most 4 distinct mocks per message, a repeated path counts once', async 
   const p = (n: string) => `.aiteams/features/F-1/${n}`
   await qa.fire('message', { conversation: 'feature-1', role: 'frontend', text: `All: ${p('shot.png')} ${p('shot.png')} ${p('flow.svg')} ${p('mock-export.html')} ${p('m1.png')} ${p('m2.png')}` })
   const msg = page.locator('[id^="m-"]', { hasText: 'All:' })
-  await expect(msg.locator('[data-mock-previews] > *')).toHaveCount(4) // shot, flow, mock-export, m1; m2 is the fifth
+  await expect(msg.locator('[data-mock-previews] > *')).toHaveCount(4) // shot, flow, mock-export, m1; m2 is the fifth (a link when it exists, nothing when it does not)
   await expect(msg.locator('[data-mock-card]')).toHaveCount(3)
   await expect(msg.locator('[data-mock-missing]')).toHaveCount(1)
 })
@@ -147,19 +146,4 @@ test('the mermaid library stays out of the page until a diagram needs it', async
   await page.locator('aside').getByRole('button', { name: /^F-1\b/ }).click()
   await expect(page.locator('[data-mermaid] svg')).toBeVisible({ timeout: 20_000 })
   expect(scripts.length).toBeGreaterThan(1) // the diagram libraries came on demand
-})
-
-test('mockRefs reads paths as plain text, in code spans and as link targets', () => {
-  const at = (n: string) => `.aiteams/features/F-7/${n}`
-  const names = (t: string) => mockRefs(t).map((r) => `${r.fid}/${r.name}`)
-  expect(names(`see ${at('a.html')} now`)).toEqual(['7/a.html'])
-  expect(names(`see \`${at('b.png')}\``)).toEqual(['7/b.png'])
-  expect(names(`[mock](${at('c.svg')})`)).toEqual(['7/c.svg'])
-  expect(names(`it is ${at('d.JPG')}.`)).toEqual(['7/d.JPG']) // the end of a sentence, any case
-  expect(names(`and ${at('e.jpeg')}, then ${at('f.png')}`)).toEqual(['7/e.jpeg', '7/f.png'])
-  expect(names(`not ${at('g.html.bak')} or ${at('h.md')} or ${at('i.py')}`)).toEqual([])
-  expect(names('a/b.png and F-7/b.png and .aiteams/features/F-x/b.png')).toEqual([])
-  expect(names(`${at('a.png')} ${at('a.png')}`)).toEqual(['7/a.png'])
-  expect(names('.aiteams/features/F-2/x.png and .aiteams/features/F-3/x.png')).toEqual(['2/x.png', '3/x.png']) // another feature's mock
-  expect(names(Array.from({ length: 6 }, (_, i) => at(`m${i}.png`)).join(' '))).toHaveLength(4)
 })

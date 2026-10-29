@@ -4,6 +4,7 @@ import { roleName, stateChip, stateLabel } from '../roles'
 import { useAppSelector } from '../store'
 import { selectFeatureLabel } from '../store/selectors'
 import { useCards } from './CardContext'
+import FilePreviews from './FilePreviews'
 import { LEAD_TONE, leadReview, sentBackNote } from './leadReview'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
@@ -132,6 +133,7 @@ export default function CommitCard({ c, showFeature = false }: { c: Commit; show
       </ul>
 
       <CommitMessage c={c} d={d} />
+      <FilePreviews texts={[c.message]} featureId={c.feature_id} />
 
       {ctx && (
         <div className="mt-1.5">

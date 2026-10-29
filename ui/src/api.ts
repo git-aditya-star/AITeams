@@ -522,6 +522,7 @@ export interface TurnEvent {
 export interface QuestionOption {
   label: string
   description?: string
+  preview?: string // read for file references only (F-50)
 }
 
 export interface QuestionItem {
@@ -648,6 +649,14 @@ export interface SettingsOptions {
 // F-29: the raw bytes of a mock. The daemon sends it with a CSP `sandbox`, and the UI frames html in a sandboxed iframe.
 export const fileUrl = (pid: string, fid: number, name: string) => `/api/p/${pid}/features/${fid}/files/${encodeURIComponent(name)}`
 
+// F-50: what a file reference in a message or card resolves to. `kind` is null for a ref that is refused or missing (never an error), so
+// the UI can show a "not found" chip; an iframe cannot report a 404 itself. `url` serves the file (GET /preview, sandbox headers).
+export interface PreviewRef {
+  ref: string
+  kind: 'html' | 'image' | null
+  url: string | null
+}
+
 export const api = {
   settings: () => req<RoleSettings>('/api/settings'),
   saveSettings: (body: Partial<RoleSettings>) => put<RoleSettings>('/api/settings', body),
@@ -687,6 +696,8 @@ export const api = {
     id: number,
     body: { phase?: string; owner?: string | null; lead?: string; title?: string; archived?: boolean },
   ) => patch<Feature>(`/api/p/${pid}/features/${id}`, body),
+  resolvePreviews: (pid: string, feature: number | null, refs: string[]) =>
+    post<PreviewRef[]>(`/api/p/${pid}/preview/resolve`, { feature, refs }),
   featureDocs: (pid: string, id: number) => req<FeatureDoc[]>(`/api/p/${pid}/features/${id}/docs`),
   featureDoc: (pid: string, id: number, name: string) =>
     req<{ name: string; text: string }>(`/api/p/${pid}/features/${id}/docs/${encodeURIComponent(name)}`),

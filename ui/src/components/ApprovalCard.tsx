@@ -8,6 +8,7 @@ import { approvalUpdated } from '../store/actions'
 import { selectDocPanel, selectFeatureLabel, selectPid } from '../store/selectors'
 import { docPanel } from '../store/slices'
 import BranchCard, { branchPayload, isBranchTitle, type BranchEdit } from './BranchCard'
+import FilePreviews from './FilePreviews'
 import Markdown from './Markdown'
 import PRCard, { isPRTitle, prPayload, type PREdit } from './PRCard'
 import { Badge } from './ui/badge'
@@ -153,6 +154,7 @@ export default function ApprovalCard({ a }: { a: Approval }) {
           )}
         </>
       )}
+      <FilePreviews texts={[a.summary, brief?.what, brief?.if_approved, ...(brief?.tradeoffs ?? []), brief?.doc]} featureId={a.feature_id} />
     </div>
   )
 }

@@ -3,6 +3,7 @@ import type { Question, QuestionItem } from '../api'
 import { roleName, stateChip, stateLabel } from '../roles'
 import { useAppDispatch } from '../store'
 import { answerQuestion } from '../store/thunks'
+import FilePreviews from './FilePreviews'
 import Markdown from './Markdown'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
@@ -65,6 +66,12 @@ function CardHead({ q }: { q: Question }) {
   )
 }
 
+// F-50: the text a card shows, which names the files to preview: the intro, each question and (while it is open) each option.
+const cardTexts = (q: Question, withOptions: boolean) => [
+  q.intro,
+  ...(q.payload?.questions || []).flatMap((it) => [it.question, ...(withOptions ? it.options.flatMap((o) => [o.label, o.description, o.preview]) : [])]),
+]
+
 // `embedded`: rendered inside its MessageRow (no side margins); otherwise in the Inbox or a DM footer.
 export default function QuestionCard({ q, embedded = false }: { q: Question; embedded?: boolean }) {
   const dispatch = useAppDispatch()
@@ -94,6 +101,7 @@ export default function QuestionCard({ q, embedded = false }: { q: Question; emb
               </div>
             ))
           )}
+          <FilePreviews texts={cardTexts(q, false)} featureId={q.feature_id ?? null} />
         </div>
       )
     }
@@ -151,6 +159,7 @@ export default function QuestionCard({ q, embedded = false }: { q: Question; emb
         </Button>
         {err && <span className="text-caption text-red-600">{err}</span>}
       </div>
+      <FilePreviews texts={cardTexts(q, true)} featureId={q.feature_id ?? null} />
     </div>
   )
 }

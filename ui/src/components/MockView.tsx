@@ -1,6 +1,5 @@
-import { fileUrl } from '../api'
-
-// F-29: the one place that renders a mock (docs pane, chat preview, full-view dialog). An html mock is code a role wrote,
+// F-29: the one place that renders a mock (docs pane, chat preview, full-view dialog). F-50: `src` is the file's URL (a docs file
+// or a /preview url the daemon resolved), `name` the label. An html mock is code a role wrote,
 // so it always runs in a sandboxed iframe WITHOUT `allow-same-origin`: it gets an opaque origin and cannot reach this page,
 // its storage or the auth cookie. Do not add `allow-same-origin` here, or `allow-top-navigation`.
 export const MOCK_SANDBOX = 'allow-scripts allow-forms allow-popups allow-modals'
@@ -12,8 +11,7 @@ const PAGE_H = 800
 
 export type MockKind = 'html' | 'image'
 
-export default function MockView({ pid, fid, name, kind, mode }: { pid: string; fid: number; name: string; kind: MockKind; mode: 'thumb' | 'full' }) {
-  const src = fileUrl(pid, fid, name)
+export default function MockView({ src, name, kind, mode }: { src: string; name: string; kind: MockKind; mode: 'thumb' | 'full' }) {
   if (mode === 'thumb') {
     return (
       <div data-mock-thumb={name} className="relative overflow-hidden rounded-md border border-gray-200 bg-white" style={{ width: THUMB_W, height: THUMB_H }}>

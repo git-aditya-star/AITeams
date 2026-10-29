@@ -1,12 +1,14 @@
 import type { Message } from '../api'
 import { fmtTime } from '../api'
 import { roleName, TYPE_CHIP } from '../roles'
+import { useAppSelector } from '../store'
+import { selectFeatureByConversation } from '../store/selectors'
 import ApprovalCard from './ApprovalCard'
 import ArtifactCard from './ArtifactCard'
 import Avatar from './Avatar'
 import CommitCard from './CommitCard'
+import FilePreviews from './FilePreviews'
 import Markdown from './Markdown'
-import MockPreviews from './MockPreviews'
 import QuestionCard from './QuestionCard'
 import Reactions from './Reactions'
 import Receipts from './Receipts'
@@ -21,6 +23,8 @@ export const forMaster = (m: Message) => m.author !== 'master' && m.mentions.inc
 // The left padding drops by the bar's 2px so nothing shifts.
 export default function MessageRow({ m, highlight = false, markMaster = true }: { m: Message; highlight?: boolean; markMaster?: boolean }) {
   const tinted = markMaster && forMaster(m)
+  // F-50: the feature whose conversation this is; a bare file name in the text resolves in its docs folder
+  const featureId = useAppSelector((s) => selectFeatureByConversation(s, m.conversation_id)?.id ?? null)
   const question = m.ref?.startsWith('question:') && m.question ? m.question : null
   const artifact = m.ref?.startsWith('artifact:') && m.artifact ? m.artifact : null
   const card = m.ref?.startsWith('approval:') && m.approval ? <ApprovalCard a={m.approval} /> : m.ref?.startsWith('commit:') && m.commit ? <CommitCard c={m.commit} /> : question ? <QuestionCard key={`${question.id}-${question.state}`} q={question} embedded /> : artifact ? <ArtifactCard a={artifact} /> : null
@@ -53,7 +57,8 @@ export default function MessageRow({ m, highlight = false, markMaster = true }: 
         </div>
         {/* F-10: a card message's text is the same questions in plain Markdown (for roles); the card replaces it. */}
         {!question && <Markdown text={m.text} />}
-        {!question && !artifact && <MockPreviews text={m.text} />}
+        {/* a card shows its own previews, so the message text above it is not read twice */}
+        {!card && !artifact && <FilePreviews texts={[m.text]} featureId={featureId} />}
         {card}
         <Reactions reactions={m.reactions} />
         <Receipts receipts={m.receipts} />
