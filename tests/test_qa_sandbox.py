@@ -224,6 +224,47 @@ def test_fire_pr_card_files_a_real_pr_card_on_a_real_worktree_and_approve_fails_
                                              if x["key"] == "F-1")["branch"]["pr_state"] == "open"
 
 
+def test_fire_previews_gives_f1_a_worktree_and_files_three_cards_naming_files_in_every_form(sandbox):
+    """F-50: `previews` puts a shot in F-1's worktree and in the project folder, then files an approval, a question card and
+    a commit request whose texts name a docs path, a bare name, relative paths, an absolute path and one missing file; the
+    preview routes resolve all of them but the missing one, the tree's copy wins for a relative path, and reset clears it."""
+    mod, work, _ = sandbox
+    app = mod.build_app(8790, work, "demo")
+    auth = {"Authorization": "Bearer sb-token"}
+    with TestClient(app) as c:
+        r = c.post("/qa/fire", json={"kind": "previews"}, headers=auth)
+        assert r.status_code == 200, r.text
+        r = r.json()
+        db = app.state.app.projects["demo"].db
+        tree = r["tree"]
+        assert r["feature"] == "F-1" and tree.endswith(os.sep + "f1") and os.path.isdir(tree)
+        assert r["absolute"] == os.path.join(tree, "ui/test-results/shots/tree-shot.png") and os.path.isfile(r["absolute"])
+        assert os.path.isfile(work / "repo" / "demo" / "qa" / "shots" / "project-shot.png")
+        # the three cards, each naming files
+        a, q, cm = db.approval(r["approval"]), db.question(r["question"]), db.commit(r["commit"])
+        assert a["brief"]["doc"] == "mock-export.html" and ".aiteams/features/F-1/shot.png" in a["summary"]
+        assert "ui/test-results/shots/tree-shot.png" in a["summary"]
+        text = q["intro"] + " " + q["payload"]["questions"][0]["question"] + " " + q["payload"]["questions"][0]["options"][1]["description"]
+        assert ".aiteams/features/F-1/mock-export.html" in text and "ui/test-results/shots/missing.png" in text
+        assert "qa/shots/project-shot.png" in text and r["absolute"] in text
+        assert r["absolute"] in cm["message"] and cm["state"] == "master_review" and cm["files"][0].startswith("qa/preview_")
+        assert os.path.isfile(os.path.join(tree, cm["files"][0]))  # the request's file is in the tree, where F-1 now works
+        refs = [".aiteams/features/F-1/shot.png", ".aiteams/features/F-1/mock-export.html", "mock-export.html", "shot.png",
+                "ui/test-results/shots/tree-shot.png", "qa/shots/project-shot.png", r["absolute"], "ui/test-results/shots/missing.png"]
+        got = c.post("/api/p/demo/preview/resolve", json={"feature": 1, "refs": refs}, headers=auth).json()
+        assert [g["kind"] for g in got] == ["image", "html", "html", "image", "image", "image", "image", None]
+        tree_png = c.get(got[4]["url"], headers=auth).content
+        assert tree_png == open(r["absolute"], "rb").read() != c.get(got[5]["url"], headers=auth).content
+        assert c.get(got[2]["url"], headers=auth).headers["content-security-policy"].startswith("sandbox")
+        assert c.get("/api/p/demo/preview", params={"path": "mock-export.html"}, headers=auth).status_code == 404  # no feature
+        assert len(c.get("/api/p/demo/inbox", headers=auth).json()["commits"]) == 2  # the seeded one and this one
+        assert c.post("/qa/fire", json={"kind": "previews", "feature": "F-9"}, headers=auth).status_code == 404
+        assert c.post("/qa/reset", headers=auth).status_code == 200
+        assert not os.path.exists(tree)
+        got = c.post("/api/p/demo/preview/resolve", json={"feature": 1, "refs": refs[4:7]}, headers=auth).json()
+        assert [g["kind"] for g in got] == [None, None, None]  # the shots went with the repo and its worktree
+
+
 def test_fire_commit_group(sandbox):
     mod, work, _ = sandbox
     app = mod.build_app(8790, work, "demo")

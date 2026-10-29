@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import os
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
-from .. import branches, workflow
+from .. import branches, previews, workflow
 from ..models import (ApprovalDecideBody, BrainstormBody, CommitDecideBody, FeatureFreshStartBody, FeaturePatchBody,
-                      NewTaskBody, ResolveBody)
+                      NewTaskBody, PreviewResolveBody, ResolveBody)
 from .public import _project, _state
 
 feat_api = APIRouter(prefix="/api")
@@ -98,6 +99,31 @@ def mock_file(request: Request, pid: str, fid: int, name: str):
     proj = _project(request, pid)
     p = workflow.mock_path(proj.path, _feature(proj, fid), name)
     return FileResponse(p, media_type=workflow.MOCK_TYPES[os.path.splitext(name)[1].lower()], headers=MOCK_HEADERS)
+
+
+@feat_api.get("/p/{pid}/preview")
+def preview_file(request: Request, pid: str, path: str, feature: int | None = None):
+    """F-50: a file a message or card names (previews.resolve: docs path, bare name, absolute, `~` or relative), with the
+    mock's sandbox headers. `feature` is the feature it is named in."""
+    p, _ = previews.resolve(_project(request, pid), path, feature)
+    return FileResponse(p, media_type=workflow.MOCK_TYPES[os.path.splitext(p)[1].lower()], headers=MOCK_HEADERS)
+
+
+@feat_api.post("/p/{pid}/preview/resolve")
+def preview_resolve(request: Request, pid: str, body: PreviewResolveBody):
+    """F-50: which of `refs` can be shown: [{ref, kind: html|image|null, url}]. A ref that is refused or missing comes back
+    with kind null and no url, never as an error (an iframe can't report a 404, so the UI asks first)."""
+    proj = _project(request, pid)
+    out = []
+    for ref in body.refs:
+        try:
+            _, kind = previews.resolve(proj, ref, body.feature)
+        except HTTPException:
+            out.append({"ref": ref, "kind": None, "url": None})
+            continue
+        q = {"path": ref, **({"feature": body.feature} if body.feature is not None else {})}
+        out.append({"ref": ref, "kind": kind, "url": f"/api/p/{pid}/preview?{urlencode(q)}"})
+    return out
 
 
 @feat_api.get("/p/{pid}/approvals")

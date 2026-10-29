@@ -146,6 +146,11 @@ class LockBody(BaseModel):
     force: bool = False
 
 
+class PreviewResolveBody(BaseModel):
+    feature: int | None = None  # the feature the references are named in (a bare name needs it)
+    refs: list[str] = Field(max_length=20)
+
+
 class FreshStartBody(BaseModel):
     handoff: bool = True
     lane: str = ""  # F-41: the session to rotate: "" = the role's main one, else a feature key ("F-36")

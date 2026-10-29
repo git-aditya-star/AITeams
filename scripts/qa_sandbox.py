@@ -28,7 +28,7 @@ DEFAULT_TOKEN = "qa-sandbox-token"
 FIRE_KINDS = ("message", "question", "question_message", "blocker", "approval", "commit_request", "committed",
               "commit_failed", "standup", "stopped", "interrupted", "fresh_session", "rate_limit", "rate_clear",
               "reaction", "card", "card_withdraw", "withdraw", "brainstorm", "commit_group", "plugin_missing",
-              "turn_event", "stall_check", "long_turn", "branch_card", "pr_card", "lane_turn")
+              "turn_event", "stall_check", "long_turn", "branch_card", "pr_card", "lane_turn", "previews")
 
 
 def isolate_env(home: Path, token: str) -> None:
@@ -388,6 +388,21 @@ LIVE_EVENTS = [
 ]
 
 
+def _own_tree(proj, feat: dict, branch: str | None = None, commits: int = 0) -> None:
+    """A feature without a confirmed branch gets a real `new` worktree (as if its Branch card were approved), with `commits`
+    tiny commits on it. One that has a branch row is left alone."""
+    from aiteams import branches
+    db = proj.db
+    if db.feature_branch(feat["id"]) is not None:
+        return
+    applied = branches.apply_branch(proj, feat, {"mode": "new", "branch": branch or f"feat/f{feat['id']}-demo", "base": "main"})
+    tree = Path(db.set_feature_branch(feat["id"], **{k: v for k, v in applied.items() if k != "warnings"})["tree"])
+    for i in range(commits):
+        _write(tree, f"docs/{feat['key'].lower()}-note-{i + 1}.md", f"# {feat['key']} note {i + 1}\n")
+        _git(tree, "add", "-A")
+        _git(tree, "commit", "-qm", f"docs: note {i + 1} for {feat['key']}")
+
+
 async def fire(st, proj, body: dict) -> dict:
     """Emit one live event through the real code paths; returns the conversation the toast should open."""
     from aiteams import config, plugins, workflow
@@ -500,18 +515,10 @@ async def fire(st, proj, body: dict) -> dict:
         # (default 3) tiny commits on it, so the card lists real commits. The sandbox repo has no origin, so Approve fails the
         # real way (a 409 "this repo has no `origin` remote..."), which the card shows. {destination, title, body}; with
         # {pr_state (or state): open|merged|closed, pr_url} no card is filed: the feature's header chip shows that pull request.
-        from aiteams import branches
         feat = workflow.resolve_feature(db, body.get("feature", "F-1"))
         if feat is None:
             raise ValueError(f"unknown feature {body.get('feature')}")
-        if db.feature_branch(feat["id"]) is None:
-            applied = branches.apply_branch(proj, feat, {"mode": "new", "branch": body.get("branch") or f"feat/f{feat['id']}-demo",
-                                                         "base": "main"})
-            tree = Path(db.set_feature_branch(feat["id"], **{k: v for k, v in applied.items() if k != "warnings"})["tree"])
-            for i in range(int(body.get("commits", 3))):
-                _write(tree, f"docs/{feat['key'].lower()}-note-{i + 1}.md", f"# {feat['key']} note {i + 1}\n")
-                _git(tree, "add", "-A")
-                _git(tree, "commit", "-qm", f"docs: note {i + 1} for {feat['key']}")
+        _own_tree(proj, feat, body.get("branch"), int(body.get("commits", 3)))
         pr_state = body.get("pr_state") or body.get("state")
         if pr_state:
             if pr_state not in ("open", "merged", "closed"):
@@ -525,6 +532,43 @@ async def fire(st, proj, body: dict) -> dict:
                                           body.get("body", "Adds the CSV export behind the new button.\n\nTested in the sandbox."))
             out.update(approval=a["id"], feature=feat["key"], conversation=feat["conversation_id"], payload=a["payload"])
         await hub.broadcast("feature", db.feature(feat["id"]))
+    elif kind == "previews":
+        # F-50: fixtures for the inline previews on {feature} (default F-1). It gets a real worktree (as pr_card does) holding
+        # ui/test-results/shots/tree-shot.png, the project folder gets qa/shots/project-shot.png, and the feature's docs get
+        # mock-export.html and shot.png (F-1's already hold them). Then, as {role} (default lead, so the commit goes straight to
+        # the Master), one approval, one question card and one commit request, each naming files in the four forms: a docs path,
+        # a bare name, a path relative to the tree or the project, and the tree shot's absolute path; the card also names
+        # ui/test-results/shots/missing.png, which does not exist. A fresh fire files three more; /qa/reset clears it all.
+        from aiteams import branches
+        feat = workflow.resolve_feature(db, body.get("feature", "F-1"))
+        if feat is None:
+            raise ValueError(f"unknown feature {body.get('feature')}")
+        _own_tree(proj, feat)
+        work = Path(branches.tree_for(db, feat["id"]) or repo)
+        docs = Path(workflow.docs_dir(proj.path, feat))
+        _write(docs, "mock-export.html", MOCK_EXPORT_HTML)
+        _write(docs, "shot.png", _png())
+        _write(work, "ui/test-results/shots/tree-shot.png", _png(200, 120))
+        _write(repo, "qa/shots/project-shot.png", _png(120, 80))
+        absolute = str(work / "ui/test-results/shots/tree-shot.png")
+        docs_ref, tree_ref = f".aiteams/features/{feat['key']}/shot.png", "ui/test-results/shots/tree-shot.png"
+        mock_ref = f".aiteams/features/{feat['key']}/mock-export.html"
+        a = await workflow.request_approval(st, proj, role, None, feat["key"], f"Design sign-off with shots {n}", brief={
+            "what": f"Sign off the export mock and the shot `{docs_ref}`.",
+            "if_approved": f"Frontend builds it as drawn; the tree's shot is `{tree_ref}`.",
+            "tradeoffs": ["The project-level reference is qa/shots/project-shot.png", "none"], "doc": "mock-export.html"})
+        q = await workflow.ask_master(st, proj, role, None, feat["key"], [
+            {"question": "Which of `mock-export.html` and `qa/shots/project-shot.png` is closer?", "header": "Mock", "options": [
+                {"label": "The mock", "description": f"As in `{tree_ref}`"},
+                {"label": "The shot", "description": f"Absolute: {absolute}"}]}],
+            f"Mock: `{mock_ref}`. Missing on purpose: `ui/test-results/shots/missing.png`.")
+        rel = f"qa/preview_{n}.txt"
+        _write(work, rel, f"previews {n}\n")
+        c = await workflow.request_commit(st, proj, role, None, feat["key"], [rel],
+                                          f"test: shots for the export mock\n\nShot `{absolute}`, mock `mock-export.html`, "
+                                          f"project shot `qa/shots/project-shot.png`.")
+        out.update(feature=feat["key"], conversation=feat["conversation_id"], approval=a["id"], question=q["id"],
+                   message=q["message_id"], commit=c["id"], tree=str(work), absolute=absolute)
     elif kind == "lane_turn":
         # F-41: a feature session of {role} (default frontend) on {feature} (default F-1), as if the role worked there: an
         # active session on the lane, a turn on it ({state}: running, the default, or done; {context_tokens}) and a message
