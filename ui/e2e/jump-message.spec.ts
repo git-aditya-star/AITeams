@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 
 // F-47: a jump (`?m=<id>`) scrolls to the message once, tints it amber for 4s, and drops `m` from the URL (a history replace, the other
@@ -58,25 +58,43 @@ test('a jump is a history replace: Back leaves the page the jump started from', 
   await expect(page).toHaveURL(/[?&]c=general(&|$)/) // one entry for the jump, not two
 })
 
-test('a message that arrives after the jump does not pull the view back', async ({ page, qa }) => {
-  await qa.open('/p/demo?c=feature-1')
-  const ids = await fill(qa)
-  const target = ids[10]
+// Scrolls the list to the top the way a user does (a real wheel, which also ends the settle window), then waits for it to land.
+async function wheelToTop(page: Page) {
+  await list(page).hover()
+  await page.mouse.wheel(0, -100000)
+  await expect.poll(() => scrollTop(page)).toBe(0)
+}
 
-  await page.goto(`/p/demo?c=feature-1&m=${target}`)
-  const row = page.locator(`#m-${target}`)
-  await expect(row).toBeInViewport()
-  await expect(page).not.toHaveURL(/[?&]m=/)
-
-  await list(page).evaluate((el) => { el.scrollTop = 0 }) // scroll away, far from the bottom
+// A message arrives while the user is looking at the top of a long chat, far from the jumped-to row: the view stays where it is.
+async function noPullBack(page: Page, qa: Fire, row: Locator) {
   await expect(row).not.toBeInViewport()
-  expect(await scrollTop(page)).toBe(0)
-
   const fresh = (await qa.fire('message', { conversation: 'feature-1', role: 'backend', text: 'Arrived after the jump' })).message as number
   await expect(page.locator(`#m-${fresh}`)).toHaveCount(1)
   await frames(page)
   expect(await scrollTop(page)).toBe(0)
   await expect(row).not.toBeInViewport()
+}
+
+test('a message that arrives after the user scrolled away does not pull the view back', async ({ page, qa }) => {
+  await qa.open('/p/demo?c=feature-1')
+  const ids = await fill(qa)
+  await page.goto(`/p/demo?c=feature-1&m=${ids[10]}`)
+  const row = page.locator(`#m-${ids[10]}`)
+  await expect(row).toBeInViewport()
+  await expect(page).not.toHaveURL(/[?&]m=/)
+  await wheelToTop(page)
+  await noPullBack(page, qa, row)
+})
+
+test('a message that arrives after the settle window has run out does not pull the view back', async ({ page, qa }) => {
+  await qa.open('/p/demo?c=feature-1')
+  const ids = await fill(qa)
+  await page.goto(`/p/demo?c=feature-1&m=${ids[10]}`)
+  const row = page.locator(`#m-${ids[10]}`)
+  await expect(row).toBeInViewport()
+  await page.waitForTimeout(2300) // no input at all: the window ends by itself after 2s
+  await list(page).evaluate((el) => { el.scrollTop = 0 })
+  await noPullBack(page, qa, row)
 })
 
 test('the amber tint is gone after about 4 seconds', async ({ page, qa }) => {
@@ -115,4 +133,59 @@ test('the same message again scrolls to it again, with the tint', async ({ page,
   await expect(row).toBeInViewport()
   await expect(row).toHaveCSS('background-color', tint)
   await expect(page).not.toHaveURL(/[?&]m=/)
+})
+
+// F-47 settle: content that renders after the jump's one scroll (a diagram, an image preview) grows the list above the row and would
+// push it out of view. For 2s after a jump, the row is re-centred on each resize; the first user input on the list ends that window.
+
+// A block above the row, as late-rendering content would be. Chrome's own scroll anchoring is off, so the measurement is only ours.
+const growAbove = (page: Page, px: number) =>
+  list(page).evaluate((el, h) => {
+    el.style.overflowAnchor = 'none'
+    const block = document.createElement('div')
+    block.style.height = `${h}px`
+    el.firstElementChild!.prepend(block) // the wrapper around the rows
+  }, px)
+
+test("the seed's late-rendering diagram and image above a toast jump do not push the row out of view", async ({ page, qa }) => {
+  await qa.open('/p/demo?c=general')
+  const target = (await qa.fire('blocker', { text: '@master look at this' })).message as number // lands in F-1's chat, below the seeded diagram (#14) and image preview
+  await fill(qa)
+  await page.locator('[data-toast="blocker"] button[title]').click()
+  const row = page.locator(`#m-${target}`)
+  await expect(row).toBeInViewport({ ratio: 1 })
+  await page.waitForTimeout(1500) // the diagram and the preview render after the scroll
+  await expect(row).toBeInViewport({ ratio: 1 })
+  await page.mouse.move(0, 0)
+  await page.screenshot({ path: `${SHOTS}/jump-message-settled.png`, animations: 'disabled' })
+})
+
+test('content that grows above the row after the jump is followed: the row stays in view', async ({ page, qa }) => {
+  await qa.open('/p/demo?c=feature-1')
+  const ids = await fill(qa)
+  await page.goto(`/p/demo?c=feature-1&m=${ids[10]}`)
+  const row = page.locator(`#m-${ids[10]}`)
+  await expect(row).toBeInViewport({ ratio: 1 })
+  await growAbove(page, 700) // more than half the list's height: without the follow-up the row would be below the fold
+  await expect(row).toBeInViewport({ ratio: 1 })
+})
+
+test('a wheel right after the jump ends the follow-up: the view is not pulled back', async ({ page, qa }) => {
+  await qa.open('/p/demo?c=feature-1')
+  const ids = await fill(qa)
+  await page.goto(`/p/demo?c=feature-1&m=${ids[10]}`)
+  const row = page.locator(`#m-${ids[10]}`)
+  await expect(row).toBeInViewport({ ratio: 1 })
+
+  const before = await scrollTop(page)
+  await list(page).hover()
+  await page.mouse.wheel(0, 40)
+  await expect.poll(() => scrollTop(page)).not.toBe(before)
+  const after = await scrollTop(page)
+
+  await growAbove(page, 700)
+  await frames(page)
+  await page.waitForTimeout(300)
+  expect(await scrollTop(page)).toBe(after)
+  await expect(row).not.toBeInViewport()
 })
