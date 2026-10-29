@@ -114,26 +114,82 @@ def test_group_order_inbox_item_and_group_commit(client, pid, repo):
     assert decide(client, pid, lone["id"]).status_code == 200  # singles unchanged
 
 
-def test_stale_member_commits_nothing_then_force(client, pid, repo):
+def review(client, pid, cid, lead="lead"):
+    r = client.post(f"/internal/commits/{cid}/review", json={"decision": "approve"}, headers=hdr(client, pid, lead))
+    assert r.status_code == 200, r.text
+
+
+def test_stale_member_sends_the_whole_group_back_and_commits_nothing(client, pid, repo):
+    """F-45: one member's file changed after the Lead approved it: nothing is committed, every pending member goes back to
+    lead_review (force does not override), the post lists the group, and a re-approval makes it committable again."""
+    db = db_of(client, pid)
     base = request(client, pid, repo, "backend", "api.py")
     ui = request(client, pid, repo, "frontend", "ui.ts", [base["id"]])
     head = git(repo, "rev-parse", "HEAD")
     (repo / "ui.ts").write_text("edited after review\n")
+    db.x("DELETE FROM wake_queue")
+    r = decide(client, pid, base["id"], group=True, force=True)
+    assert r.status_code == 409 and r.json()["detail"] == {"sent_back": {str(ui["id"]): ["ui.ts"]}}
+    assert git(repo, "rev-parse", "HEAD") == head  # no git write
+    b, u = db.commit(base["id"]), db.commit(ui["id"])
+    assert (b["state"], u["state"]) == ("lead_review", "lead_review")
+    assert u["note"] == "changed after review: ui.ts"
+    assert b["note"] == f"changed after review: #{ui['id']} ui.ts (same group)"
+    inbox = client.get(f"/api/p/{pid}/inbox").json()
+    assert inbox["groups"] == [] and inbox["count"] == 0  # it left the Master's Inbox
+    posts = [m for m in db.messages("feature-1", limit=5) if "went back to Lead review" in m["text"]]
+    assert len(posts) == 1 and posts[0]["author"] == "master" and posts[0]["type"] == "Decision"
+    assert posts[0]["text"] == (f"@backend @lead @frontend Commit #{base['id']}, #{ui['id']} went back to Lead review: "
+                                f"`ui.ts` changed after approval. (group: #{base['id']}, #{ui['id']})")
+    assert posts[0]["mentions"] == ["backend", "lead", "frontend"]
+    assert {"lead", "backend", "frontend"} <= {w["role"] for w in db.queued_wakes()}  # the Lead is woken to re-review
+    review(client, pid, base["id"])  # the Lead re-approves both (each is re-hashed now)
+    review(client, pid, ui["id"])
     r = decide(client, pid, base["id"], group=True)
-    assert r.status_code == 409 and r.json()["detail"] == {"stale": {str(ui["id"]): ["ui.ts"]}}
-    assert git(repo, "rev-parse", "HEAD") == head
-    assert decide(client, pid, base["id"], group=True, force=True).status_code == 200
+    assert r.status_code == 200, r.text
     assert git(repo, "show", "HEAD:ui.ts") == "edited after review"
+
+
+def test_a_member_edited_between_filing_and_approval_is_not_stale(client, pid, repo):
+    """F-45: the hashes are taken when the Lead approves, so an edit the Lead saw counts as reviewed."""
+    base = request(client, pid, repo, "backend", "api.py", approve=False)
+    ui = request(client, pid, repo, "frontend", "ui.ts", [base["id"]], approve=False)
+    (repo / "ui.ts").write_text("edited before review\n")
+    review(client, pid, base["id"])
+    review(client, pid, ui["id"])
+    r = decide(client, pid, base["id"], group=True)
+    assert r.status_code == 200, r.text
+    assert git(repo, "show", "HEAD:ui.ts") == "edited before review"
+
+
+def test_a_stale_group_member_in_another_feature_posts_to_each_conversation(client, pid, repo):
+    db = db_of(client, pid)
+    client.post(f"/api/p/{pid}/features", json={"text": "Other", "starter": "product"})
+    base = request(client, pid, repo, "backend", "api.py")
+    (repo / "ui.ts").write_text("ui.ts\n")
+    ui = client.post("/internal/commits", json={"feature": "F-2", "files": ["ui.ts"], "message": "add ui.ts",
+                                                "requires": [base["id"]]}, headers=hdr(client, pid, "frontend")).json()
+    review(client, pid, ui["id"], "lead-2")  # F-2 is Lead 2's
+    (repo / "api.py").write_text("changed\n")
+    r = decide(client, pid, base["id"], group=True)
+    assert r.status_code == 409 and r.json()["detail"] == {"sent_back": {str(base["id"]): ["api.py"]}}
+    one = [m for m in db.messages("feature-1", limit=5) if "went back to Lead review" in m["text"]]
+    two = [m for m in db.messages("feature-2", limit=5) if "went back to Lead review" in m["text"]]
+    assert len(one) == 1 and len(two) == 1  # one line per affected conversation
+    assert one[0]["text"].startswith(f"@backend @lead Commit #{base['id']} went back")
+    assert two[0]["text"].startswith(f"@frontend @lead Commit #{ui['id']} went back")
+    assert {db.commit(base["id"])["state"], db.commit(ui["id"])["state"]} == {"lead_review"}
 
 
 def test_mid_group_failure_rolls_back(client, pid, repo):
     db = db_of(client, pid)
     (repo / "wip.py").write_text("someone else's work\n")
     base = request(client, pid, repo, "backend", "api.py")
-    ui = request(client, pid, repo, "frontend", "ui.ts", [base["id"]])
+    ui = request(client, pid, repo, "frontend", "ui.ts", [base["id"]], approve=False)
+    (repo / "ui.ts").unlink()  # gone before the Lead approves (F-45): not a change after review, but git add of a vanished,
+    review(client, pid, ui["id"])  # untracked path still fails on the second member
     head = git(repo, "rev-parse", "HEAD")
-    (repo / "ui.ts").unlink()  # git add of a vanished, untracked path fails on the second member
-    r = decide(client, pid, base["id"], group=True, force=True)
+    r = decide(client, pid, base["id"], group=True)
     assert r.status_code == 200
     assert {x["id"]: x["state"] for x in r.json()["group"]} == {base["id"]: "master_review", ui["id"]: "failed"}
     assert git(repo, "rev-parse", "HEAD") == head  # the first member's commit was undone

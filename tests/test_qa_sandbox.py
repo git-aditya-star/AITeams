@@ -59,6 +59,8 @@ def test_seeded_app_and_fire(sandbox):
         approval = next(f for f in frames if f["event"] == "approval")
         assert approval["data"]["title"] == "Sign off the CSV columns" and approval["data"]["state"] == "pending"
         assert c.post("/qa/fire", json={"kind": "committed"}, headers=auth).json()["state"] == "committed"
+        # F-45: a file that vanished after filing would be sent back to the Lead, so the fire records it as gone for good
+        assert c.post("/qa/fire", json={"kind": "commit_failed"}, headers=auth).json()["state"] == "failed"
         assert c.post("/qa/reset", headers=auth).json() == {"ok": True}
         assert len(c.get("/api/p/demo/inbox", headers=auth).json()["approvals"]) == 1
     assert not (fake_home / ".aiteams").exists()

@@ -1164,6 +1164,12 @@ def _sha(project_path: str, rel: str) -> str | None:
     return h.hexdigest()
 
 
+def _changed(root: str, c: dict) -> list[str]:
+    """F-45: the files of a commit request whose content under `root` differs from the state in its `hashes` (taken at
+    the Lead's approval, or at filing for a Lead's own request). A missing file is its own state (None)."""
+    return [f for f in c["files"] if _sha(root, f) != c["hashes"].get(f)]
+
+
 def _tracked(project_path: str, f: str) -> bool:
     repo, rel = _where(project_path, f)
     return _git(repo, "ls-files", "--error-unmatch", "--", rel).returncode == 0
@@ -1470,7 +1476,10 @@ async def review_commit(st, proj: Project, role: str, cid: int, decision: str, n
     feat = proj.db.feature(c["feature_id"]) if c["feature_id"] else None
     conv = feat["conversation_id"] if feat else f"dm-{c['role']}"
     if decision == "approve":
-        c = proj.db.update_commit(cid, state="master_review", note=note or None)
+        # F-45: the Master may commit only what the Lead approved, so the files' state now replaces the filing-time hashes
+        root, _ = _commit_ctx(proj, c)
+        hashes = {f: _sha(root, f) for f in c["files"]}
+        c = proj.db.update_commit(cid, state="master_review", note=note or None, hashes=json.dumps(hashes))
         await _post(st, proj, conv, "system", f"{role_name(role)} approved commit #{cid}; waiting on the Master.", "System", [],
                     turn_id, ref=f"{COMMIT_EVENT}{cid}")
     else:
@@ -1528,7 +1537,7 @@ def _diff_sync(project_path: str, c: dict) -> dict:
         files.append({"path": f, "status": status, "binary": binary, "additions": adds, "deletions": dels,
                       "size": os.path.getsize(full) if exists else None, "built": f.startswith(BUILT_PREFIX),
                       "text": text})
-    stale = [f for f in c["files"] if _sha(project_path, f) != c["hashes"].get(f)]
+    stale = _changed(project_path, c)
     totals = {"files": len(files), "additions": sum(x["additions"] for x in files),
               "deletions": sum(x["deletions"] for x in files)}
     return {"diff": "".join(parts), "stale": stale, "files": files, "totals": totals}
@@ -1645,8 +1654,41 @@ def _decision_mentions(requester: str) -> list[str]:
     return [requester] if requester in LEADS else [requester, "lead"]  # in a feature, "lead" means its Lead
 
 
+async def _send_back(st, proj: Project, members: list[dict], stale: dict[str, list[str]]) -> dict[str, list[str]]:
+    """F-45: files changed after the Lead approved a request, so nothing is committed. Every member still waiting on the
+    Master (the whole commit group; a single request is a group of one) goes back to lead_review with the changed paths
+    in its note, leaves the Inbox, and the Lead and each requester are told, once per conversation. `stale` maps a member's
+    id (as text) to its changed paths; it is returned as the 409's `sent_back`. No git write happens here.
+    The line is the Master's `Decision` like the other commit decisions, because a System line wakes nobody."""
+    db = proj.db
+    back = [m for m in members if m["state"] == "master_review"]
+    for m in back:
+        own = stale.get(str(m["id"]))
+        what = ", ".join(own) if own else "; ".join(f"#{i} {', '.join(p)}" for i, p in stale.items()) + " (same group)"
+        db.update_commit(m["id"], state="lead_review", note=f"changed after review: {what}")
+    by_conv: dict[str, list[dict]] = {}
+    for m in back:
+        feat = db.feature(m["feature_id"]) if m["feature_id"] else None
+        by_conv.setdefault(feat["conversation_id"] if feat else f"dm-{m['role']}", []).append(m)
+    changed = ", ".join(f"`{p}`" for p in dict.fromkeys(p for ps in stale.values() for p in ps))
+    group = " (group: " + ", ".join(f"#{m['id']}" for m in back) + ")" if len(back) > 1 else ""
+    for conv, ms in by_conv.items():
+        who: list[str] = []
+        for m in ms:
+            who += [r for r in _decision_mentions(m["role"]) if r not in who]
+        ids = ", ".join(f"#{m['id']}" for m in ms)
+        await _post(st, proj, conv, "master", " ".join("@" + r for r in who)
+                    + f" Commit {ids} went back to Lead review: {changed} changed after approval.{group}", "Decision", who)
+    for m in back:
+        await proj.hub.broadcast("commit", db.commit(m["id"]))
+    await broadcast_inbox(proj)
+    for fid in {m["feature_id"] for m in back}:
+        await _recheck(st, proj, fid)
+    return stale
+
+
 async def decide_commit(st, proj: Project, cid: int, decision: str, message: str | None, note: str | None,
-                        force: bool, group: bool = False) -> dict:
+                        group: bool = False) -> dict:
     c = proj.db.commit(cid)
     if c is None:
         raise HTTPException(404, "unknown commit")
@@ -1659,7 +1701,7 @@ async def decide_commit(st, proj: Project, cid: int, decision: str, message: str
             raise HTTPException(409, why)
         others = _open_others(g, cid)
         if group and others:  # a group of one (or the rest committed) takes the single path below
-            return await _commit_group(st, proj, [m for m in g if m["state"] != "committed"], note, force)
+            return await _commit_group(st, proj, [m for m in g if m["state"] != "committed"], note)
         if others:
             o = others[0]
             raise HTTPException(409, f"#{cid} is part of a commit group with #{o['id']} ({o['state']}): "
@@ -1676,9 +1718,9 @@ async def decide_commit(st, proj: Project, cid: int, decision: str, message: str
         await _activity(proj, "commit", f"Commit #{cid} rejected by the Master", c["role"], c["feature_id"], conv, f"commit:{cid}")
     else:
         root, expect = _commit_ctx(proj, c)  # F-39 B2: the feature's worktree and branch
-        stale = [f for f in c["files"] if _sha(root, f) != c["hashes"].get(f)]
-        if stale and not force:
-            raise HTTPException(409, {"stale": stale})
+        stale = _changed(root, c)  # F-45: first thing, no await up to the commit; the Lead reviewed other content
+        if stale:
+            raise HTTPException(409, {"sent_back": await _send_back(st, proj, [c], {str(cid): stale})})
         msg_text = (message or "").strip() or c["message"]
         proj.committing.add(cid)  # F-34: no withdrawing while it is being written
         try:
@@ -1729,18 +1771,18 @@ def _group_commit_sync(ctx: dict[int, tuple[str, tuple[str, str, str] | None]],
     return shas, None, ""
 
 
-async def _commit_group(st, proj: Project, members: list[dict], note: str | None, force: bool) -> dict:
-    """F-11: commit every pending member of a group in dependency order, all or nothing."""
+async def _commit_group(st, proj: Project, members: list[dict], note: str | None) -> dict:
+    """F-11: commit every pending member of a group in dependency order, all or nothing. F-45: if any member's files
+    changed after the Lead approved it, nothing is committed and the whole group goes back to Lead review."""
     db = proj.db
     bad = [m for m in members if m["state"] != "master_review"]
     if bad:
         raise HTTPException(409, {"group": [{"id": m["id"], "state": m["state"]} for m in members],
                                   "detail": f"#{bad[0]['id']} is {bad[0]['state']}"})
     ctx = {m["id"]: _commit_ctx(proj, m) for m in members}  # F-39 B2: each member's worktree and branch
-    stale = {str(m["id"]): s for m in members
-             if (s := [f for f in m["files"] if _sha(ctx[m["id"]][0], f) != m["hashes"].get(f)])}
-    if stale and not force:
-        raise HTTPException(409, {"stale": stale})
+    stale = {str(m["id"]): s for m in members if (s := _changed(ctx[m["id"]][0], m))}
+    if stale:
+        raise HTTPException(409, {"sent_back": await _send_back(st, proj, members, stale)})
     proj.committing.update(m["id"] for m in members)  # F-34: no withdrawing while they are being written
     try:
         shas, failed, out = await asyncio.to_thread(_group_commit_sync, ctx, members)

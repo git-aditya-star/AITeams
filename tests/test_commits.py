@@ -1,4 +1,5 @@
 """Commit requests: Lead review, Master approve (real git), stale/force, lead-direct, reject, lock conflicts."""
+import hashlib
 import os
 import re
 import subprocess
@@ -100,7 +101,7 @@ def test_full_flow_backend_lead_master(client, pid, repo):
     assert proj.db.commit(c12["id"])["message"] == "F-12: other"
 
 
-def test_stale_then_force_and_lead_direct_and_reject(client, pid, repo):
+def test_stale_is_sent_back_and_lead_direct_and_reject(client, pid, repo):
     proj = client.app.state.app.projects[pid]
     (repo / "a.py").write_text("1\n")
     lead = turn(client, pid, "lead")
@@ -110,10 +111,16 @@ def test_stale_then_force_and_lead_direct_and_reject(client, pid, repo):
     assert msgs[-1]["type"] == "Commit" and msgs[-1]["mentions"] == [] and "Waiting on the Master" in msgs[-1]["text"]
     assert proj.db.commit(c["id"])["message"] == "no feature"
     (repo / "a.py").write_text("2\n")
-    r = client.post(f"/api/p/{pid}/commits/{c['id']}/decide", json={"decision": "approve"})
-    assert r.status_code == 409 and r.json()["detail"] == {"stale": ["a.py"]}
-    assert client.get(f"/api/p/{pid}/commits/{c['id']}/diff").json()["stale"] == ["a.py"]
-    r = client.post(f"/api/p/{pid}/commits/{c['id']}/decide", json={"decision": "approve", "force": True}).json()
+    head = git(repo, "rev-parse", "HEAD")
+    r = client.post(f"/api/p/{pid}/commits/{c['id']}/decide", json={"decision": "approve", "force": True})  # F-45: no override
+    assert r.status_code == 409 and r.json()["detail"] == {"sent_back": {str(c["id"]): ["a.py"]}}
+    assert git(repo, "rev-parse", "HEAD") == head
+    row = proj.db.commit(c["id"])
+    assert row["state"] == "lead_review" and row["note"] == "changed after review: a.py"
+    assert client.get(f"/api/p/{pid}/commits/{c['id']}/diff").json()["stale"] == ["a.py"]  # the filing-time hash, until a Lead approves
+    assert client.post(f"/internal/commits/{c['id']}/review", json={"decision": "approve"}, headers=lead).status_code == 200
+    assert client.get(f"/api/p/{pid}/commits/{c['id']}/diff").json()["stale"] == []
+    r = client.post(f"/api/p/{pid}/commits/{c['id']}/decide", json={"decision": "approve"}).json()
     assert r["state"] == "committed" and git(repo, "show", "HEAD:a.py") == "2"
     # reject by the Master
     (repo / "b.py").write_text("x\n")
@@ -160,6 +167,113 @@ def test_validation_and_lock_conflict(client, pid, repo):
     assert r["state"] == "committed" and git(repo, "ls-files") == ""
 
 
+def review(client, pid, cid):
+    r = client.post(f"/internal/commits/{cid}/review", json={"decision": "approve"}, headers=turn(client, pid, "lead"))
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def sha(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def test_the_leads_approval_rehashes_so_an_edit_before_it_counts_as_reviewed(client, pid, repo):
+    """F-45: the hashes the Master's commit is checked against are taken when the Lead approves, not when it is filed."""
+    proj = client.app.state.app.projects[pid]
+    (repo / "w.py").write_text("v1\n")
+    cid = ask(client, pid, "backend", ["w.py"]).json()["id"]
+    assert proj.db.commit(cid)["hashes"] == {"w.py": sha("v1\n")}  # filing time
+    (repo / "w.py").write_text("v2\n")  # between filing and the Lead's approval
+    assert client.get(f"/api/p/{pid}/commits/{cid}/diff").json()["stale"] == ["w.py"]
+    assert review(client, pid, cid)["state"] == "master_review"
+    assert proj.db.commit(cid)["hashes"] == {"w.py": sha("v2\n")}  # approval time
+    assert client.get(f"/api/p/{pid}/commits/{cid}/diff").json()["stale"] == []
+    assert approve(client, pid, cid).json()["state"] == "committed"
+    assert git(repo, "show", "HEAD:w.py") == "v2"
+
+
+def test_a_file_changed_after_the_leads_approval_goes_back_to_lead_review(client, pid, repo):
+    proj = client.app.state.app.projects[pid]
+    (repo / "w.py").write_text("v1\n")
+    cid = ask(client, pid, "backend", ["w.py"]).json()["id"]
+    review(client, pid, cid)
+    head = git(repo, "rev-parse", "HEAD")
+    (repo / "w.py").write_text("v2 added after the review\n")
+    proj.db.x("DELETE FROM wake_queue")
+    r = approve(client, pid, cid, force=True)  # force is gone: it does not override
+    assert r.status_code == 409 and r.json()["detail"] == {"sent_back": {str(cid): ["w.py"]}}
+    assert git(repo, "rev-parse", "HEAD") == head and status(repo) == "?? w.py"  # no git write at all
+    row = proj.db.commit(cid)
+    assert row["state"] == "lead_review" and row["note"] == "changed after review: w.py" and row["sha"] is None
+    posts = [m for m in client.get(f"/api/p/{pid}/messages", params={"conversation": "dm-backend"}).json()
+             if "went back to Lead review" in m["text"]]
+    assert len(posts) == 1  # one line for the conversation, naming the path
+    assert posts[0]["author"] == "master" and posts[0]["type"] == "Decision" and posts[0]["mentions"] == ["backend", "lead"]
+    assert posts[0]["text"] == f"@backend @lead Commit #{cid} went back to Lead review: `w.py` changed after approval."
+    assert sorted(w["role"] for w in proj.db.queued_wakes()) == ["backend", "lead"]  # the Lead is woken to re-review
+    assert client.get(f"/api/p/{pid}/inbox").json()["count"] == 0  # it left the Master's Inbox
+    assert approve(client, pid, cid).status_code == 409  # and the Master cannot commit it until the Lead approves again
+    review(client, pid, cid)
+    assert approve(client, pid, cid).json()["state"] == "committed" and git(repo, "show", "HEAD:w.py") == "v2 added after the review"
+
+
+def test_a_file_deleted_or_restored_after_approval_is_a_change_but_a_deletion_the_lead_saw_commits(client, pid, repo):
+    proj = client.app.state.app.projects[pid]
+    for n in ("d1.py", "d2.py", "d3.py"):
+        (repo / n).write_text("x\n")
+    git(repo, "add", "d1.py", "d2.py", "d3.py")
+    git(repo, "commit", "-qm", "three files")
+    (repo / "d1.py").write_text("y\n")
+    cid1 = ask(client, pid, "backend", ["d1.py"]).json()["id"]
+    review(client, pid, cid1)
+    (repo / "d1.py").unlink()
+    r = approve(client, pid, cid1)
+    assert r.status_code == 409 and r.json()["detail"] == {"sent_back": {str(cid1): ["d1.py"]}}
+    assert proj.db.commit(cid1)["state"] == "lead_review" and git(repo, "ls-files").count("d1.py") == 1
+    (repo / "d2.py").unlink()  # deleted before the approval and still gone: commits as it always did
+    cid2 = ask(client, pid, "backend", ["d2.py"]).json()["id"]
+    review(client, pid, cid2)
+    assert proj.db.commit(cid2)["hashes"] == {"d2.py": None}
+    assert approve(client, pid, cid2).json()["state"] == "committed" and "d2.py" not in git(repo, "ls-files")
+    (repo / "d3.py").unlink()  # deleted at the approval, then it comes back: that is a change
+    cid3 = ask(client, pid, "backend", ["d3.py"]).json()["id"]
+    review(client, pid, cid3)
+    (repo / "d3.py").write_text("back\n")
+    r = approve(client, pid, cid3)
+    assert r.status_code == 409 and r.json()["detail"] == {"sent_back": {str(cid3): ["d3.py"]}}
+
+
+def test_a_leads_own_request_keeps_its_filing_hashes_and_goes_back_when_edited(client, pid, repo):
+    proj = client.app.state.app.projects[pid]
+    (repo / "l.py").write_text("v1\n")
+    c = ask(client, pid, "lead", ["l.py"]).json()
+    assert c["state"] == "master_review" and proj.db.commit(c["id"])["hashes"] == {"l.py": sha("v1\n")}  # no review, no re-hash
+    (repo / "l.py").write_text("v2\n")
+    r = approve(client, pid, c["id"])
+    assert r.status_code == 409 and r.json()["detail"] == {"sent_back": {str(c["id"]): ["l.py"]}}
+    assert proj.db.commit(c["id"])["state"] == "lead_review"
+    last = client.get(f"/api/p/{pid}/messages", params={"conversation": "dm-lead"}).json()[-1]
+    assert last["mentions"] == ["lead"] and last["text"].startswith(f"@lead Commit #{c['id']} went back to Lead review")
+    review(client, pid, c["id"])  # the Lead approves its own request again, which re-hashes it
+    assert proj.db.commit(c["id"])["hashes"] == {"l.py": sha("v2\n")}
+    assert approve(client, pid, c["id"]).json()["state"] == "committed" and git(repo, "show", "HEAD:l.py") == "v2"
+
+
+def test_an_outside_file_edited_after_the_leads_approval_is_sent_back(client, pid, repo, tmp_path):
+    proj = client.app.state.app.projects[pid]
+    sib = sibling(tmp_path)
+    real = os.path.realpath(sib / "etl.py")
+    (sib / "etl.py").write_text("v2\n")
+    cid = ask(client, pid, "backend", [sib / "etl.py"]).json()["id"]
+    (sib / "etl.py").write_text("v3 before the review\n")
+    review(client, pid, cid)
+    assert proj.db.commit(cid)["hashes"] == {real: sha("v3 before the review\n")}  # hashed in its own repo, by absolute path
+    (sib / "etl.py").write_text("v4 after the review\n")
+    r = approve(client, pid, cid)
+    assert r.status_code == 409 and r.json()["detail"] == {"sent_back": {str(cid): [real]}}
+    assert git(sib, "log", "--format=%s") == "init" and proj.db.commit(cid)["state"] == "lead_review"
+
+
 def test_commit_failure_is_reported(client, pid, repo):
     subprocess.run(["git", "config", "--unset", "user.name"], cwd=repo)
     subprocess.run(["git", "config", "--unset", "user.email"], cwd=repo)
@@ -181,11 +295,12 @@ def test_master_decision_on_a_role_request_wakes_the_lead_too(client, pid, repo,
     proj = client.app.state.app.projects[pid]
     (repo / "q.py").write_text("x\n")
     c = client.post("/internal/commits", json={"files": ["q.py"], "message": "q"}, headers=turn(client, pid, "qa")).json()
+    if outcome == "failed":  # gone before the Lead approves, so not a change after review (F-45)
+        (repo / "q.py").unlink()  # git add of a vanished, untracked path fails (the sandbox's commit_failed path)
     client.post(f"/internal/commits/{c['id']}/review", json={"decision": "approve"}, headers=turn(client, pid, "lead"))
     proj.db.x("DELETE FROM wake_queue")
     if outcome == "failed":
-        (repo / "q.py").unlink()  # git add of a vanished, untracked path fails (the sandbox's commit_failed path)
-        r = client.post(f"/api/p/{pid}/commits/{c['id']}/decide", json={"decision": "approve", "force": True}).json()
+        r = client.post(f"/api/p/{pid}/commits/{c['id']}/decide", json={"decision": "approve"}).json()
     else:
         r = client.post(f"/api/p/{pid}/commits/{c['id']}/decide", json={"decision": "reject", "note": "later"}).json()
     assert r["state"] == outcome
@@ -523,9 +638,12 @@ def test_diff_and_stale_work_on_an_outside_file_in_its_own_repo(client, pid, rep
     (sib / "etl.py").write_text("changed after the request\n")  # stale detection on the outside file
     assert client.get(f"/api/p/{pid}/commits/{cid}/diff").json()["stale"] == [os.path.realpath(sib / "etl.py")]
     r = approve(client, pid, cid)
-    assert r.status_code == 409 and r.json()["detail"] == {"stale": [os.path.realpath(sib / "etl.py")]}
+    assert r.status_code == 409 and r.json()["detail"] == {"sent_back": {str(cid): [os.path.realpath(sib / "etl.py")]}}  # F-45
     assert git(sib, "log", "--format=%s") == "init"  # nothing was committed anywhere
-    assert approve(client, pid, cid, force=True).json()["state"] == "committed"
+    assert client.app.state.app.projects[pid].db.commit(cid)["state"] == "lead_review"
+    assert approve(client, pid, cid, force=True).status_code == 409  # not a state the Master can commit
+    assert client.post(f"/internal/commits/{cid}/review", json={"decision": "approve"}, headers=turn(client, pid, "lead")).status_code == 200
+    assert approve(client, pid, cid).json()["state"] == "committed"  # the Lead approved the changed file
     assert git(sib, "show", "HEAD:etl.py") == "changed after the request"
 
 

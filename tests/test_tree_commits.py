@@ -1,5 +1,6 @@
 """F-39 B2, the commit half: a feature with a worktree resolves, checks, diffs and commits its request paths in the tree, on its
 branch; a tree on another branch fails the commit; `current` mode commits in the main folder after the same branch check."""
+import hashlib
 import os
 import shutil
 import subprocess
@@ -135,8 +136,35 @@ def test_stale_is_judged_on_the_trees_file(client, pid, repo, tree):
     assert client.get(f"/api/p/{pid}/commits/{c}/diff").json()["stale"] == []
     open(p, "w").write("two\n")  # the tree's file moving is
     assert client.get(f"/api/p/{pid}/commits/{c}/diff").json()["stale"] == ["api.py"]
+    head = git(tdir, "rev-parse", "HEAD")
     r = client.post(f"/api/p/{pid}/commits/{c}/decide", json={"decision": "approve"})
-    assert r.status_code == 409 and r.json()["detail"] == {"stale": ["api.py"]}
+    assert r.status_code == 409 and r.json()["detail"] == {"sent_back": {str(c): ["api.py"]}}  # F-45
+    assert git(tdir, "rev-parse", "HEAD") == head and proj_of(client, pid).db.commit(c)["state"] == "lead_review"
+
+
+def test_the_hashes_at_approval_are_taken_in_the_tree(client, pid, repo, tree):
+    """F-45: the Lead's approval re-hashes the tree's file (not the main folder's copy of the same path), so an edit before
+    the approval is reviewed, an edit of the main folder's copy never trips the guard, and one in the tree afterwards does."""
+    tdir, _ = tree
+    p = os.path.join(tdir, "api.py")
+    open(p, "w").write("one\n")
+    (repo / "api.py").write_text("main\n")
+    c = req(client, pid, ["api.py"]).json()["id"]
+    open(p, "w").write("two\n")  # between filing and the Lead's approval: the Lead reviews this
+    assert client.post(f"/internal/commits/{c}/review", json={"decision": "approve"}, headers=hdr(client, pid, "lead")).status_code == 200
+    db = proj_of(client, pid).db
+    assert db.commit(c)["hashes"] == {"api.py": hashlib.sha256(b"two\n").hexdigest()}
+    (repo / "api.py").write_text("main again\n")  # the main folder's copy of the path
+    open(p, "w").write("three\n")  # the tree's file, after the approval
+    r = client.post(f"/api/p/{pid}/commits/{c}/decide", json={"decision": "approve"})
+    assert r.status_code == 409 and r.json()["detail"] == {"sent_back": {str(c): ["api.py"]}}
+    open(p, "w").write("two\n")  # back to what was approved: not a change
+    r = client.post(f"/api/p/{pid}/commits/{c}/decide", json={"decision": "approve"})
+    assert r.status_code == 409  # it is in lead_review now, so the Master cannot commit it
+    assert client.post(f"/internal/commits/{c}/review", json={"decision": "approve"}, headers=hdr(client, pid, "lead")).status_code == 200
+    r = client.post(f"/api/p/{pid}/commits/{c}/decide", json={"decision": "approve"})
+    assert r.status_code == 200 and git(tdir, "show", "HEAD:api.py") == "two"
+    assert (repo / "api.py").read_text() == "main again\n"
 
 
 def test_a_tree_on_another_branch_fails_the_commit_and_commits_nothing(client, pid, repo, tree):

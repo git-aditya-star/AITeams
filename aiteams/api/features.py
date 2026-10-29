@@ -173,8 +173,7 @@ async def commit_diff(request: Request, pid: str, cid: int):
 @feat_api.post("/p/{pid}/commits/{cid}/decide")
 async def decide_commit(request: Request, pid: str, cid: int, body: CommitDecideBody):
     proj = _project(request, pid)
-    return await workflow.decide_commit(_state(request), proj, cid, body.decision, body.message, body.note, body.force,
-                                        body.group)
+    return await workflow.decide_commit(_state(request), proj, cid, body.decision, body.message, body.note, body.group)
 
 
 @feat_api.get("/p/{pid}/locks")

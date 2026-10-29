@@ -65,7 +65,6 @@ class CommitDecideBody(BaseModel):
     decision: str
     message: str | None = None
     note: str | None = None
-    force: bool = False
     group: bool = False  # F-11: commit the request's whole commit group, all or nothing
 
 

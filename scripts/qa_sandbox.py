@@ -439,8 +439,10 @@ async def fire(st, proj, body: dict) -> dict:
         c = await workflow.request_commit(st, proj, "lead", None, "F-1", [rel], text or f"QA commit {n}")
         if kind == "commit_failed":
             (repo / rel).unlink()  # git add of a vanished, untracked path fails: the real failure path
+            # F-45: the file is gone for good, as if it had been missing when the Lead approved, so it isn't "changed"
+            proj.db.update_commit(c["id"], hashes=json.dumps({rel: None}))
         if kind != "commit_request":
-            c = await workflow.decide_commit(st, proj, c["id"], "approve", None, None, force=True)
+            c = await workflow.decide_commit(st, proj, c["id"], "approve", None, None)
         out.update(commit=c["id"], state=c["state"])
     elif kind == "standup":
         su = db.create_standup(["lead", "frontend"], "master")
