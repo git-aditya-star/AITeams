@@ -1,4 +1,5 @@
-// Live-event toasts (F-1). Built only from WS frames, so nothing toasts on load or reconnect.
+// Live-event toasts (F-1). Built only from WS frames, so nothing toasts on load or reconnect (but `sentBackToast`, F-45,
+// which answers the Master's own click).
 import type { Activity, Approval, Commit, Feature, Message, Question, RateLimitInfo, Standup } from './api'
 import { fmtTime } from './api'
 import { roleName } from './roles'
@@ -12,6 +13,7 @@ export type Kind =
   | 'commit_request'
   | 'committed'
   | 'commit_failed'
+  | 'sent_back'
   | 'standup'
   | 'stopped'
   | 'interrupted'
@@ -27,6 +29,7 @@ export const KINDS: Record<Kind, { label: string; tone: Tone }> = {
   commit_request: { label: 'Commit request', tone: 'action' },
   committed: { label: 'Committed', tone: 'success' },
   commit_failed: { label: 'Commit failed', tone: 'error' },
+  sent_back: { label: 'Commit sent back', tone: 'warning' },
   standup: { label: 'Standup ready', tone: 'info' },
   stopped: { label: 'Turn stopped', tone: 'warning' },
   interrupted: { label: 'Interrupted', tone: 'warning' },
@@ -51,6 +54,14 @@ export type ToastCtx = { features: Feature[]; prevRateLimit: RateLimitInfo | nul
 const firstLine = (s: string | null | undefined) => (s || '').trim().split('\n')[0].trim()
 // Whole body as one paragraph; the toast clamps it and shows the full text on hover.
 const oneParagraph = (s: string | null | undefined) => (s || '').trim().replace(/\s+/g, ' ')
+
+// F-45: the toast after a Master approve was refused because files changed after the Lead's review. It answers that action,
+// not a WS frame; `sentBack` is the 409's {"<id>": [paths]}, and a repeat of the same ids replaces instead of stacking.
+export const sentBackToast = (sentBack: Record<string, string[]>): Toast =>
+  make('sent_back', {
+    key: `sent_back:${Object.keys(sentBack).join(',')}`,
+    text: `Sent back to Lead review: ${[...new Set(Object.values(sentBack).flat())].join(', ')}`,
+  })
 
 // Feature conversation for an approval/commit, else the requesting role's DM.
 export const convFor = (featureId: number | null, role: string, features: Feature[]) =>

@@ -16,6 +16,11 @@ export function leadReview(c: Commit): LeadReview | null {
   return null
 }
 
+// F-45: the note a request carries when files changed after the Lead's review and the Master's approve sent it back
+// (`changed after review: <paths>`). Only while it waits on the Lead again; the Lead's re-approve overwrites it.
+export const sentBackNote = (c: Commit): string | null =>
+  c.state === 'lead_review' && c.note?.startsWith('changed after review') ? c.note.trim() : null
+
 export const LEAD_TONE: Record<LeadReview['tone'], string> = {
   approved: 'bg-emerald-50 text-emerald-700',
   own: 'bg-amber-50 text-amber-800',

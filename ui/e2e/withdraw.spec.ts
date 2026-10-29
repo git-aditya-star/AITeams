@@ -56,7 +56,7 @@ test('a withdrawn commit request is grey, shows the reason, has no buttons and n
   await expect(chip(card)).toHaveText('withdrawn')
   await expect(chip(card)).toHaveClass(/bg-gray-100/)
   await expect(card.locator('[data-withdrawn]')).toHaveText(`Withdrawn: ${WHY}`)
-  await expect(card.getByRole('button', { name: /^(Approve|Reject|Commit anyway)$/ })).toHaveCount(0)
+  await expect(card.getByRole('button', { name: /^(Approve|Reject)$/ })).toHaveCount(0)
   await expect(card.getByPlaceholder(/^Note/)).toHaveCount(0)
   await expect(card.locator('[data-lead]')).toHaveCount(0) // "Lead's own, not reviewed" says nothing about a withdrawn request
   await expect(card).toContainText('feat: pull this back') // the message stays readable, as plain text
@@ -176,7 +176,7 @@ test('a withdrawn commit request leaves the Inbox and its card shows the reason,
   await expect(chip(card)).toHaveText('withdrawn')
   await expect(chip(card)).toHaveClass(/bg-gray-100/)
   await expect(card.locator('[data-withdrawn]')).toHaveText(`Withdrawn: ${WHY}`)
-  await expect(card.getByRole('button', { name: /^(Approve|Reject|Commit anyway)$/ })).toHaveCount(0)
+  await expect(card.getByRole('button', { name: /^(Approve|Reject)$/ })).toHaveCount(0)
   await expect(card.locator('[data-lead]')).toHaveCount(0)
   await expect(page.locator('[id^="m-"]', { hasText: `Commit request #${commit} withdrawn by lead: ${WHY}` })).toBeVisible()
   await card.scrollIntoViewIfNeeded()

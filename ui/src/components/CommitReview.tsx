@@ -6,7 +6,7 @@ import { roleName, stateChip, stateLabel } from '../roles'
 import { useAppSelector } from '../store'
 import { selectFeatureLabel, selectPid } from '../store/selectors'
 import { useCards } from './CardContext'
-import { CommitActions, CommitMessage } from './CommitCard'
+import { CommitActions, CommitMessage, SentBackNote } from './CommitCard'
 import DiffFile, { Counts, StatusBadge, foldedByDefault } from './DiffFile'
 import { leadReview } from './leadReview'
 import Markdown from './Markdown'
@@ -131,9 +131,9 @@ function Body({ c, data, onDecided }: { c: Commit & { feature?: string | null };
         <div className="mt-1 text-caption text-gray-600">
           {totals.files} file{totals.files === 1 ? '' : 's'} · <Counts a={totals.additions} d={totals.deletions} />
         </div>
-        {d.stale.length > 0 && (
-          <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 text-amber-900 px-2 py-1.5 text-caption">
-            Files changed since the request: {d.stale.join(', ')}. Review the diff again before committing.
+        {d.stale.length > 0 && c.state === 'master_review' && (
+          <div data-stale-warning className="mt-2 rounded-md border border-amber-200 bg-amber-50 text-amber-900 px-2 py-1.5 text-caption">
+            Files changed since review: {d.stale.join(', ')}. Approving sends the request back to the Lead.
           </div>
         )}
         {overlap.length > 0 && (
@@ -155,12 +155,13 @@ function Body({ c, data, onDecided }: { c: Commit & { feature?: string | null };
         <section className="rounded-md border border-gray-200 bg-white px-4 py-3">
           <div className="text-caption uppercase tracking-wide text-gray-500 font-semibold">Commit message</div>
           <CommitMessage c={c} d={d} />
-          <CommitActions c={c} d={d} showStale={false} />
+          <CommitActions c={c} d={d} />
         </section>
       )}
       {(c.state === 'rejected' || c.state === 'failed') && c.note && (
         <pre className="whitespace-pre-wrap font-mono text-code text-red-700 bg-red-50 rounded-md border border-red-100 px-3 py-2">{c.note}</pre>
       )}
+      <SentBackNote c={c} />
       {c.state === 'withdrawn' && (
         <div data-withdrawn className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-meta text-gray-600">
           Withdrawn{c.note ? `: ${c.note}` : ''}

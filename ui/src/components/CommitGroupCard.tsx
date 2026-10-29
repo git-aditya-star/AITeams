@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { CommitGroup } from '../api'
-import { api, groupStaleFrom } from '../api'
+import { api, sentBackFrom } from '../api'
 import { roleName, stateChip, stateLabel } from '../roles'
 import { useAppDispatch, useAppSelector } from '../store'
 import { selectPid } from '../store/selectors'
@@ -9,6 +9,7 @@ import { useCards } from './CardContext'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Tip } from './ui/tooltip'
+import { notifySentBack } from './useCommitDecision'
 
 const subject = (message: string) => message.split('\n')[0]
 
@@ -21,25 +22,24 @@ export default function CommitGroupCard({ g }: { g: CommitGroup }) {
   const dispatch = useAppDispatch()
   const pid = useAppSelector(selectPid)
   const ctx = useCards()
-  const [stale, setStale] = useState<Record<string, string[]>>({})
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const first = g.members[0]
   // Subjects already start with "F-n:" by convention; add the feature only when it's missing.
   const head = first ? subject(first.message) : ''
   const title = g.feature && !head.startsWith(`${g.feature}:`) ? `${g.feature}: ${head}` : head
-  const anyStale = Object.values(stale).some((f) => f.length)
 
-  const commit = async (force = false) => {
+  const commit = async () => {
     if (!pid) return
     setBusy(true)
     setErr(null)
     try {
-      await api.decideCommit(pid, g.id, { decision: 'approve', group: true, ...(force ? { force: true } : {}) })
+      await api.decideCommit(pid, g.id, { decision: 'approve', group: true })
       dispatch(refreshInbox()) // the group leaves the Inbox; the members' frames update the conversations
     } catch (e: any) {
-      const s = groupStaleFrom(e)
-      if (s) setStale(s)
+      // F-45: a changed file sends the whole group back to Lead review; the commit and inbox frames drop it from the Inbox.
+      const s = sentBackFrom(e)
+      if (s) notifySentBack(s)
       else setErr(why(e))
     } finally {
       setBusy(false)
@@ -64,9 +64,6 @@ export default function CommitGroupCard({ g }: { g: CommitGroup }) {
             <span className="font-mono text-code text-gray-500">#{m.id}</span>
             <span className="text-gray-700">{roleName(m.role)}</span>
             <span className="min-w-0 flex-1 truncate text-gray-900">{subject(m.message)}</span>
-            {(stale[String(m.id)]?.length ?? 0) > 0 && (
-              <span className="text-caption text-amber-700">changed since request: {stale[String(m.id)].join(', ')}</span>
-            )}
             <Badge className={stateChip(m.state)}>{stateLabel(m.state)}</Badge>
             {ctx && (
               <Button variant="link" size="inline" className="text-caption" onClick={() => ctx.onReview(m.id)}>
@@ -77,25 +74,13 @@ export default function CommitGroupCard({ g }: { g: CommitGroup }) {
         ))}
       </ul>
 
-      {anyStale && (
-        <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 text-amber-900 px-2 py-1.5 text-caption">
-          Files changed since the requests. Review the diffs again before committing.
-        </div>
-      )}
-
       <div className="mt-2 flex items-center gap-2 flex-wrap">
         <Tip content={notReady || null}>
           {/* A disabled button gets no pointer events, so the tooltip hangs on a wrapper. */}
           <span tabIndex={notReady ? 0 : undefined} data-group-commit>
-            {anyStale ? (
-              <Button size="sm" disabled={busy || !!notReady} onClick={() => void commit(true)} className="bg-amber-600 hover:bg-amber-700">
-                Commit group anyway
-              </Button>
-            ) : (
-              <Button size="sm" disabled={busy || !!notReady} onClick={() => void commit()}>
-                Commit group
-              </Button>
-            )}
+            <Button size="sm" disabled={busy || !!notReady} onClick={() => void commit()}>
+              Commit group
+            </Button>
           </span>
         </Tip>
         {err && <span className="text-caption text-red-600 break-words">{err}</span>}

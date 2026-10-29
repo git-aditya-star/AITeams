@@ -1,4 +1,4 @@
-import { Bell, Check, Clock, MessageCircleQuestion, Puzzle, RotateCw, Square, TriangleAlert, X, type LucideIcon } from 'lucide-react'
+import { Bell, Check, Clock, MessageCircleQuestion, Puzzle, RotateCw, Square, TriangleAlert, Undo2, X, type LucideIcon } from 'lucide-react'
 import { toast as sonner } from 'sonner'
 import { KINDS, type Kind, type Tone, type Toast } from '../toasts'
 import { Button } from './ui/button'
@@ -24,6 +24,7 @@ const ICON: Record<Kind, LucideIcon> = {
   commit_request: Bell,
   committed: Check,
   commit_failed: TriangleAlert,
+  sent_back: Undo2,
   standup: Bell,
   stopped: Square,
   interrupted: Square,

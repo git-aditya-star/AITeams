@@ -552,7 +552,7 @@ export interface Question {
 }
 
 // Thrown for non-2xx responses; `detail` is the parsed JSON `detail` when the body was JSON
-// (e.g. a 409 on commit approve carries `{detail: {stale: [...]}}`).
+// (e.g. a 409 on commit approve carries `{detail: {sent_back: {"<id>": [paths]}}}`).
 export class ApiError extends Error {
   status: number
   detail: any
@@ -725,7 +725,7 @@ export const api = {
   decideCommit: (
     pid: string,
     id: number,
-    body: { decision: 'approve' | 'reject'; message?: string; note?: string; force?: boolean; group?: boolean },
+    body: { decision: 'approve' | 'reject'; message?: string; note?: string; group?: boolean },
   ) => post<Commit & { group?: Commit[] }>(`/api/p/${pid}/commits/${id}/decide`, body),
   locks: (pid: string) => req<Lock[]>(`/api/p/${pid}/locks`),
   releaseLock: (pid: string, path: string) =>
@@ -752,15 +752,11 @@ export const api = {
   activity: (pid: string, limit = 30) => req<Activity[]>(`/api/p/${pid}/activity?limit=${limit}`),
 }
 
-// Stale file list from a failed commit approve (409), or null for any other error.
-export function staleFrom(e: unknown): string[] | null {
-  if (e instanceof ApiError && e.status === 409 && Array.isArray(e.detail?.stale)) return e.detail.stale as string[]
-  return null
-}
-
-// F-11: a group commit's 409 names stale files per member ({"<id>": [files]}); null for any other error.
-export function groupStaleFrom(e: unknown): Record<string, string[]> | null {
-  const s = e instanceof ApiError && e.status === 409 ? e.detail?.stale : null
+// F-45: an approve (single or group) whose files changed after the Lead reviewed them commits nothing and sends the whole
+// group back to Lead review. The 409 names the changed paths per member ({"<id>": [paths]}, only members that changed);
+// null for any other error.
+export function sentBackFrom(e: unknown): Record<string, string[]> | null {
+  const s = e instanceof ApiError && e.status === 409 ? e.detail?.sent_back : null
   return s && typeof s === 'object' && !Array.isArray(s) ? (s as Record<string, string[]>) : null
 }
 

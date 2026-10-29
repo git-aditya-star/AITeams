@@ -4,7 +4,7 @@ import { roleName, stateChip, stateLabel } from '../roles'
 import { useAppSelector } from '../store'
 import { selectFeatureLabel } from '../store/selectors'
 import { useCards } from './CardContext'
-import { LEAD_TONE, leadReview } from './leadReview'
+import { LEAD_TONE, leadReview, sentBackNote } from './leadReview'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
@@ -28,19 +28,24 @@ export function CommitMessage({ c, d }: { c: Commit; d: Decision }) {
   )
 }
 
-// State lines, stale warning, note field and Approve / Commit anyway / Reject.
-export function CommitActions({ c, d, showStale = true, groupWith = [] }: { c: Commit; d: Decision; showStale?: boolean; groupWith?: number[] }) {
+// F-45: why a request is back with the Lead after the Master's approve found its files changed since the review.
+export function SentBackNote({ c }: { c: Commit }) {
+  const note = sentBackNote(c)
+  return note ? (
+    <div data-sent-back className="mt-2 rounded-md border border-amber-200 bg-amber-50 text-amber-900 px-2 py-1.5 text-caption break-words">
+      {note}
+    </div>
+  ) : null
+}
+
+// State lines, note field and Approve / Reject. There is no "commit anyway": a changed file sends the request back to the Lead.
+export function CommitActions({ c, d, groupWith = [] }: { c: Commit; d: Decision; groupWith?: number[] }) {
   const reviewable = c.state === 'master_review'
   const grouped = groupWith.length > 0
   return (
     <>
-      {showStale && d.stale.length > 0 && reviewable && (
-        <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 text-amber-900 px-2 py-1.5 text-caption">
-          Files changed since the request: {d.stale.join(', ')}. Review the diff again before committing.
-        </div>
-      )}
-
       {c.state === 'lead_review' && <div className="mt-2 text-caption text-gray-500">Waiting on Lead review.</div>}
+      <SentBackNote c={c} />
       {(c.state === 'rejected' || c.state === 'failed') && c.note && (
         <pre className="mt-2 whitespace-pre-wrap font-mono text-code text-red-700 bg-red-50 rounded-md border border-red-100 px-2 py-1">{c.note}</pre>
       )}
@@ -65,11 +70,7 @@ export function CommitActions({ c, d, showStale = true, groupWith = [] }: { c: C
         <div className="mt-2 flex flex-col gap-1.5">
           <Input value={d.note} onChange={(e) => d.setNote(e.target.value)} placeholder="Note (optional; shown to the requester on reject)" />
           <div className="flex items-center gap-2 flex-wrap">
-            {grouped ? null : d.stale.length > 0 ? (
-              <Button size="sm" disabled={d.busy} onClick={() => d.decide('approve', true)} className="bg-amber-600 hover:bg-amber-700">
-                Commit anyway
-              </Button>
-            ) : (
+            {!grouped && (
               <Button size="sm" disabled={d.busy} onClick={() => d.decide('approve')}>
                 Approve
               </Button>
@@ -126,10 +127,7 @@ export default function CommitCard({ c, showFeature = false }: { c: Commit; show
 
       <ul className="mt-1.5 font-mono text-code text-gray-700">
         {files.map((f) => (
-          <li key={f} className={d.stale.includes(f) ? 'text-amber-700' : ''}>
-            {f}
-            {d.stale.includes(f) && <span className="ml-1 text-caption text-amber-700 font-sans">(changed since request)</span>}
-          </li>
+          <li key={f}>{f}</li>
         ))}
       </ul>
 
