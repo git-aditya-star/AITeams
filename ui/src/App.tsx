@@ -78,6 +78,8 @@ export default function App() {
     },
     [setParams],
   )
+  // F-41: a feature session's chip (team strip) and F-48: its sidebar sub-row both open that session's Live view.
+  const selectLane = useCallback((role: string, l: string) => select(`dm-${role}`, 'live', undefined, l), [select])
   // Commit review overlays the current view; closing drops only `review`, so the Master lands where they were.
   const openReview = useCallback(
     (id: number) =>
@@ -179,10 +181,17 @@ export default function App() {
   return (
     <CardContext.Provider value={cardActions}>
       <div className="h-full flex">
-        <Sidebar current={current} onPickProject={(id) => nav(`/p/${id}`)} onSelect={(id) => select(id)} onNewTask={newTask} />
+        <Sidebar
+          current={current}
+          currentLane={lane}
+          onPickProject={(id) => nav(`/p/${id}`)}
+          onSelect={(id) => select(id)}
+          onSelectLane={selectLane}
+          onNewTask={newTask}
+        />
         <main className="relative flex-1 flex flex-col min-w-0 h-full">
           <Banners onAnswer={(q) => select(`dm-${q.role}`)} />
-          <TeamStrip onSelect={(r) => select(`dm-${r}`)} onSelectLane={(r, l) => select(`dm-${r}`, 'live', undefined, l)} />
+          <TeamStrip onSelect={(r) => select(`dm-${r}`)} onSelectLane={selectLane} />
           {feature ? (
             <FeatureHeader feature={feature} tab={tab === 'docs' ? 'docs' : 'chat'} onTab={(t) => select(current, t)} />
           ) : (

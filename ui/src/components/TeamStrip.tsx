@@ -1,9 +1,10 @@
 import { Settings } from 'lucide-react'
 import { useState } from 'react'
-import { ROLES, contextNote, contextPct, dotClass, laneLabel, roleName, stateWord } from '../roles'
+import { ROLES, contextNote, contextPct, dotClass, laneTip, roleName, stateWord } from '../roles'
 import { useAppSelector } from '../store'
 import { selectTeamByRole } from '../store/selectors'
 import RoleSettingsDialog from './RoleSettingsDialog'
+import StuckTag from './StuckTag'
 import { Button } from './ui/button'
 import { Tip } from './ui/tooltip'
 
@@ -33,11 +34,7 @@ export default function TeamStrip({ onSelect, onSelectLane }: { onSelect: (role:
               {t && (
                 <>
                   {t.state !== 'idle' && <span className="text-gray-500">{stateWord(t)}</span>}
-                  {t.stuck && (
-                    <span data-stuck className="rounded bg-amber-100 px-1 font-semibold text-amber-800">
-                      stuck
-                    </span>
-                  )}
+                  {t.stuck && <StuckTag />}
                   <span>{Math.round(contextPct(t) * 100)}%</span>
                 </>
               )}
@@ -46,10 +43,7 @@ export default function TeamStrip({ onSelect, onSelectLane }: { onSelect: (role:
         )
         // F-41: one small chip per active feature session of this role, with its own state dot and context meter
         const lanes = (t?.lanes ?? []).map((l) => (
-          <Tip
-            key={`${r}:${l.lane}`}
-            content={`${laneLabel(r, l.lane)} · ${stateWord(l)}${l.stuck ? ' · stuck: running or queued for a long time, not stopped' : ''}${contextNote(l) ? ` · context full, ${contextNote(l)}` : ''}`}
-          >
+          <Tip key={`${r}:${l.lane}`} content={laneTip(r, l)}>
             <button
               data-lane-chip={`${r}:${l.lane}`}
               aria-label={`${l.lane} · ${roleName(r)} session ${Math.round(contextPct(l) * 100)}%`}
@@ -58,11 +52,7 @@ export default function TeamStrip({ onSelect, onSelectLane }: { onSelect: (role:
             >
               <span className={`w-2 h-2 rounded-full ${dotClass(l.state || 'idle')}`} />
               <span className="font-medium">{l.lane}</span>
-              {l.stuck && (
-                <span data-stuck className="rounded bg-amber-100 px-1 font-semibold text-amber-800">
-                  stuck
-                </span>
-              )}
+              {l.stuck && <StuckTag />}
               <span className="text-blue-600">{Math.round(contextPct(l) * 100)}%</span>
             </button>
           </Tip>

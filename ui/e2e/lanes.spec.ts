@@ -3,7 +3,8 @@ import { expect, test } from './fixtures'
 
 // F-41: a role has its main session and one session ("lane") per feature that has its own worktree. The UI names them "Frontend · F-36":
 // a message from a lane carries that tag, the team strip gets a small chip per active lane (own dot, own context meter), the Live
-// view has a session picker, a stall on a lane names it, and the role settings dialog has the two load numbers.
+// view has a session picker, a stall on a lane names it, and the role settings dialog has the two load numbers. F-48: the sidebar's
+// "Direct messages" list shows the same sessions as indented sub-rows under their role.
 //
 // The daemon's wire shapes (design §4, posted in feature-41): `message.lane` / `turn.lane` ('' = main, 'F-36'), and a role row in
 // `/team` gains `lanes: [{lane, state, context_pct, turn_id}]` for its ACTIVE feature sessions. The sandbox runs no turns, so the
@@ -15,6 +16,12 @@ const NOW = Date.now() / 1000
 const strip = (page: Page) => page.locator('main > div').filter({ has: page.getByRole('button', { name: /^Manager\b/ }) }).first()
 const chip = (page: Page, key: string) => strip(page).locator(`[data-lane-chip="${key}"]`)
 const picker = (page: Page) => page.getByRole('combobox', { name: 'Session' })
+// F-48: the sidebar's DM block (heading + one row per role, then one sub-row per feature session under its role).
+const dms = (page: Page) => page.locator('aside').getByText('Direct messages', { exact: true }).locator('xpath=..')
+const dmRow = (page: Page, name: string) => dms(page).getByRole('button', { name: new RegExp(`^${name}$`) })
+const laneRow = (page: Page, key: string) => dms(page).locator(`[data-lane-row="${key}"]`)
+const isOpen = (el: ReturnType<typeof laneRow>) => expect(el).toHaveClass(/bg-blue-100/)
+const isClosed = (el: ReturnType<typeof laneRow>) => expect(el).not.toHaveClass(/bg-blue-100/)
 const away = async (page: Page) => {
   await page.mouse.move(700, 5)
   await page.mouse.move(1390, 890)
@@ -22,7 +29,7 @@ const away = async (page: Page) => {
 }
 
 // Frontend runs two feature sessions (F-36 working, F-40 idle and over its limit) and Backend one (F-36, queued).
-async function withLanes(page: Page) {
+async function withLanes(page: Page, tweak?: (by: (role: string) => any) => void) {
   await page.route(/\/api\/p\/demo\/team$/, async (route) => {
     const r = await route.fetch()
     const d = await r.json()
@@ -37,6 +44,7 @@ async function withLanes(page: Page) {
       ],
     })
     Object.assign(by('backend'), { state: 'idle', kind: null, context_pct: 0.22, lanes: [{ lane: 'F-36', state: 'queued', context_pct: 0.44, turn_id: null }] })
+    tweak?.(by)
     await route.fulfill({ response: r, json: d })
   })
 }
@@ -117,6 +125,105 @@ test('the team strip gets a chip per active feature session, with its own state 
   await chip(page, 'frontend:F-36').click()
   await expect(page).toHaveURL(/c=dm-frontend&tab=live&lane=F-36/)
   await expect(picker(page)).toHaveText('Frontend · F-36')
+})
+
+test('the sidebar lists each feature session under its role, with its own dot, key and context, and a stuck tag', async ({ page, qa }) => {
+  await withLanes(page, (by) => Object.assign(by('backend').lanes[0], { stuck: true }))
+  await qa.open('/p/demo')
+
+  // Order: each role's sub-rows follow that role's row; a role with no sessions keeps just its row.
+  const buttons = dms(page).getByRole('button')
+  await expect(buttons).toHaveText([/^Manager$/, /^Lead 1$/, /^Lead 2$/, /^Product$/, /^Frontend$/, /^F-36.*31%$/, /^F-40.*100%$/, /^Backend$/, /^F-36stuck44%$/, /^Qa$/])
+  await expect(page.locator('aside [data-lane-row]')).toHaveCount(3)
+  await expect(laneRow(page, 'frontend:F-36')).toHaveAccessibleName('F-36 · Frontend session 31%')
+  await expect(laneRow(page, 'frontend:F-36').locator('.font-mono')).toHaveText('F-36')
+
+  // The dot is the session's own state: working, idle, queued. The role's own row keeps its main-session dot and meter.
+  const dot = (key: string) => laneRow(page, key).locator('span').first()
+  await expect(dot('frontend:F-36')).toHaveClass(/bg-green-500/)
+  await expect(dot('frontend:F-40')).toHaveClass(/bg-gray-300/)
+  await expect(dot('backend:F-36')).toHaveClass(/bg-amber-400/)
+  await expect(dmRow(page, 'Frontend').locator('.rounded-full')).toHaveClass(/bg-gray-300/) // main session: idle
+  await expect(page.locator('[data-ctx-meter="frontend"] > span')).toHaveAttribute('style', /width: 8%/)
+
+  // The stuck tag is the strip's: only the session that is stuck has one.
+  await expect(laneRow(page, 'backend:F-36').locator('[data-stuck]')).toHaveText('stuck')
+  await expect(laneRow(page, 'backend:F-36').locator('[data-stuck]')).toHaveClass(/bg-amber-100/)
+  await expect(page.locator('aside [data-stuck]')).toHaveCount(1)
+
+  // Tooltips are the strip chip's: the session, its state, and what the context note says.
+  await laneRow(page, 'frontend:F-36').hover()
+  await expect(page.getByRole('tooltip')).toHaveText('Frontend · F-36 · running')
+  await away(page)
+  await laneRow(page, 'frontend:F-40').hover()
+  await expect(page.getByRole('tooltip')).toContainText('Frontend · F-40 · idle · context full, rotates after its next turn')
+  await away(page)
+  await laneRow(page, 'backend:F-36').hover()
+  await expect(page.getByRole('tooltip')).toContainText('Backend · F-36 · queued · stuck: running or queued for a long time, not stopped')
+  await away(page)
+  await page.screenshot({ path: `${SHOTS}/lanes-sidebar.png`, animations: 'disabled' })
+})
+
+test('a sidebar sub-row opens that session in the Live view; the sub-row is highlighted for it and the role row only for its main session', async ({ page, qa }) => {
+  await withLanes(page)
+  await withLaneTurns(page)
+  await qa.open('/p/demo?c=dm-frontend')
+
+  // The main session of Frontend is open: its row, no sub-row.
+  await isOpen(dmRow(page, 'Frontend'))
+  await isClosed(laneRow(page, 'frontend:F-36'))
+  await isClosed(laneRow(page, 'frontend:F-40'))
+
+  // A sub-row opens its session; the same F-key under Backend is a different session and stays plain.
+  await laneRow(page, 'frontend:F-36').click()
+  await expect(page).toHaveURL(/c=dm-frontend&tab=live&lane=F-36/)
+  await expect(picker(page)).toHaveText('Frontend · F-36')
+  await isOpen(laneRow(page, 'frontend:F-36'))
+  await isClosed(dmRow(page, 'Frontend'))
+  await isClosed(laneRow(page, 'frontend:F-40'))
+  await isClosed(laneRow(page, 'backend:F-36'))
+  await page.screenshot({ path: `${SHOTS}/lanes-sidebar-open.png`, animations: 'disabled' })
+
+  // From one session straight to another, then to Backend's session of the same feature.
+  await laneRow(page, 'frontend:F-40').click()
+  await expect(page).toHaveURL(/c=dm-frontend&tab=live&lane=F-40/)
+  await expect(picker(page)).toHaveText('Frontend · F-40')
+  await isOpen(laneRow(page, 'frontend:F-40'))
+  await isClosed(laneRow(page, 'frontend:F-36'))
+  await laneRow(page, 'backend:F-36').click()
+  await expect(page).toHaveURL(/c=dm-backend&tab=live&lane=F-36/)
+  await isOpen(laneRow(page, 'backend:F-36'))
+  await isClosed(laneRow(page, 'frontend:F-36'))
+  await isClosed(dmRow(page, 'Backend'))
+
+  // The role row goes back to its main session, with no lane in the URL.
+  await dmRow(page, 'Backend').click()
+  await expect(page).toHaveURL(/c=dm-backend$/)
+  await isOpen(dmRow(page, 'Backend'))
+  await isClosed(laneRow(page, 'backend:F-36'))
+
+  // Opening the Live view on a lane by its link highlights the sub-row too.
+  await qa.open('/p/demo?c=dm-frontend&tab=live&lane=F-40')
+  await isOpen(laneRow(page, 'frontend:F-40'))
+  await isClosed(dmRow(page, 'Frontend'))
+  // And a channel highlights none of them.
+  await qa.open('/p/demo?c=general')
+  await isClosed(dmRow(page, 'Frontend'))
+  await isClosed(laneRow(page, 'frontend:F-40'))
+})
+
+test('a role with no feature sessions looks as before in the sidebar, and with no sessions at all there are no sub-rows', async ({ page, qa }) => {
+  await withLanes(page)
+  await qa.open('/p/demo?c=dm-qa')
+  await expect(page.locator('aside [data-lane-row^="qa:"], aside [data-lane-row^="manager:"]')).toHaveCount(0)
+  await isOpen(dmRow(page, 'Qa'))
+  await expect(dmRow(page, 'Qa').locator('[data-ctx-meter="qa"]')).toHaveCount(1)
+  await expect(dmRow(page, 'Qa')).toHaveText('Qa')
+
+  await page.unroute(/\/api\/p\/demo\/team$/)
+  await qa.open('/p/demo')
+  await expect(page.locator('aside [data-lane-row]')).toHaveCount(0)
+  await expect(dms(page).getByRole('button')).toHaveText([/^Manager$/, /^Lead 1$/, /^Lead 2$/, /^Product$/, /^Frontend$/, /^Backend$/, /^Qa$/])
 })
 
 test('the Live view picks a session; each one shows only its own turns', async ({ page, qa }) => {
@@ -272,6 +379,10 @@ test('through the daemon: a feature session shows as a chip, a tagged message an
   await expect(chip(page, 'frontend:F-4')).toBeVisible()
   await expect(chip(page, 'frontend:F-4').locator('span').first()).toHaveClass(/bg-green-500/)
   await expect(chip(page, 'frontend:F-4')).toHaveText(/F-4.*[1-9]\d?%$/)
+  // ...and so does the sidebar's sub-row under Frontend, with the same dot.
+  await expect(laneRow(page, 'frontend:F-4')).toBeVisible()
+  await expect(laneRow(page, 'frontend:F-4').locator('span').first()).toHaveClass(/bg-green-500/)
+  await expect(laneRow(page, 'frontend:F-4')).toHaveText(/F-4.*[1-9]\d?%$/)
   const row = page.locator(`#m-${fired.message}`)
   await expect(row.locator('[data-msg-lane]')).toHaveAttribute('data-msg-lane', 'F-4')
   await expect(row).toContainText('U1 is built against the contract.')
@@ -284,6 +395,7 @@ test('through the daemon: a feature session shows as a chip, a tagged message an
   await chip(page, 'frontend:F-4').click()
   await expect(page).toHaveURL(/c=dm-frontend&tab=live&lane=F-4/)
   await expect(picker(page)).toHaveText('Frontend · F-4')
+  await isOpen(laneRow(page, 'frontend:F-4'))
   const list = page.locator('[data-live-session] > div').first()
   await expect(list.getByRole('button', { name: /#\d+/ })).toHaveCount(1)
   await expect(list.getByRole('button', { name: new RegExp(`#${fired.turn}\\b`) })).toContainText('running')
@@ -294,5 +406,6 @@ test('through the daemon: a feature session shows as a chip, a tagged message an
   // Its turn ends: the lane stays (the session is still active) and goes idle; the new turn joins the list live.
   const done = await qa.fire('lane_turn', { role: 'frontend', feature: 'F-4', state: 'done' })
   await expect(chip(page, 'frontend:F-4').locator('span').first()).toHaveClass(/bg-gray-300/)
+  await expect(laneRow(page, 'frontend:F-4').locator('span').first()).toHaveClass(/bg-gray-300/)
   await expect(list.getByRole('button', { name: new RegExp(`#${done.turn}\\b`) })).toBeVisible()
 })

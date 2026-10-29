@@ -1,24 +1,32 @@
-import type { Feature } from '../api'
-import { ROLES, contextNote, contextPct, dotClass, meterClass, phaseChip, roleName } from '../roles'
+import { Fragment } from 'react'
+import type { Feature, TeamLane } from '../api'
+import { ROLES, contextNote, contextPct, dotClass, laneTip, meterClass, phaseChip, roleName } from '../roles'
 import { useAppDispatch, useAppSelector } from '../store'
 import { selectActiveFeatures, selectHistoryCount, selectInboxBadge, selectTeamByRole } from '../store/selectors'
 import { setPaused } from '../store/thunks'
 import AlertsMenu, { AlertHints } from './AlertsMenu'
 import NewTaskForm from './NewTaskForm'
 import StallChip from './StallChip'
+import StuckTag from './StuckTag'
 import { Badge } from './ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
 import { Tip } from './ui/tooltip'
 
+// F-48: under a role's DM row, one sub-row per active feature session (the strip's lanes); `onSelectLane` opens that session's Live view,
+// and `currentLane` ('' = the role's main session) says which one the open DM shows.
 export default function Sidebar({
   current,
+  currentLane = '',
   onPickProject,
   onSelect,
+  onSelectLane,
   onNewTask,
 }: {
   current: string
+  currentLane?: string
   onPickProject: (id: string) => void
   onSelect: (id: string) => void
+  onSelectLane: (role: string, lane: string) => void
   onNewTask: (body: { text: string; starter: string }) => Promise<void>
 }) {
   const dispatch = useAppDispatch()
@@ -31,16 +39,36 @@ export default function Sidebar({
   const historyCount = useAppSelector(selectHistoryCount)
   const inboxCount = useAppSelector(selectInboxBadge)
 
-  const row = (id: string, label: React.ReactNode, extra?: React.ReactNode) => (
+  const row = (id: string, label: React.ReactNode, extra?: React.ReactNode, open = current === id) => (
     <button
       key={id}
       onClick={() => onSelect(id)}
-      className={`w-full cursor-pointer text-left px-3 py-1 rounded-md text-meta ${current === id ? 'bg-blue-100 text-blue-900 font-medium' : 'text-gray-700 hover:bg-gray-200/60'}`}
+      className={`w-full cursor-pointer text-left px-3 py-1 rounded-md text-meta ${open ? 'bg-blue-100 text-blue-900 font-medium' : 'text-gray-700 hover:bg-gray-200/60'}`}
     >
       {label}
       {extra}
     </button>
   )
+
+  const laneRow = (r: string, l: TeamLane) => {
+    const open = current === `dm-${r}` && currentLane === l.lane
+    const pct = Math.round(contextPct(l) * 100)
+    return (
+      <Tip key={`${r}:${l.lane}`} content={laneTip(r, l)}>
+        <button
+          data-lane-row={`${r}:${l.lane}`}
+          aria-label={`${l.lane} · ${roleName(r)} session ${pct}%`}
+          onClick={() => onSelectLane(r, l.lane)}
+          className={`w-full cursor-pointer flex items-center gap-2 text-left pl-7 pr-3 py-0.5 rounded-md text-caption ${open ? 'bg-blue-100 text-blue-900 font-medium' : 'text-gray-600 hover:bg-gray-200/60'}`}
+        >
+          <span className={`w-2 h-2 rounded-full shrink-0 ${dotClass(l.state || 'idle')}`} />
+          <span className="font-mono">{l.lane}</span>
+          {l.stuck && <StuckTag />}
+          <span className="ml-auto text-gray-500">{pct}%</span>
+        </button>
+      </Tip>
+    )
+  }
 
   const featureRow = (f: Feature) =>
     row(
@@ -109,17 +137,23 @@ export default function Sidebar({
           {ROLES.map((r) => {
             const t = byRole[r]
             const pct = contextPct(t)
-            return row(
-              `dm-${r}`,
-              <span className="flex items-center gap-2">
-                <span className={`w-2 h-2 rounded-full shrink-0 ${dotClass(t?.state || 'idle')}`} />
-                <span>{roleName(r)}</span>
-              </span>,
-              <Tip content={t ? `context ${Math.round(pct * 100)}%${contextNote(t) ? ` · ${contextNote(t)}` : ''}` : undefined}>
-                <span data-ctx-meter={r} className="block ml-4 mt-1 h-[3px] rounded-sm bg-gray-200 overflow-hidden">
-                  <span className={`block h-full ${meterClass(pct)}`} style={{ width: `${pct * 100}%` }} />
-                </span>
-              </Tip>,
+            return (
+              <Fragment key={r}>
+                {row(
+                  `dm-${r}`,
+                  <span className="flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${dotClass(t?.state || 'idle')}`} />
+                    <span>{roleName(r)}</span>
+                  </span>,
+                  <Tip content={t ? `context ${Math.round(pct * 100)}%${contextNote(t) ? ` · ${contextNote(t)}` : ''}` : undefined}>
+                    <span data-ctx-meter={r} className="block ml-4 mt-1 h-[3px] rounded-sm bg-gray-200 overflow-hidden">
+                      <span className={`block h-full ${meterClass(pct)}`} style={{ width: `${pct * 100}%` }} />
+                    </span>
+                  </Tip>,
+                  current === `dm-${r}` && !currentLane, // the role row is its main session; a feature session has its own sub-row
+                )}
+                {(t?.lanes ?? []).map((l) => laneRow(r, l))}
+              </Fragment>
             )
           })}
         </div>

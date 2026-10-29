@@ -73,6 +73,10 @@ export const contextPct = (t: Meter | undefined) => Math.min(1, Math.max(0, t?.c
 export const contextNote = (t: Meter | undefined) =>
   contextPct(t) < 1 ? '' : t?.state === 'running' ? 'rotates after this turn' : 'rotates after its next turn'
 
+// F-48: the tooltip of a feature session, shared by its team-strip chip and its sidebar sub-row: "Lead 2 · F-47 · running".
+export const laneTip = (role: string, l: { lane: string; state: string; kind?: string | null; stuck?: boolean; context_pct?: number | null }) =>
+  `${laneLabel(role, l.lane)} · ${stateWord(l)}${l.stuck ? ' · stuck: running or queued for a long time, not stopped' : ''}${contextNote(l) ? ` · context full, ${contextNote(l)}` : ''}`
+
 export const PHASES = ['intake', 'spec', 'design', 'build', 'qa', 'done'] as const
 
 export const PHASE_CHIP: Record<string, string> = {
