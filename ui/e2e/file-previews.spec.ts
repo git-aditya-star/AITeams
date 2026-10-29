@@ -85,11 +85,11 @@ test('a commit group shows the previews of its members\' messages', async ({ pag
   await expect.poll(() => names(group)).toEqual(['shot.png'])
 })
 
-test('a file that is not there shows a "not found" chip, and a bare name with no feature shows nothing', async ({ page, qa }) => {
+test('a path that is not there shows a "not found" chip; a bare name that is not there shows nothing, nor does one with no feature', async ({ page, qa }) => {
   await qa.fire('card', { intro: 'See `nope.png` and ui/test-results/shots/none.png.' })
   await qa.open('/p/demo?c=feature-1')
-  await expect(page.locator('[data-mock-missing="nope.png"]')).toHaveText('not found: nope.png')
   await expect(page.locator('[data-mock-missing="none.png"]')).toHaveText('not found: none.png')
+  await expect(page.locator('[data-mock-missing="nope.png"]')).toHaveCount(0)
   // a channel is not a feature: its bare names are words, and its full paths still preview
   await qa.open('/p/demo?c=general')
   await qa.fire('message', { conversation: 'general', role: 'lead', text: `shot.png and ${D}/flow.svg` })
@@ -97,6 +97,46 @@ test('a file that is not there shows a "not found" chip, and a bare name with no
   await expect(thumbs(msg)).toHaveCount(1)
   await expect(msg.locator('[data-mock-card="flow.svg"]')).toBeVisible()
   await expect(msg.locator('[data-mock-missing]')).toHaveCount(0)
+})
+
+test('a bare name that does not resolve leaves no chip and takes no place, so the files that exist all show', async ({ page, qa }) => {
+  // prose that mentions index.html next to a real docs file: one thumbnail, no chip
+  await qa.fire('message', { conversation: 'feature-1', role: 'lead', text: `The page index.html is built; see ${D}/shot.png.` })
+  // five missing bare names come first, yet the three files that exist (past the fourth reference) still show as thumbnails
+  await qa.fire('message', { conversation: 'feature-1', role: 'lead', text: `x1.png x2.png x3.png x4.png x5.png then ${D}/shot.png ${D}/flow.svg ${D}/mock-export.html` })
+  await qa.open('/p/demo?c=feature-1')
+  const one = page.locator('[id^="m-"]', { hasText: 'The page index.html is built' })
+  await expect.poll(() => names(one)).toEqual(['shot.png'])
+  await expect(one.locator('[data-mock-missing]')).toHaveCount(0)
+  await expect(one.locator('[data-mock-previews] > *')).toHaveCount(1)
+  const many = page.locator('[id^="m-"]', { hasText: 'x1.png x2.png' })
+  await expect.poll(async () => (await names(many)).sort()).toEqual(['flow.svg', 'mock-export.html', 'shot.png'])
+  await expect(many.locator('[data-mock-missing]')).toHaveCount(0)
+  await expect(many.locator('[data-file-extras]')).toHaveCount(0)
+  await many.scrollIntoViewIfNeeded()
+  await page.screenshot({ path: `${SHOTS}/file-previews-bare-names.png`, animations: 'disabled' })
+})
+
+test('while the files are being looked up, a bare name draws no placeholder', async ({ page, qa }) => {
+  await qa.fire('message', { conversation: 'feature-1', role: 'lead', text: 'Only index.html and nope.png here.' })
+  await qa.fire('message', { conversation: 'feature-1', role: 'lead', text: `Held index.html and ${D}/shot.png.` })
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => (release = resolve))
+  await page.route('**/preview/resolve', async (route) => {
+    await gate
+    await route.continue()
+  })
+  await qa.open('/p/demo?c=feature-1')
+  const bare = page.locator('[id^="m-"]', { hasText: 'Only index.html and nope.png here.' })
+  const mixed = page.locator('[id^="m-"]', { hasText: 'Held index.html' })
+  // the lookup is held: only the reference with a path has a place
+  await expect(mixed.locator('[data-mock-previews] > *')).toHaveCount(1)
+  await expect(bare).toBeVisible()
+  await expect(bare.locator('[data-mock-previews]')).toHaveCount(0)
+  release()
+  await expect.poll(() => names(mixed)).toEqual(['shot.png'])
+  await expect(mixed.locator('[data-mock-previews] > *')).toHaveCount(1)
+  await expect(bare.locator('[data-mock-previews]')).toHaveCount(0)
 })
 
 // The sandbox's `previews` fire (F-1 by default) gives F-1 a worktree holding ui/test-results/shots/tree-shot.png (200x120), puts

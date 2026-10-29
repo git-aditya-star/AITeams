@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 // message that names a file is usually posted right after the role saved it. Concurrent lookups of one ref share a request.
 const MAX_THUMBS = 4
 const MAX_REFS = 20 // what the daemon resolves in one call
+const isBare = (ref: string) => !ref.includes('/')
 
 interface Hit {
   kind: MockKind
@@ -108,27 +109,32 @@ export default function FilePreviews({ texts, featureId }: { texts: (string | nu
   }, [pid, featureId, refs])
   if (!pid || refs.length === 0) return null
 
-  // the extra refs (past the fourth) show as links, and only the ones that exist
-  const extras = refs.slice(MAX_THUMBS).flatMap((ref) => {
+  // A bare name is mostly a word in prose ("index.html"): it shows only when it resolves, and takes a place only then (no chip, no
+  // placeholder while loading, so nothing jumps). A ref with a "/" always takes a place, as a thumbnail or the "not found" chip.
+  const shown = found ? refs.filter((ref) => found.has(ref) && (found.get(ref) || !isBare(ref))) : refs.filter((ref) => !isBare(ref))
+  // the extra refs (past the fourth place) show as links, and only the ones that exist
+  const extras = shown.slice(MAX_THUMBS).flatMap((ref) => {
     const hit = found?.get(ref)
     return hit ? [{ ref, url: hit.url }] : []
   })
   return (
     <>
-      <div data-mock-previews className="mt-1.5 flex flex-wrap gap-3">
-        {refs.slice(0, MAX_THUMBS).map((ref) => {
-          const name = refName(ref)
-          if (!found) return <div key={ref} className="rounded-md border border-gray-200 bg-gray-50" style={{ width: THUMB_W, height: THUMB_H }} />
-          const hit = found.get(ref)
-          return hit ? (
-            <Thumb key={ref} name={name} hit={hit} />
-          ) : (
-            <div key={ref} data-mock-missing={name} title={ref} className="text-caption text-gray-500">
-              not found: {name}
-            </div>
-          )
-        })}
-      </div>
+      {shown.length > 0 && (
+        <div data-mock-previews className="mt-1.5 flex flex-wrap gap-3">
+          {shown.slice(0, MAX_THUMBS).map((ref) => {
+            const name = refName(ref)
+            if (!found) return <div key={ref} className="rounded-md border border-gray-200 bg-gray-50" style={{ width: THUMB_W, height: THUMB_H }} />
+            const hit = found.get(ref)
+            return hit ? (
+              <Thumb key={ref} name={name} hit={hit} />
+            ) : (
+              <div key={ref} data-mock-missing={name} title={ref} className="text-caption text-gray-500">
+                not found: {name}
+              </div>
+            )
+          })}
+        </div>
+      )}
       {extras.length > 0 && (
         <div data-file-extras className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-caption">
           <span className="text-gray-500">More:</span>
