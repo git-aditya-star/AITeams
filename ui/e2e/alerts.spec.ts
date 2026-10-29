@@ -196,7 +196,8 @@ test('clicking a pop-up focuses the app and opens the item', async ({ page, qa }
   await qa.fire('approval', { text: 'Design: click me' })
   await expect.poll(() => recorded(page)).toHaveLength(2)
   await click()
-  await expect(page).toHaveURL(/[?&]c=feature-1&m=\d+/)
+  await expect(page).toHaveURL(/[?&]c=feature-1(&|$)/)
+  await expect(page).not.toHaveURL(/[?&]m=/) // F-47: the jump (`m`) is dropped from the URL once it has scrolled to the message
   await expect(page.getByRole('heading', { name: 'Export orders to CSV' })).toBeVisible()
 
   await qa.open('/p/demo?c=general') // elsewhere again (a reload, so the stub starts empty); a blocking question opens its role's DM

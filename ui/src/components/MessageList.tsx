@@ -34,6 +34,8 @@ function chunk(messages: Message[], resetAfter: number): Chunk[] {
 
 const firstOf = (c: Chunk) => (c.kind === 'single' ? c.m : c.items[0])
 
+const FLASH_MS = 4000 // F-47: how long a jumped-to message stays amber
+
 export default function MessageList({
   messages,
   hasMore,
@@ -41,6 +43,7 @@ export default function MessageList({
   footer,
   resetAfter = 0,
   highlight,
+  onJumped,
 }: {
   messages: Message[]
   hasMore: boolean
@@ -48,9 +51,13 @@ export default function MessageList({
   footer?: React.ReactNode
   resetAfter?: number
   highlight?: number | null
+  onJumped?: () => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const nearBottom = useRef(true)
+  // F-47: `pending` is the jump (`highlight`) not yet done; `flash` is the amber tint after it (a new object per jump, so a repeat restarts the timer).
+  const pending = useRef<number | null>(null)
+  const [flash, setFlash] = useState<{ id: number } | null>(null)
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const chunks = useMemo(() => chunk(messages, resetAfter), [messages, resetAfter])
 
@@ -68,10 +75,24 @@ export default function MessageList({
     if (el) el.scrollTop = el.scrollHeight
   }, [messages[0]?.conversation_id])
   useEffect(() => {
-    if (!highlight) return
+    pending.current = highlight || null
+  }, [highlight])
+  // Scrolls once per jump: new messages find `pending` empty. If the message is not loaded yet, waits for the next `messages`.
+  useEffect(() => {
+    if (!highlight || pending.current !== highlight) return
     const el = document.getElementById(`m-${highlight}`)
-    if (el) { nearBottom.current = false; el.scrollIntoView({ block: 'center' }) }
-  }, [highlight, messages.length])
+    if (!el) return
+    pending.current = null
+    nearBottom.current = false
+    el.scrollIntoView({ block: 'center' })
+    setFlash({ id: highlight })
+    onJumped?.()
+  }, [highlight, messages, onJumped])
+  useEffect(() => {
+    if (!flash) return
+    const t = setTimeout(() => setFlash(null), FLASH_MS)
+    return () => clearTimeout(t)
+  }, [flash])
 
   // The divider sits before the first message newer than the marker (even if the marked one is not loaded).
   let dividerShown = false
@@ -102,11 +123,11 @@ export default function MessageList({
         <div key={c.kind === 'single' ? c.m.id : c.key}>
           {divider(c)}
           {c.kind === 'single' ? (
-            <MessageRow m={c.m} highlight={c.m.id === highlight} />
+            <MessageRow m={c.m} highlight={c.m.id === flash?.id} />
           ) : expanded.has(c.key) ? (
             <div className="border-l-2 border-gray-200 ml-4">
               {c.items.map((m) => (
-                <MessageRow key={m.id} m={m} highlight={m.id === highlight} />
+                <MessageRow key={m.id} m={m} highlight={m.id === flash?.id} />
               ))}
               <Button
                 variant="ghost"

@@ -88,6 +88,19 @@ export default function App() {
       }),
     [setParams],
   )
+  // F-47: the jump is done, so `m` goes (a replace: Back works as before, the other params stay).
+  const onJumped = useCallback(
+    () =>
+      setParams(
+        (p) => {
+          const n = new URLSearchParams(p)
+          n.delete('m')
+          return n
+        },
+        { replace: true },
+      ),
+    [setParams],
+  )
   const closeReview = useCallback(
     () =>
       setParams((p) => {
@@ -208,6 +221,7 @@ export default function App() {
                 onLoadMore={() => void dispatch(loadOlderMessages())}
                 resetAfter={conv?.reset_after || 0}
                 highlight={highlight}
+                onJumped={onJumped}
                 footer={dmQuestions.length ? dmQuestions.map((q) => <QuestionCard key={`${q.id}-${q.state}`} q={q} />) : undefined}
               />
               <ChatBox
